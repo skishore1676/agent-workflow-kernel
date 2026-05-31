@@ -1,8 +1,9 @@
 {
   "schema": "workflow.kernel.validation-report.v1",
-  "summary": "Five portable workflow fixtures mapped to the kernel capabilities they prove.",
+  "summary": "Six portable workflow fixtures mapped to the kernel capabilities they prove.",
   "workflow_ids": [
     "bumblebee_quality_review",
+    "jarvis_weekly_update_shadow",
     "ivy_jonah_editorial",
     "trading_research_gate",
     "radhe_review_pipeline",
@@ -40,6 +41,26 @@
         "bounded reviewer questions",
         "review transcript and verdict artifacts",
         "human gate only for uncertain or escalated verdicts"
+      ]
+    },
+    {
+      "workflow_id": "jarvis_weekly_update_shadow",
+      "proves": [
+        "system_action",
+        "human_gate",
+        "surface_adapter",
+        "lane_adapter",
+        "policy_gates"
+      ],
+      "must_not_depend_on": [
+        "obsidian_write",
+        "telegram_send",
+        "openclaw_runtime_mutation"
+      ],
+      "acceptance_checks": [
+        "weekly artifact discovery is fixture-backed",
+        "Blackboard readback preserves read/clear behavior",
+        "unread weekly check-ins stop at an explicit Suman gate"
       ]
     },
     {

@@ -19,6 +19,7 @@ VALIDATION_REPORT = ROOT / "fixtures" / "example_workflow_validation_report.json
 
 EXPECTED_WORKFLOWS = {
     "bumblebee_quality_review",
+    "jarvis_weekly_update_shadow",
     "ivy_jonah_editorial",
     "trading_research_gate",
     "radhe_review_pipeline",
