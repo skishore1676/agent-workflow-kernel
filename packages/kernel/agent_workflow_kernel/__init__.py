@@ -21,15 +21,34 @@ from .contracts import (
     WorkflowStatus,
     to_plain_data,
 )
+from .policy import (
+    ActionRequest,
+    ApprovalDecision,
+    ApprovalValidation,
+    GateDecision,
+    HardGate,
+    HumanApprovalReceipt,
+    PolicyEngine,
+    action_fingerprint,
+    fingerprint_request,
+    validate_approval,
+)
 
 __all__ = [
+    "ActionRequest",
     "AdapterFamily",
     "AdapterInvocation",
     "AdapterResult",
+    "ApprovalDecision",
+    "ApprovalValidation",
     "ArtifactRef",
     "ContextPacket",
     "FailureClass",
+    "GateDecision",
+    "HardGate",
+    "HumanApprovalReceipt",
     "PolicyGate",
+    "PolicyEngine",
     "PromptRef",
     "Receipt",
     "RiskClass",
@@ -41,5 +60,8 @@ __all__ = [
     "WorkflowDef",
     "WorkflowInstance",
     "WorkflowStatus",
+    "action_fingerprint",
+    "fingerprint_request",
     "to_plain_data",
+    "validate_approval",
 ]
