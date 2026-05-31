@@ -51,6 +51,12 @@ from .local_adapters import (
     LocalFakeRuntimeAdapter,
     LocalFakeSurfaceAdapter,
 )
+from .local_runner import (
+    LOCAL_RUNNER_ACTOR,
+    LocalRunSummary,
+    LocalWorkflowExecutor,
+    run_local_workflow,
+)
 from .parity import (
     PARITY_FIXTURE_SCHEMA,
     PARITY_REPORT_SCHEMA,
@@ -116,10 +122,13 @@ __all__ = [
     "LaneAdapter",
     "LaneDescriptor",
     "LedgerConflict",
+    "LOCAL_RUNNER_ACTOR",
     "LocalFakeHostAdapter",
     "LocalFakeLaneAdapter",
     "LocalFakeRuntimeAdapter",
     "LocalFakeSurfaceAdapter",
+    "LocalRunSummary",
+    "LocalWorkflowExecutor",
     "MissingPromptError",
     "PARITY_FIXTURE_SCHEMA",
     "PARITY_REPORT_SCHEMA",
@@ -174,6 +183,7 @@ __all__ = [
     "render_context_packet",
     "report_from_fixture",
     "result_from_receipt",
+    "run_local_workflow",
     "to_plain_data",
     "unsupported_operation_result",
     "validate_approval",

@@ -168,13 +168,17 @@ read-only and parity-first.
 
 | Thread | Workstream | Status | Branch | Worktree |
 | --- | --- | --- | --- | --- |
-| `019e7fec-e01a-7343-bb6b-1ba80ba280f0` | CLI + local execution | running | `codex/wave3-cli-local-execution` | `/Users/suman/.codex/worktrees/3632/agent-workflow-kernel` |
+| `019e7fec-e01a-7343-bb6b-1ba80ba280f0` | CLI + local execution | completed | `codex/wave3-cli-local-execution` | Commit `99eb25c`; merged into supervisor branch. |
 | `019e7fec-e01a-7343-bb6b-1b9cc1e16a3f` | OpenClaw read-only adapter | completed | `codex/wave3-openclaw-readonly-adapter` | Commit `953514e`; merged into supervisor branch. |
 | `019e7fec-e0f8-7421-a600-bd6be59e274a` | Parity reporting fixtures | completed | `codex/wave3-parity-reporting` | Commit `e7390b6`; merged into supervisor branch. |
 | `019e7fec-e0f4-77f3-896a-d21155214504` | Developer setup hardening | completed | `codex/wave3-developer-setup` | Commit `1abc0ac`; merged into supervisor branch. |
 
 Completed so far:
 
+- CLI/local execution adds `validate`, `compile`, and `run-local` commands.
+  Local execution writes SQLite instances, stage runs, receipts, events, and
+  adapter invocations, then stops safely at human gates without calling external
+  OpenClaw or operator surfaces.
 - Parity reporting compares expected host receipt fields against actual kernel
   receipt fields with equivalent, different, missing, extra, and ignored field
   classes. It includes deterministic fixture reports for Bumblebee quality
