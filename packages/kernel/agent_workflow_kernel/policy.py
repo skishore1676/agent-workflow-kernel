@@ -134,6 +134,47 @@ def fingerprint_request(request: ActionRequest) -> str:
     )
 
 
+def build_test_only_suman_approval(
+    request: ActionRequest,
+    *,
+    decision: ApprovalDecision = ApprovalDecision.APPROVED,
+    evidence_refs: tuple[str, ...] = (),
+    created_at: datetime | str | None = None,
+    idempotency_key: str | None = None,
+) -> HumanApprovalReceipt:
+    """Build a local fixture approval that can never authorize live effects."""
+
+    fingerprint = fingerprint_request(request)
+    approval_key = idempotency_key or f"test-only:{fingerprint}"
+    return HumanApprovalReceipt(
+        approval_id=f"test-suman-{hashlib.sha256(approval_key.encode('utf-8')).hexdigest()[:16]}",
+        gate_id=f"test-gate-{fingerprint[:16]}",
+        human_ref="Suman(test)",
+        canonical_surface="local_test_fixture",
+        decision=decision,
+        exact_action_approved=request.action,
+        action_fingerprint=fingerprint,
+        evidence_refs=evidence_refs,
+        constraints={
+            "test_only": True,
+            "non_live": True,
+            "allowed_scope": "fixtures/tests/local_review_packets",
+            "idempotency_key": approval_key,
+            "forbidden_live_effects": [
+                HardGate.PUBLIC_PUBLISH.value,
+                HardGate.DEPLOY.value,
+                HardGate.LIVE_TRADE.value,
+                HardGate.AUTH.value,
+                HardGate.MONEY.value,
+                HardGate.EXTERNAL_SEND.value,
+                HardGate.DESTRUCTIVE_CHANGE.value,
+            ],
+        },
+        created_at=created_at,
+        transcript_or_message_ref=f"local-test-fixture://{approval_key}",
+    )
+
+
 def validate_approval(
     approval: HumanApprovalReceipt | None,
     *,
@@ -143,6 +184,8 @@ def validate_approval(
 ) -> ApprovalValidation:
     if approval is None:
         return ApprovalValidation(False, "missing approval receipt")
+    if approval.constraints.get("test_only") is True:
+        return ApprovalValidation(False, "test-only approval cannot authorize live actions")
     if approval.decision is not ApprovalDecision.APPROVED:
         return ApprovalValidation(False, f"approval decision is {approval.decision.value}")
     if expected_action is not None and approval.exact_action_approved != expected_action:

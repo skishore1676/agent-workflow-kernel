@@ -126,6 +126,13 @@ comment such as "looks good" does not approve publish, deploy, trade, auth,
 money, external send, or destructive changes unless the configured human source
 records it as an exact approval for that action.
 
+For local end-to-end tests, `Suman(test)` may be represented by a test-only
+approval receipt from `local_test_fixture`. These receipts are only valid inside
+fixtures, tests, and local review packets. They must be labeled `test_only` and
+`non_live`, include an idempotency key and action fingerprint, and must never
+authorize public publish, deploy, live trade, auth, money, external send, or
+destructive actions.
+
 ## Enforcement Points
 
 The kernel evaluates policy:

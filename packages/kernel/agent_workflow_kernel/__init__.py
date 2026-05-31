@@ -81,6 +81,7 @@ from .policy import (
     HumanApprovalReceipt,
     PolicyEngine,
     action_fingerprint,
+    build_test_only_suman_approval,
     fingerprint_request,
     validate_approval,
 )
@@ -183,6 +184,7 @@ __all__ = [
     "build_prompt_provenance",
     "build_receipt",
     "build_runtime_provenance",
+    "build_test_only_suman_approval",
     "canonical_json",
     "compare_receipts",
     "digest_data",

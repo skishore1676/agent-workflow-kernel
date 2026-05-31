@@ -16,6 +16,7 @@ from agent_workflow_kernel import (  # noqa: E402
     PolicyEngine,
     RiskClass,
     action_fingerprint,
+    build_test_only_suman_approval,
     fingerprint_request,
     validate_approval,
 )
@@ -221,6 +222,53 @@ class PolicyEngineTest(unittest.TestCase):
         )
 
         self.assertEqual(gate.decision, GateDecision.REQUIRE_HUMAN.value)
+
+    def test_test_only_suman_approval_binds_scope_and_fingerprint(self) -> None:
+        request = ActionRequest(
+            action="weekly_read_clear",
+            target_ref="fixture://weekly-check-in-ready-2026-w22",
+            arguments={"decision": "read_clear"},
+            risk_classes=(RiskClass.REVIEW_ONLY,),
+            evidence_refs=("fixture://weekly-check-in-ready-2026-w22",),
+        )
+
+        approval = build_test_only_suman_approval(
+            request,
+            evidence_refs=request.evidence_refs,
+            created_at="2026-05-31T12:00:00Z",
+        )
+
+        self.assertEqual(approval.human_ref, "Suman(test)")
+        self.assertEqual(approval.canonical_surface, "local_test_fixture")
+        self.assertEqual(approval.exact_action_approved, "weekly_read_clear")
+        self.assertEqual(approval.action_fingerprint, fingerprint_request(request))
+        self.assertTrue(approval.constraints["test_only"])
+        self.assertTrue(approval.constraints["non_live"])
+        self.assertEqual(approval.constraints["allowed_scope"], "fixtures/tests/local_review_packets")
+        self.assertIn("public_publish", approval.constraints["forbidden_live_effects"])
+        self.assertTrue(approval.transcript_or_message_ref.startswith("local-test-fixture://"))
+
+    def test_test_only_suman_approval_never_authorizes_live_hard_gate(self) -> None:
+        request = ActionRequest(
+            action="publish",
+            target_ref="https://example.com/post",
+            hard_gates=(HardGate.PUBLIC_PUBLISH,),
+            risk_classes=(RiskClass.EXTERNAL_EFFECT,),
+        )
+        approval = build_test_only_suman_approval(request)
+
+        validation = validate_approval(
+            approval,
+            expected_fingerprint=fingerprint_request(request),
+            expected_action=request.action,
+            now="2026-05-31T12:00:00Z",
+        )
+        gate = self.engine.evaluate(request, approval=approval, now="2026-05-31T12:00:00Z")
+
+        self.assertFalse(validation.valid)
+        self.assertIn("test-only", validation.reason)
+        self.assertEqual(gate.decision, GateDecision.REQUIRE_HUMAN.value)
+        self.assertIn("test-only", gate.decision_reason)
 
 
 if __name__ == "__main__":
