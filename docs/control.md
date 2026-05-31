@@ -66,6 +66,7 @@ Generic rail, domain-specific cargo.
 | D009 | Use stdlib dataclasses/enums for the first implementation, with YAML/pytest installed through `.venv` for integration verification. | accepted |
 | D010 | Keep a small stdlib YAML fallback and normalize PyYAML's YAML 1.1 `on:` boolean behavior in the loader. | accepted |
 | D011 | Launch Wave 3 as four independent AWK project threads: CLI/local execution, read-only OpenClaw adapter, parity reporting, and developer setup hardening. | accepted |
+| D012 | Keep developer checks split between bare `python3` unittest resilience and `.venv` dependency verification through `make setup` and `make check`. | accepted |
 
 ## Workstreams
 
@@ -170,7 +171,15 @@ read-only and parity-first.
 | `019e7fec-e01a-7343-bb6b-1ba80ba280f0` | CLI + local execution | running | `codex/wave3-cli-local-execution` | `/Users/suman/.codex/worktrees/3632/agent-workflow-kernel` |
 | `019e7fec-e01a-7343-bb6b-1b9cc1e16a3f` | OpenClaw read-only adapter | running | `codex/wave3-openclaw-readonly-adapter` | `/Users/suman/.codex/worktrees/261e/agent-workflow-kernel` |
 | `019e7fec-e0f8-7421-a600-bd6be59e274a` | Parity reporting fixtures | running | `codex/wave3-parity-reporting` | `/Users/suman/.codex/worktrees/de07/agent-workflow-kernel` |
-| `019e7fec-e0f4-77f3-896a-d21155214504` | Developer setup hardening | running | `codex/wave3-developer-setup` | `/Users/suman/.codex/worktrees/054c/agent-workflow-kernel` |
+| `019e7fec-e0f4-77f3-896a-d21155214504` | Developer setup hardening | completed | `codex/wave3-developer-setup` | Commit `1abc0ac`; merged into supervisor branch. |
+
+Completed so far:
+
+- Developer setup hardening provides `make setup` for creating `.venv` and
+  installing `.[dev]`, plus `make check` for running bare `python3` unittest and
+  venv-backed `pytest` when available. This preserves fresh-machine resilience
+  when system `python3` lacks `PyYAML` while still verifying the declared
+  package environment.
 
 Coordination notes:
 
