@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import sys
@@ -86,6 +87,8 @@ def build_shadow_report(fixture: Mapping[str, Any]) -> dict[str, Any]:
     identity = _fixture_identity(fixture, lane)
     blocked_actions = _blocked_external_actions(fixture, lane_kind)
     next_step = _next_recommended_step(lane_kind, adapter_probe)
+    lane_adoption = None
+    lane_receipts: list[dict[str, Any]] = []
 
     try:
         inspection = OpenClawReadOnlyAdapter().inspect_fixture(fixture)
@@ -123,12 +126,19 @@ def build_shadow_report(fixture: Mapping[str, Any]) -> dict[str, Any]:
         else:
             raise
 
+    if adapter_probe["status"] == "available":
+        lane_adoption = _run_lane_adapter(lane_kind, fixture)
+        lane_receipts = list(lane_adoption.get("receipts", []))
+        if lane_adoption["status"] == "adapter_input_invalid":
+            next_step = "Regenerate this fixture in the lane-specific OpenClaw export shape, then rerun the shadow proof."
+
     adoption_status = _adoption_status(
         lane=lane,
         lane_kind=lane_kind,
         parity_status=str(parity_report["status"]),
         read_only_status=read_only_status,
         adapter_probe=adapter_probe,
+        lane_adoption_status=str(lane_adoption["status"]) if lane_adoption else None,
     )
     return {
         "schema": SHADOW_REPORT_SCHEMA,
@@ -140,7 +150,9 @@ def build_shadow_report(fixture: Mapping[str, Any]) -> dict[str, Any]:
         "blocked_external_actions": blocked_actions,
         "fixture_identity": identity,
         "lane": lane,
+        "lane_adoption": lane_adoption,
         "lane_adapter": adapter_probe,
+        "lane_receipts_generated": lane_receipts,
         "mapping_summary": mapping_summary,
         "next_recommended_adoption_step": next_step,
         "parity_report": parity_report,
@@ -181,6 +193,11 @@ def _detect_lane(fixture: Mapping[str, Any]) -> str:
 
 
 def _lane_kind(lane: str, fixture: Mapping[str, Any]) -> str:
+    schema = fixture.get("schema")
+    if schema == "openclaw.ivy-jonah.fixture.v1":
+        return "ivy"
+    if schema == "openclaw.weekly-update-fixture.v1":
+        return "weekly"
     normalized = lane.strip().lower().replace("_", "-")
     if "ivy" in fixture or normalized in {"ivy", "ivy-jonah", "ivy-jonah-editorial"}:
         return "ivy"
@@ -200,6 +217,46 @@ def _lane_adapter_probe(lane_kind: str) -> dict[str, Any]:
             "reason": "lane-specific Wave 4 adapter is not importable in this worktree",
         }
     return {"status": "available", "module": module_name}
+
+
+def _run_lane_adapter(lane_kind: str, fixture: Mapping[str, Any]) -> dict[str, Any]:
+    """Run a lane-specific adapter when it exists in this worktree."""
+
+    try:
+        if lane_kind == "ivy":
+            module = importlib.import_module("agent_workflow_kernel_openclaw")
+            adoption = module.adopt_ivy_jonah_fixture(fixture)
+            report = to_plain_data(adoption.report)
+            receipts = [to_plain_data(receipt) for receipt in adoption.receipts]
+            return {
+                "status": "shadow_ready" if report.get("ready_for_shadow") else "shadow_review_required",
+                "report": report,
+                "receipt_count": len(receipts),
+                "receipts": receipts,
+            }
+        if lane_kind == "weekly":
+            module = importlib.import_module("agent_workflow_kernel_openclaw")
+            report_obj = module.adoption_report_from_fixture(fixture)
+            receipts = [to_plain_data(receipt) for receipt in module.receipts_from_weekly_update(fixture)]
+            report = to_plain_data(report_obj)
+            return {
+                "status": str(report.get("status", "shadow_review_required")),
+                "report": report,
+                "receipt_count": len(receipts),
+                "receipts": receipts,
+            }
+    except Exception as exc:
+        return {
+            "status": "adapter_input_invalid",
+            "error": str(exc),
+            "receipt_count": 0,
+            "receipts": [],
+        }
+    return {
+        "status": "not_applicable",
+        "receipt_count": 0,
+        "receipts": [],
+    }
 
 
 def _fixture_identity(fixture: Mapping[str, Any], lane: str) -> dict[str, Any]:
@@ -293,6 +350,11 @@ def _next_recommended_step(lane_kind: str, adapter_probe: Mapping[str, Any]) -> 
             return "Merge or implement the Ivy/Jonah lane adapter, then rerun this fixture for stage-level adoption."
         if lane_kind == "weekly":
             return "Merge or implement the Jarvis weekly update adapter, then rerun this fixture for workflow-gate adoption."
+    if adapter_probe["status"] == "available":
+        if lane_kind == "ivy":
+            return "Compare the Ivy/Jonah lane adoption report against OpenClaw exporter output before any takeover."
+        if lane_kind == "weekly":
+            return "Compare the weekly update adoption report against OpenClaw exporter output before any takeover."
     if lane_kind not in SUPPORTED_GENERIC_LANES:
         return "Create a lane-specific adapter or classify this lane before any takeover decision."
     return "Use this deterministic report as the read-only adoption receipt, then compare against a lane-specific shadow run."
@@ -305,11 +367,23 @@ def _adoption_status(
     parity_status: str,
     read_only_status: str,
     adapter_probe: Mapping[str, Any],
+    lane_adoption_status: str | None,
 ) -> str:
     if read_only_status == "blocked":
         return "blocked_external_action"
     if adapter_probe["status"] == "adapter_missing":
         return "adapter_missing"
+    if lane_adoption_status == "adapter_input_invalid":
+        return "lane_adapter_input_invalid"
+    if lane_adoption_status in {
+        "blocked",
+        "done",
+        "final_approval_required",
+        "shadow_ready",
+        "shadow_review_required",
+        "waiting_on_human",
+    }:
+        return lane_adoption_status
     if lane_kind not in SUPPORTED_GENERIC_LANES and lane == lane_kind:
         return "unsupported_lane"
     if parity_status == "equivalent" and read_only_status == "succeeded":

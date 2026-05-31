@@ -249,7 +249,7 @@ Wave 4 registry:
 
 | Thread | Workstream | Status | Branch | Worktree |
 | --- | --- | --- | --- | --- |
-| `019e8003-b6d8-7b52-ba41-95da4211811f` | Ivy lane adoption | running | `codex/wave4-ivy-lane-adoption` | `/Users/suman/.codex/worktrees/d659/agent-workflow-kernel` |
+| `019e8003-b6d8-7b52-ba41-95da4211811f` | Ivy lane adoption | completed | `codex/wave4-ivy-lane-adoption` | Commit `7369e8b`; merged into supervisor branch. |
 | `019e8003-b6d8-7b52-ba41-95e86c4fd510` | Jarvis weekly update adoption | running | `codex/wave4-jarvis-weekly-adoption` | `/Users/suman/.codex/worktrees/2850/agent-workflow-kernel` |
 | `019e8003-b794-7cc2-be05-696b30f84e0b` | OpenClaw lane fixture exporter | running | `codex/wave4-openclaw-lane-fixture-exporter` | `/Users/suman/.codex/worktrees/8f27/openclaw-core` |
 | `019e8003-b70b-7b62-8164-1bef63dcdc11` | OpenClaw shadow runner | completed | `codex/wave4-openclaw-shadow-runner` | Commit `03e4da2`; merged into supervisor branch. |

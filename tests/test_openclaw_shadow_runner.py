@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "openclaw_shadow_run.py"
 FIXTURE = ROOT / "fixtures" / "openclaw" / "shadow_runner" / "generic_readonly_fixture.json"
+IVY_FIXTURE = ROOT / "fixtures" / "openclaw" / "ivy_jonah" / "p3_approval_to_p5_shadow.json"
 
 
 class OpenClawShadowRunnerTest(unittest.TestCase):
@@ -81,50 +82,51 @@ class OpenClawShadowRunnerTest(unittest.TestCase):
                 "Create a lane-specific adapter or classify this lane before any takeover decision.",
             )
 
-    def test_ivy_and_weekly_payloads_report_missing_lane_adapters(self) -> None:
-        cases = [
-            (
-                "ivy",
-                {"p_stage": "P5", "publish_packet_ref": "fixture://publish-packet"},
-                "agent_workflow_kernel_openclaw.ivy_lane",
-                "public_publish",
-            ),
-            (
-                "weekly",
-                {"note_path": "redacted-weekly-note.md", "checked": False},
-                "agent_workflow_kernel_openclaw.weekly_update",
-                "blackboard_or_obsidian_write",
-            ),
-        ]
+    def test_ivy_payload_runs_lane_adapter_when_available(self) -> None:
+        result = self.run_shadow(IVY_FIXTURE, "-")
+        report = json.loads(result.stdout)
+
+        self.assertEqual(report["adoption"]["status"], "shadow_ready")
+        self.assertEqual(report["lane_adapter"]["module"], "agent_workflow_kernel_openclaw.ivy_lane")
+        self.assertEqual(report["lane_adapter"]["status"], "available")
+        self.assertEqual(report["lane_adoption"]["status"], "shadow_ready")
+        self.assertTrue(report["lane_adoption"]["report"]["ready_for_shadow"])
+        self.assertTrue(report["lane_adoption"]["report"]["public_publish_blocked"])
+        self.assertGreater(report["lane_adoption"]["receipt_count"], 1)
+        self.assertIn(
+            "public_publish",
+            {item["action"] for item in report["blocked_external_actions"]},
+        )
+
+    def test_weekly_payload_reports_missing_lane_adapter_until_merged(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            for lane, payload, expected_module, expected_blocked_action in cases:
-                fixture_path = Path(tmpdir) / f"{lane}.json"
-                fixture_path.write_text(
-                    json.dumps(
-                        {
-                            "fixture_id": f"{lane}-fixture",
-                            "created_at": "2026-05-31T00:00:00Z",
-                            "lane": lane,
-                            "mapping": {
-                                "lane_id": lane,
-                                "agent_id": f"{lane}_agent",
-                            },
-                            "ivy" if lane == "ivy" else "weekly_update": payload,
-                        }
-                    ),
-                    encoding="utf-8",
-                )
+            fixture_path = Path(tmpdir) / "weekly.json"
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "fixture_id": "weekly-fixture",
+                        "created_at": "2026-05-31T00:00:00Z",
+                        "lane": "weekly",
+                        "mapping": {
+                            "lane_id": "weekly",
+                            "agent_id": "weekly_agent",
+                        },
+                        "weekly_update": {"note_path": "redacted-weekly-note.md", "checked": False},
+                    }
+                ),
+                encoding="utf-8",
+            )
 
-                result = self.run_shadow(fixture_path, "-")
-                report = json.loads(result.stdout)
+            result = self.run_shadow(fixture_path, "-")
+            report = json.loads(result.stdout)
 
-                self.assertEqual(report["adoption"]["status"], "adapter_missing")
-                self.assertEqual(report["lane_adapter"]["module"], expected_module)
-                self.assertEqual(report["lane_adapter"]["status"], "adapter_missing")
-                self.assertIn(
-                    expected_blocked_action,
-                    {item["action"] for item in report["blocked_external_actions"]},
-                )
+            self.assertEqual(report["adoption"]["status"], "adapter_missing")
+            self.assertEqual(report["lane_adapter"]["module"], "agent_workflow_kernel_openclaw.weekly_update")
+            self.assertEqual(report["lane_adapter"]["status"], "adapter_missing")
+            self.assertIn(
+                "blackboard_or_obsidian_write",
+                {item["action"] for item in report["blocked_external_actions"]},
+            )
 
     def test_output_is_deterministic_for_repeated_runs(self) -> None:
         first = self.run_shadow(FIXTURE, "-").stdout
