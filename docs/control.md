@@ -78,12 +78,12 @@ Generic rail, domain-specific cargo.
 
 | Thread | Workstream | Status | Notes |
 | --- | --- | --- | --- |
-| TBD | Domain model + workflow DSL | planned | Wave 1 |
-| TBD | Prompt registry + context packets | planned | Wave 1 |
-| TBD | Runner/recovery + storage | planned | Wave 1 |
-| TBD | Adapter contracts + OpenClaw host boundary | planned | Wave 1 |
-| TBD | A2A stage + policy gates | planned | Wave 1 |
-| TBD | Example workflow validation matrix | planned | Wave 1 |
+| `019e7fd1-0910-7682-b738-f6ce902d8b93` | Domain model + workflow DSL | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/domain-model-workflow-dsl`; branch: `codex/domain-model-workflow-dsl` |
+| `019e7fd1-0a3b-7f12-be15-1bd6355e52fa` | Prompt registry + context packets | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/prompt-registry-context`; branch: `codex/prompt-registry-context` |
+| `019e7fd1-0c21-7e01-9299-952fe11cd4c1` | Runner/recovery + storage | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/runner-storage-recovery`; branch: `codex/runner-storage-recovery` |
+| `019e7fd1-0e37-73b0-a8a0-37d418c24c06` | Adapter contracts + OpenClaw host boundary | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/adapter-interfaces-openclaw`; branch: `codex/adapter-interfaces-openclaw` |
+| `019e7fd1-1008-7e62-9746-066d3258a6ac` | A2A stage + policy gates | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/a2a-policy-gates`; branch: `codex/a2a-policy-gates` |
+| `019e7fd1-12df-7ab3-806d-90ce576e0f68` | Example workflow validation matrix | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/example-validation-matrix`; branch: `codex/example-validation-matrix` |
 
 ## Acceptance Gates
 
@@ -129,4 +129,3 @@ against current behavior and produce equivalent receipts or a documented delta.
 3. Launch worker threads with goal packets.
 4. Read back worker artifacts.
 5. Update this control document with the synthesis and next-wave plan.
-
