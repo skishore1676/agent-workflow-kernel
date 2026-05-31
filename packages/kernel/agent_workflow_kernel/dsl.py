@@ -19,7 +19,7 @@ def load_workflow_yaml(source: str | bytes | TextIO) -> WorkflowDef:
         loaded = {}
     if not isinstance(loaded, Mapping):
         raise TypeError("workflow YAML must parse to a mapping")
-    return workflow_from_mapping(loaded)
+    return workflow_from_mapping(_normalize_yaml_quirks(loaded))
 
 
 def load_workflow_file(path: str | Path) -> WorkflowDef:
@@ -157,6 +157,25 @@ def _load_yaml(source: str | bytes | TextIO) -> Any:
     except ModuleNotFoundError:
         return _load_simple_yaml(text)
     return yaml.safe_load(text)
+
+
+def _normalize_yaml_quirks(value: Any) -> Any:
+    """Normalize common YAML parser surprises in operator-authored files.
+
+    PyYAML follows YAML 1.1 boolean rules, where an unquoted ``on:`` key parses
+    as ``True``. Workflow transition maps naturally use ``on`` as a field name,
+    so repair that key before validation while leaving all other values intact.
+    """
+
+    if isinstance(value, Mapping):
+        normalized: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = "on" if key is True and "on" not in value else key
+            normalized[normalized_key] = _normalize_yaml_quirks(item)
+        return normalized
+    if isinstance(value, list):
+        return [_normalize_yaml_quirks(item) for item in value]
+    return value
 
 
 def _load_simple_yaml(text: str) -> Any:
