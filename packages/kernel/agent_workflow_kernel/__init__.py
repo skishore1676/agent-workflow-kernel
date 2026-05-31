@@ -21,6 +21,15 @@ from .contracts import (
     WorkflowStatus,
     to_plain_data,
 )
+from .dsl import (
+    canonical_json,
+    load_workflow_file,
+    load_workflow_yaml,
+    workflow_from_mapping,
+    workflow_to_canonical_json,
+    workflow_to_canonical_json_bytes,
+)
+from .validation import WorkflowValidationError, validate_workflow_def, validate_workflow_mapping
 
 __all__ = [
     "AdapterFamily",
@@ -41,5 +50,14 @@ __all__ = [
     "WorkflowDef",
     "WorkflowInstance",
     "WorkflowStatus",
+    "WorkflowValidationError",
+    "canonical_json",
+    "load_workflow_file",
+    "load_workflow_yaml",
     "to_plain_data",
+    "validate_workflow_def",
+    "validate_workflow_mapping",
+    "workflow_from_mapping",
+    "workflow_to_canonical_json",
+    "workflow_to_canonical_json_bytes",
 ]

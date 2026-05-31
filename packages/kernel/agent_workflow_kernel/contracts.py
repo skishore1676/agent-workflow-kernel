@@ -153,6 +153,7 @@ class Transition:
     to_stage: str | None = None
     terminal: str | None = None
     guard: str | None = None
+    label: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -168,6 +169,8 @@ class StageDef:
     policy: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
     retry: dict[str, Any] = field(default_factory=dict)
+    timeout_seconds: int | None = None
+    surface: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -183,6 +186,8 @@ class WorkflowDef:
     inputs: dict[str, Any] = field(default_factory=dict)
     defaults: dict[str, Any] = field(default_factory=dict)
     actors: dict[str, Any] = field(default_factory=dict)
+    artifacts: dict[str, Any] = field(default_factory=dict)
+    policies: dict[str, Any] = field(default_factory=dict)
     compatibility: dict[str, Any] = field(default_factory=dict)
 
 
