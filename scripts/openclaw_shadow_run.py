@@ -132,6 +132,13 @@ def build_shadow_report(fixture: Mapping[str, Any]) -> dict[str, Any]:
         if lane_adoption["status"] == "adapter_input_invalid":
             next_step = "Regenerate this fixture in the lane-specific OpenClaw export shape, then rerun the shadow proof."
 
+    readiness_blockers = _readiness_blockers(
+        fixture=fixture,
+        lane_kind=lane_kind,
+        parity_report=parity_report,
+        mapping_summary=mapping_summary,
+        lane_adoption=lane_adoption,
+    )
     adoption_status = _adoption_status(
         lane=lane,
         lane_kind=lane_kind,
@@ -139,6 +146,7 @@ def build_shadow_report(fixture: Mapping[str, Any]) -> dict[str, Any]:
         read_only_status=read_only_status,
         adapter_probe=adapter_probe,
         lane_adoption_status=str(lane_adoption["status"]) if lane_adoption else None,
+        readiness_blockers=readiness_blockers,
     )
     return {
         "schema": SHADOW_REPORT_SCHEMA,
@@ -157,6 +165,7 @@ def build_shadow_report(fixture: Mapping[str, Any]) -> dict[str, Any]:
         "next_recommended_adoption_step": next_step,
         "parity_report": parity_report,
         "read_only_adapter_result": adapter_result,
+        "readiness_blockers": readiness_blockers,
         "receipts_generated": receipts,
     }
 
@@ -368,6 +377,7 @@ def _adoption_status(
     read_only_status: str,
     adapter_probe: Mapping[str, Any],
     lane_adoption_status: str | None,
+    readiness_blockers: Sequence[Mapping[str, Any]],
 ) -> str:
     if read_only_status == "blocked":
         return "blocked_external_action"
@@ -375,6 +385,15 @@ def _adoption_status(
         return "adapter_missing"
     if lane_adoption_status == "adapter_input_invalid":
         return "lane_adapter_input_invalid"
+    if lane_adoption_status == "waiting_on_human":
+        return "waiting_on_human"
+    if adapter_probe["status"] == "generic_readonly" and lane_kind not in SUPPORTED_GENERIC_LANES and lane == lane_kind:
+        return "unsupported_lane"
+    if readiness_blockers:
+        blocker_codes = {str(item.get("code", "")) for item in readiness_blockers}
+        if blocker_codes == {"expected_host_receipt_missing"}:
+            return "host_receipt_missing"
+        return "shadow_review_required"
     if lane_adoption_status in {
         "blocked",
         "done",
@@ -384,11 +403,131 @@ def _adoption_status(
         "waiting_on_human",
     }:
         return lane_adoption_status
-    if lane_kind not in SUPPORTED_GENERIC_LANES and lane == lane_kind:
-        return "unsupported_lane"
     if parity_status == "equivalent" and read_only_status == "succeeded":
         return "shadow_ready"
     return "shadow_review_required"
+
+
+def _readiness_blockers(
+    *,
+    fixture: Mapping[str, Any],
+    lane_kind: str,
+    parity_report: Mapping[str, Any],
+    mapping_summary: Mapping[str, Any],
+    lane_adoption: Mapping[str, Any] | None,
+) -> list[dict[str, str]]:
+    blockers: list[dict[str, str]] = []
+    if "expected_host_receipt" not in fixture and parity_report.get("status") == "equivalent":
+        blockers.append(
+            {
+                "code": "expected_host_receipt_missing",
+                "message": "Fixture did not include expected_host_receipt; parity is shape-only self-comparison.",
+            }
+        )
+    supplied = fixture.get("adoption_blockers")
+    if isinstance(supplied, list):
+        for item in supplied:
+            if isinstance(item, Mapping):
+                blockers.append(
+                    {
+                        "code": str(item.get("code") or item.get("id") or "fixture_blocker"),
+                        "message": str(item.get("message") or item.get("reason") or item),
+                    }
+                )
+            else:
+                blockers.append({"code": "fixture_blocker", "message": str(item)})
+    if lane_kind == "ivy":
+        blockers.extend(_ivy_readiness_blockers(fixture, mapping_summary, lane_adoption))
+    return _dedupe_blockers(blockers)
+
+
+def _ivy_readiness_blockers(
+    fixture: Mapping[str, Any],
+    mapping_summary: Mapping[str, Any],
+    lane_adoption: Mapping[str, Any] | None,
+) -> list[dict[str, str]]:
+    blockers: list[dict[str, str]] = []
+    work_ledger = mapping_summary.get("work_ledger")
+    if not isinstance(work_ledger, Mapping) or not work_ledger.get("work_item_id") or not work_ledger.get("handoff_id"):
+        blockers.append(
+            {
+                "code": "ivy_work_ledger_missing",
+                "message": "Ivy fixture lacks Work Ledger work_item_id and handoff_id evidence.",
+            }
+        )
+    roles = _artifact_roles(fixture)
+    missing_roles = _missing_ivy_artifact_roles(roles)
+    if missing_roles:
+        blockers.append(
+            {
+                "code": "ivy_required_artifacts_missing",
+                "message": "Ivy fixture lacks required artifact roles: " + ", ".join(missing_roles),
+            }
+        )
+    ivy = fixture.get("ivy")
+    if isinstance(ivy, Mapping):
+        transcript_refs = ivy.get("transcript_refs", fixture.get("transcript_refs"))
+        stages = ivy.get("stages")
+    else:
+        transcript_refs = fixture.get("transcript_refs")
+        stages = None
+    if not isinstance(transcript_refs, list) or not transcript_refs:
+        blockers.append(
+            {
+                "code": "ivy_transcript_refs_missing",
+                "message": "Ivy fixture lacks transcript/editor-review proof references.",
+            }
+        )
+    if isinstance(stages, list):
+        missing = [
+            str(stage.get("stage", "unknown"))
+            for stage in stages
+            if isinstance(stage, Mapping) and str(stage.get("status", "")).lower() == "missing"
+        ]
+        if missing:
+            blockers.append(
+                {
+                    "code": "ivy_stage_artifact_missing",
+                    "message": "Ivy exported missing stage artifacts for: " + ", ".join(missing),
+                }
+            )
+    if lane_adoption and lane_adoption.get("status") == "shadow_ready":
+        report = lane_adoption.get("report")
+        open_questions = report.get("open_questions") if isinstance(report, Mapping) else None
+        if isinstance(open_questions, list):
+            for question in open_questions:
+                text = str(question).lower()
+                if "no transcript_ref" in text or "no review_surface" in text:
+                    blockers.append({"code": "ivy_open_question_blocks_readiness", "message": str(question)})
+    return blockers
+
+
+def _artifact_roles(fixture: Mapping[str, Any]) -> set[str]:
+    roles: set[str] = set()
+    artifacts = fixture.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if isinstance(artifact, Mapping) and artifact.get("role"):
+                roles.add(str(artifact["role"]))
+    return roles
+
+
+def _missing_ivy_artifact_roles(roles: set[str]) -> list[str]:
+    required_groups = {
+        "draft_package": {"draft_package", "p4_draft_package"},
+        "editor_verdict": {"editor_verdict", "p4_editor_review"},
+        "p5_review_surface": {"p5_review_surface", "p5_final_review"},
+    }
+    return [name for name, aliases in required_groups.items() if roles.isdisjoint(aliases)]
+
+
+def _dedupe_blockers(blockers: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    deduped: dict[tuple[str, str], dict[str, str]] = {}
+    for blocker in blockers:
+        code = str(blocker.get("code", "readiness_blocker"))
+        message = str(blocker.get("message", "Readiness blocker present."))
+        deduped[(code, message)] = {"code": code, "message": message}
+    return [deduped[key] for key in sorted(deduped)]
 
 
 def _empty_parity_report(status: str) -> dict[str, Any]:

@@ -30,8 +30,9 @@ class OpenClawShadowRunnerTest(unittest.TestCase):
         self.assertEqual(payload["schema"], "workflow.kernel.openclaw-shadow-report.v1")
         self.assertEqual(payload["fixture_identity"]["fixture_id"], "openclaw-shadow-generic-001")
         self.assertEqual(payload["lane"], "generic")
-        self.assertEqual(payload["adoption"]["status"], "shadow_ready")
+        self.assertEqual(payload["adoption"]["status"], "host_receipt_missing")
         self.assertEqual(payload["adoption"]["parity_status"], "equivalent")
+        self.assertEqual(payload["readiness_blockers"][0]["code"], "expected_host_receipt_missing")
         self.assertEqual(payload["mapping_summary"]["work_ledger"]["work_item_id"], "work-shadow-001")
         self.assertEqual(len(payload["receipts_generated"]), 1)
         self.assertEqual(payload["receipts_generated"][0]["status"], "succeeded")
@@ -87,7 +88,7 @@ class OpenClawShadowRunnerTest(unittest.TestCase):
         result = self.run_shadow(IVY_FIXTURE, "-")
         report = json.loads(result.stdout)
 
-        self.assertEqual(report["adoption"]["status"], "shadow_ready")
+        self.assertEqual(report["adoption"]["status"], "host_receipt_missing")
         self.assertEqual(report["lane_adapter"]["module"], "agent_workflow_kernel_openclaw.ivy_lane")
         self.assertEqual(report["lane_adapter"]["status"], "available")
         self.assertEqual(report["lane_adoption"]["status"], "shadow_ready")
@@ -97,6 +98,38 @@ class OpenClawShadowRunnerTest(unittest.TestCase):
         self.assertIn(
             "public_publish",
             {item["action"] for item in report["blocked_external_actions"]},
+        )
+        self.assertEqual(
+            {item["code"] for item in report["readiness_blockers"]},
+            {"expected_host_receipt_missing"},
+        )
+
+    def test_incomplete_ivy_fixture_is_shadow_review_required(self) -> None:
+        with IVY_FIXTURE.open("r", encoding="utf-8") as handle:
+            fixture = json.load(handle)
+        fixture.pop("expected_host_receipt", None)
+        fixture["artifacts"] = []
+        fixture["transcript_refs"] = []
+        fixture["mapping"]["work_ledger"] = {}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "incomplete-ivy.json"
+            path.write_text(json.dumps(fixture), encoding="utf-8")
+            result = self.run_shadow(path, "-")
+
+        report = json.loads(result.stdout)
+        self.assertEqual(report["adoption"]["status"], "shadow_review_required")
+        self.assertIn(
+            "ivy_work_ledger_missing",
+            {item["code"] for item in report["readiness_blockers"]},
+        )
+        self.assertIn(
+            "ivy_required_artifacts_missing",
+            {item["code"] for item in report["readiness_blockers"]},
+        )
+        self.assertIn(
+            "ivy_transcript_refs_missing",
+            {item["code"] for item in report["readiness_blockers"]},
         )
 
     def test_weekly_payload_runs_lane_adapter_when_available(self) -> None:
