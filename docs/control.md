@@ -113,6 +113,21 @@ The agreed architecture center is:
 - runtime, surface, host, and lane adapters keeping OpenClaw-specific details
   out of the portable kernel.
 
+## Wave 2 Registry
+
+Wave 2 uses Codex-managed worktrees from the AWK project, starting from
+`codex/bootstrap-agent-workflow-kernel` after the Wave 1 synthesis and package
+scaffold commits.
+
+| Thread | Workstream | Status | Worktree |
+| --- | --- | --- | --- |
+| `019e7fdd-92e2-7592-bc1e-9bc1602c2b7b` | Core schema + DSL | running | `/Users/suman/.codex/worktrees/9e2b/agent-workflow-kernel` |
+| `019e7fde-8324-7202-bcb1-8319e843df00` | SQLite ledger + runner | running | `/Users/suman/.codex/worktrees/8ec6/agent-workflow-kernel` |
+| `019e7fde-8232-7110-9b68-eafcb3a02111` | Prompt context + receipts | running | `/Users/suman/.codex/worktrees/170f/agent-workflow-kernel` |
+| `019e7fde-8322-7931-a960-039c5a012362` | Policy engine + human gates | running | `/Users/suman/.codex/worktrees/7061/agent-workflow-kernel` |
+| `019e7fde-8334-7f42-86e0-d3db017436cd` | Adapter SPI + local fakes | running | `/Users/suman/.codex/worktrees/a689/agent-workflow-kernel` |
+| `019e7fde-85f4-7ba2-bc31-0cde173f640c` | Example workflows + fixtures | running | `/Users/suman/.codex/worktrees/1f8d/agent-workflow-kernel` |
+
 ## Acceptance Gates
 
 ### Architecture Gate A1
