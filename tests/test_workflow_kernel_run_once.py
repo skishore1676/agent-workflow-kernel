@@ -14,6 +14,8 @@ from agent_workflow_kernel import (  # noqa: E402
     AdapterRegistry,
     KernelRuntimeConfig,
     LocalFakeRuntimeAdapter,
+    PromptRef,
+    PromptRegistry,
     RiskClass,
     StageDef,
     StageRunStatus,
@@ -26,6 +28,12 @@ from agent_workflow_kernel import (  # noqa: E402
 
 
 UTC = timezone.utc
+PROMPT_REFS = (
+    PromptRef(id="identity.portable_worker", kind="identity", version="1.0.0"),
+    PromptRef(id="policy.no_external_effects", kind="policy", version="1.0.0", render_mode="yaml"),
+    PromptRef(id="lane.quality_review", kind="lane", version="1.0.0"),
+    PromptRef(id="stage.review", kind="stage", version="1.0.0"),
+)
 
 
 class WorkflowKernelRunOnceTest(unittest.TestCase):
@@ -114,6 +122,84 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             ],
         )
 
+    def test_prompt_refs_render_context_and_record_prompt_provenance(self) -> None:
+        kernel = self.kernel_for(
+            self.workflow_with_runtime_stage(prompt_refs=PROMPT_REFS),
+            prompt_registry_path=ROOT / "prompts",
+        )
+        kernel.start(
+            instance_id="instance-1",
+            inputs={"objective": "review a prompt-backed stage"},
+            now=self.now,
+        )
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "succeeded")
+        self.assertIsNotNone(step.receipt_id)
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE receipt_id = ?",
+            (step.receipt_id,),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        context_ref = receipt["context_packet_ref"]
+        self.assertIsNotNone(context_ref)
+        self.assertEqual(receipt["prompt_provenance"]["context"]["packet_id"], context_ref)
+        self.assertEqual(len(receipt["prompt_provenance"]["refs"]), 4)
+        self.assertTrue(
+            receipt["prompt_provenance"]["context"]["rendered_input_digest"].startswith("sha256:")
+        )
+
+        invocation_row = self.ledger.connection.execute(
+            "SELECT context_packet_ref FROM adapter_invocations"
+        ).fetchone()
+        self.assertEqual(invocation_row["context_packet_ref"], context_ref)
+        runtime_input = receipt["runtime_provenance"]["outputs"]["runtime_input"]
+        self.assertEqual(runtime_input["context_packet"]["packet_id"], context_ref)
+        self.assertEqual(runtime_input["context_packet"]["workflow"]["id"], "toy-kernel")
+        self.assertIn("identity.portable_worker", runtime_input["rendered_input"])
+
+    def test_prompt_hash_mismatch_blocks_before_adapter_invocation(self) -> None:
+        bad_ref = PromptRef(
+            id="stage.review",
+            kind="stage",
+            version="1.0.0",
+            content_hash="sha256:" + "0" * 64,
+        )
+        workflow = self.workflow_with_runtime_stage(prompt_refs=(bad_ref,))
+        adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(
+                owner_id="kernel-test",
+                adapter_registry=registry,
+                prompt_registry=PromptRegistry.load(ROOT / "prompts"),
+            ),
+        )
+        kernel.start(instance_id="instance-1", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("Hash mismatch", step.failure_summary or "")
+        self.assertEqual(adapter.receipts, [])
+        invocation_count = self.ledger.connection.execute(
+            "SELECT COUNT(*) AS count FROM adapter_invocations"
+        ).fetchone()["count"]
+        self.assertEqual(invocation_count, 0)
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE stage_run_id = ?",
+            ("instance-1:draft:1",),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        self.assertEqual(receipt["kind"], "kernel.prompt_context")
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["prompt_provenance"]["error"]["class"], "invalid_output")
+
     def test_missing_adapter_blocks_without_invocation(self) -> None:
         workflow = self.workflow_with_runtime_stage(adapter="runtime.missing")
         kernel = self.kernel_for(workflow)
@@ -199,16 +285,32 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         ).fetchone()["count"]
         self.assertEqual(invocation_count, 0)
 
-    def kernel_for(self, workflow: WorkflowDef) -> WorkflowKernel:
+    def kernel_for(
+        self,
+        workflow: WorkflowDef,
+        *,
+        prompt_registry: PromptRegistry | None = None,
+        prompt_registry_path: Path | None = None,
+    ) -> WorkflowKernel:
         adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
         registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
         return WorkflowKernel(
             self.ledger,
             workflow,
-            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+            KernelRuntimeConfig(
+                owner_id="kernel-test",
+                adapter_registry=registry,
+                prompt_registry=prompt_registry,
+                prompt_registry_path=prompt_registry_path,
+            ),
         )
 
-    def workflow_with_runtime_stage(self, *, adapter: str = "runtime.local_fake") -> WorkflowDef:
+    def workflow_with_runtime_stage(
+        self,
+        *,
+        adapter: str = "runtime.local_fake",
+        prompt_refs: tuple[PromptRef, ...] = (),
+    ) -> WorkflowDef:
         return WorkflowDef(
             id="toy-kernel",
             version="0.1.0",
@@ -221,6 +323,7 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
                     outcomes=("done",),
                     inputs={"operation": "invoke"},
                     actors={"worker": "kernel-test"},
+                    prompt_refs=prompt_refs,
                 ),
             ),
             transitions=(),
