@@ -251,8 +251,18 @@ Wave 4 registry:
 | --- | --- | --- | --- | --- |
 | `019e8003-b6d8-7b52-ba41-95da4211811f` | Ivy lane adoption | completed | `codex/wave4-ivy-lane-adoption` | Commit `7369e8b`; merged into supervisor branch. |
 | `019e8003-b6d8-7b52-ba41-95e86c4fd510` | Jarvis weekly update adoption | completed | `codex/wave4-jarvis-weekly-adoption` | Commit `40ca768`; merged into supervisor branch. |
-| `019e8003-b794-7cc2-be05-696b30f84e0b` | OpenClaw lane fixture exporter | running | `codex/wave4-openclaw-lane-fixture-exporter` | `/Users/suman/.codex/worktrees/8f27/openclaw-core` |
+| `019e8003-b794-7cc2-be05-696b30f84e0b` | OpenClaw lane fixture exporter | completed | `codex/wave4-openclaw-lane-fixture-exporter` | Commit `bf815aa`; merged into OpenClaw integration branch `880dd19`. |
 | `019e8003-b70b-7b62-8164-1bef63dcdc11` | OpenClaw shadow runner | completed | `codex/wave4-openclaw-shadow-runner` | Commit `03e4da2`; merged into supervisor branch. |
+
+Wave 4 proof:
+
+- OpenClaw exporter produced Ivy and weekly fixtures from
+  `/Users/suman/code/openclaw-core`.
+- AWK shadow runner accepted both exported fixtures.
+- Ivy exported fixture reported `shadow_ready` with the Ivy/Jonah adapter
+  available and 5 lane receipts.
+- Weekly exported fixture reported `waiting_on_human` with the weekly adapter
+  available and 3 lane receipts.
 
 Boldness boundary:
 
@@ -303,10 +313,9 @@ against current behavior and produce equivalent receipts or a documented delta.
 
 ## Next Supervisor Actions
 
-1. Launch Wave 4 adoption threads from the AWK and OpenClaw projects.
-2. Merge the OpenClaw exporter and AWK shadow runner first if they complete
-   cleanly, because they create the bridge for live-shaped fixture proof.
-3. Then merge Ivy and weekly lane adoption slices and run the shadow runner
-   against both fixture families.
-4. Decide the first lane where AWK can move from shadow to owning a low-risk
+1. Decide the first lane where AWK can move from shadow to owning a low-risk
    step.
+2. Run one oldmac read-only fixture export to compare source checkout behavior
+   against live runtime-shaped artifacts before replacement.
+3. Keep public publishing, Telegram sends, Obsidian writes, cron changes, and
+   deploys behind explicit human gates.
