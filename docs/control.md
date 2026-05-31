@@ -169,12 +169,16 @@ read-only and parity-first.
 | Thread | Workstream | Status | Branch | Worktree |
 | --- | --- | --- | --- | --- |
 | `019e7fec-e01a-7343-bb6b-1ba80ba280f0` | CLI + local execution | running | `codex/wave3-cli-local-execution` | `/Users/suman/.codex/worktrees/3632/agent-workflow-kernel` |
-| `019e7fec-e01a-7343-bb6b-1b9cc1e16a3f` | OpenClaw read-only adapter | running | `codex/wave3-openclaw-readonly-adapter` | `/Users/suman/.codex/worktrees/261e/agent-workflow-kernel` |
+| `019e7fec-e01a-7343-bb6b-1b9cc1e16a3f` | OpenClaw read-only adapter | completed | `codex/wave3-openclaw-readonly-adapter` | Commit `953514e`; merged into supervisor branch. |
 | `019e7fec-e0f8-7421-a600-bd6be59e274a` | Parity reporting fixtures | running | `codex/wave3-parity-reporting` | `/Users/suman/.codex/worktrees/de07/agent-workflow-kernel` |
 | `019e7fec-e0f4-77f3-896a-d21155214504` | Developer setup hardening | completed | `codex/wave3-developer-setup` | Commit `1abc0ac`; merged into supervisor branch. |
 
 Completed so far:
 
+- OpenClaw read-only adapter boundary maps supplied fixture data into kernel
+  adapter invocations, artifact refs, receipts, and adapter results while
+  blocking mutation verbs. It does not import OpenClaw into the kernel and does
+  not call live OpenClaw runtime surfaces.
 - Developer setup hardening provides `make setup` for creating `.venv` and
   installing `.[dev]`, plus `make check` for running bare `python3` unittest and
   venv-backed `pytest` when available. This preserves fresh-machine resilience
