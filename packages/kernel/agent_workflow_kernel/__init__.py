@@ -51,6 +51,12 @@ from .local_adapters import (
     LocalFakeRuntimeAdapter,
     LocalFakeSurfaceAdapter,
 )
+from .local_runner import (
+    LOCAL_RUNNER_ACTOR,
+    LocalRunSummary,
+    LocalWorkflowExecutor,
+    run_local_workflow,
+)
 from .policy import (
     ActionRequest,
     ApprovalDecision,
@@ -107,10 +113,13 @@ __all__ = [
     "LaneAdapter",
     "LaneDescriptor",
     "LedgerConflict",
+    "LOCAL_RUNNER_ACTOR",
     "LocalFakeHostAdapter",
     "LocalFakeLaneAdapter",
     "LocalFakeRuntimeAdapter",
     "LocalFakeSurfaceAdapter",
+    "LocalRunSummary",
+    "LocalWorkflowExecutor",
     "MissingPromptError",
     "PolicyGate",
     "PolicyEngine",
@@ -158,6 +167,7 @@ __all__ = [
     "receipt_digest",
     "render_context_packet",
     "result_from_receipt",
+    "run_local_workflow",
     "to_plain_data",
     "unsupported_operation_result",
     "validate_approval",
