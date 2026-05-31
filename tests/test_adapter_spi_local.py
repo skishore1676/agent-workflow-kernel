@@ -1,0 +1,151 @@
+import sys
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "packages" / "kernel"))
+
+from agent_workflow_kernel import (  # noqa: E402
+    AdapterFamily,
+    AdapterInvocation,
+    AdapterResult,
+    ArtifactRef,
+    LocalFakeHostAdapter,
+    LocalFakeLaneAdapter,
+    LocalFakeRuntimeAdapter,
+    LocalFakeSurfaceAdapter,
+    Receipt,
+    RuntimeAdapter,
+    StageRun,
+    StageRunStatus,
+    SurfaceAdapter,
+    to_plain_data,
+)
+
+
+def invocation(
+    family: AdapterFamily,
+    adapter_id: str,
+    operation: str,
+) -> AdapterInvocation:
+    return AdapterInvocation(
+        invocation_id=f"invoke-{family.value}-{operation}",
+        workflow_id="workflow-1",
+        instance_id="instance-1",
+        stage_run_id="run-1",
+        adapter_family=family,
+        adapter_id=adapter_id,
+        operation=operation,
+        input_ref="input:1",
+        context_packet_ref="context:1",
+        idempotency_key="idempotency-1",
+    )
+
+
+class AdapterSpiLocalTest(unittest.TestCase):
+    def test_runtime_adapter_invokes_and_records_receipt(self) -> None:
+        adapter = LocalFakeRuntimeAdapter()
+        call = invocation(AdapterFamily.RUNTIME, adapter.adapter_id, "invoke")
+
+        result = adapter.invoke(call, {"objective": "draft a fixture"})
+
+        self.assertIsInstance(adapter, RuntimeAdapter)
+        self.assertIsInstance(result, AdapterResult)
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(result.receipt_ref, "receipt:invoke-runtime-invoke:succeeded")
+        self.assertEqual(result.outputs["runtime_input"]["objective"], "draft a fixture")
+        self.assertEqual(adapter.receipts[0].context_packet_ref, "context:1")
+        self.assertEqual(
+            adapter.receipts[0].runtime_provenance["adapter_family"],
+            "runtime",
+        )
+
+    def test_surface_adapter_publishes_and_reads_back(self) -> None:
+        adapter = LocalFakeSurfaceAdapter()
+        call = invocation(AdapterFamily.SURFACE, adapter.adapter_id, "publish")
+
+        result = adapter.publish(
+            call,
+            {
+                "title": "Review packet",
+                "allowed_decisions": ("approve", "reject"),
+                "readback_required": True,
+            },
+        )
+        readback = adapter.readback(result.outputs["surface_ref"])
+
+        self.assertIsInstance(adapter, SurfaceAdapter)
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(result.outputs["surface_ref"]["readback_required"], True)
+        self.assertIsInstance(readback, Receipt)
+        self.assertEqual(readback.status, "succeeded")
+        self.assertEqual(
+            readback.runtime_provenance["outputs"]["packet"]["title"],
+            "Review packet",
+        )
+
+    def test_host_adapter_describes_generic_local_host_and_receipts(self) -> None:
+        adapter = LocalFakeHostAdapter()
+
+        descriptor = adapter.describe()
+        lease = adapter.acquire_lease("lease-key", 60)
+        health = adapter.healthcheck("runner")
+
+        self.assertEqual(descriptor.host_kind, "local")
+        self.assertEqual(descriptor.capability_set.family, AdapterFamily.HOST)
+        self.assertEqual(lease.status, "succeeded")
+        self.assertEqual(
+            lease.runtime_provenance["outputs"]["lease_id"],
+            "lease:lease-key",
+        )
+        self.assertEqual(health.runtime_provenance["outputs"]["healthy"], True)
+
+    def test_lane_adapter_translates_domain_payload_without_domain_assumptions(self) -> None:
+        adapter = LocalFakeLaneAdapter()
+        stage_run = StageRun(
+            stage_run_id="run-1",
+            instance_id="instance-1",
+            stage_id="stage-1",
+            status=StageRunStatus.STARTED,
+        )
+        artifact = ArtifactRef(
+            artifact_id="artifact-1",
+            role="draft",
+            uri="artifact:local-draft",
+            content_hash="sha256:test",
+        )
+
+        seed = adapter.open_work({"idempotency_key": "work-1", "payload": "value"})
+        runtime_input = adapter.build_stage_input(stage_run, {"payload": "value"})
+        receipt = adapter.validate_artifacts(stage_run, (artifact,))
+        packet = adapter.prepare_human_gate(stage_run, {"title": "Gate"})
+
+        self.assertEqual(seed["idempotency_key"], "work-1")
+        self.assertEqual(runtime_input["stage_id"], "stage-1")
+        self.assertEqual(receipt.artifact_refs, (artifact,))
+        self.assertEqual(receipt.stage_id, "stage-1")
+        self.assertEqual(packet["allowed_decisions"], ("approve", "reject"))
+
+    def test_unsupported_operation_returns_structured_failure(self) -> None:
+        adapter = LocalFakeRuntimeAdapter()
+        call = invocation(AdapterFamily.RUNTIME, adapter.adapter_id, "teleport")
+
+        result = adapter.invoke(call, {})
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.next_hint, "choose a supported adapter operation")
+        self.assertEqual(result.outputs["error"]["error_class"], "missing_capability")
+        self.assertIn("invoke", result.outputs["supported_operations"])
+
+    def test_adapter_contracts_serialize_to_plain_data(self) -> None:
+        adapter = LocalFakeHostAdapter()
+
+        data = to_plain_data(adapter.describe())
+
+        self.assertEqual(data["capability_set"]["family"], "host")
+        self.assertIn("healthcheck", data["capability_set"]["operations"])
+
+
+if __name__ == "__main__":
+    unittest.main()
