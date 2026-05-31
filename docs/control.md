@@ -63,6 +63,8 @@ Generic rail, domain-specific cargo.
 | D006 | Treat the kernel as a durable workflow state machine, not as an agent chat harness. | accepted |
 | D007 | Use YAML-authored workflow definitions that compile into canonical JSON for hashing, validation, and fixtures. | accepted |
 | D008 | Use the Codex AWK project for Wave 2 threads; leave completed Wave 1 projectless threads as historical worker records. | accepted |
+| D009 | Use stdlib dataclasses/enums for the first implementation, with YAML/pytest installed through `.venv` for integration verification. | accepted |
+| D010 | Keep a small stdlib YAML fallback and normalize PyYAML's YAML 1.1 `on:` boolean behavior in the loader. | accepted |
 
 ## Workstreams
 
@@ -121,12 +123,39 @@ scaffold commits.
 
 | Thread | Workstream | Status | Worktree |
 | --- | --- | --- | --- |
-| `019e7fdd-92e2-7592-bc1e-9bc1602c2b7b` | Core schema + DSL | running | `/Users/suman/.codex/worktrees/9e2b/agent-workflow-kernel` |
-| `019e7fde-8324-7202-bcb1-8319e843df00` | SQLite ledger + runner | running | `/Users/suman/.codex/worktrees/8ec6/agent-workflow-kernel` |
-| `019e7fde-8232-7110-9b68-eafcb3a02111` | Prompt context + receipts | running | `/Users/suman/.codex/worktrees/170f/agent-workflow-kernel` |
-| `019e7fde-8322-7931-a960-039c5a012362` | Policy engine + human gates | running | `/Users/suman/.codex/worktrees/7061/agent-workflow-kernel` |
-| `019e7fde-8334-7f42-86e0-d3db017436cd` | Adapter SPI + local fakes | running | `/Users/suman/.codex/worktrees/a689/agent-workflow-kernel` |
-| `019e7fde-85f4-7ba2-bc31-0cde173f640c` | Example workflows + fixtures | running | `/Users/suman/.codex/worktrees/1f8d/agent-workflow-kernel` |
+| `019e7fdd-92e2-7592-bc1e-9bc1602c2b7b` | Core schema + DSL | completed | Commit `ce892c2`; merged into supervisor branch. |
+| `019e7fde-8324-7202-bcb1-8319e843df00` | SQLite ledger + runner | completed | Commit `3aa06f1`; merged into supervisor branch. |
+| `019e7fde-8232-7110-9b68-eafcb3a02111` | Prompt context + receipts | completed | Commit `1f1ab3d`; merged into supervisor branch. |
+| `019e7fde-8322-7931-a960-039c5a012362` | Policy engine + human gates | completed | Commit `bbf68f3`; merged into supervisor branch. |
+| `019e7fde-8334-7f42-86e0-d3db017436cd` | Adapter SPI + local fakes | completed | Commit `03158dd`; merged into supervisor branch. |
+| `019e7fde-85f4-7ba2-bc31-0cde173f640c` | Example workflows + fixtures | completed | Commit `13bec50`; merged into supervisor branch. |
+
+## Wave 2 Result
+
+Wave 2 is merged into `codex/bootstrap-agent-workflow-kernel`.
+
+The implementation now includes:
+
+- stdlib dataclass contract models and package scaffold;
+- workflow DSL loader, validator, and canonical JSON compiler;
+- SQLite ledger repository and adapter-neutral runner skeleton;
+- prompt registry, context packet renderer, and receipt provenance helpers;
+- policy engine with hard human gates and exact action fingerprints;
+- runtime, surface, host, and lane adapter SPI with local fake adapters;
+- five example workflow fixtures covering Bumblebee, Ivy/Jonah, trading
+  research gate, Radhe review, and deterministic system action with human gate.
+
+Verification:
+
+- `python3 -m unittest discover -s tests` passes 47 tests.
+- `.venv/bin/python -m unittest discover -s tests` passes 47 tests.
+- `.venv/bin/python -m pytest` passes 47 tests.
+- `.venv` contains the declared runtime/dev dependencies, including `PyYAML`
+  and `pytest`, and remains ignored by git.
+
+Implementation Gate I1 passes at skeleton level. Parity Gate P1 remains
+deferred until the OpenClaw adapter can dual-run or fixture-run current
+OpenClaw behavior.
 
 ## Acceptance Gates
 
@@ -158,22 +187,23 @@ against current behavior and produce equivalent receipts or a documented delta.
 
 ## Open Questions
 
-- Should schema models use Pydantic or standard dataclasses plus JSON Schema?
 - How strict should output schemas be for creative work?
 - How much transcript retention is required?
 - What is the canonical human decision source when surfaces disagree?
-- What is the exact package and CLI shape for Wave 2?
+- What is the exact CLI shape for Wave 3?
 - When should OpenClaw Work Ledger compatibility become a wrapper versus a
   migration target?
+- What is the first OpenClaw parity fixture: Bumblebee review, Work Ledger
+  claim/receipt, or human-gate surface readback?
 
 ## Next Supervisor Actions
 
-1. Verify merged Wave 1 docs and supervisor branch status.
-2. Launch Wave 2 threads in the Codex AWK project, each with one implementation
-   goal and one target worktree.
-3. Implement the core schema/DSL, SQLite ledger/runner, prompt/context receipt
-   layer, policy engine, adapter SPI, and fixtures in parallel.
-4. Use examples as tests for the vision, starting with Bumblebee as the lowest
-   risk validation slice.
-5. Defer OpenClaw replacement until the kernel can dual-run or fixture-run and
-   produce equivalent receipts or documented deltas.
+1. Commit the integrated Wave 2 result.
+2. Launch Wave 3 OpenClaw-adapter design/implementation threads from the AWK
+   project.
+3. Build the first read-only OpenClaw parity fixture before replacing any live
+   OpenClaw path.
+4. Add a small CLI for validating workflows, compiling canonical JSON, and
+   running local fake adapter fixtures.
+5. Keep live OpenClaw behavior unchanged until parity reports show equivalent
+   receipts or documented deltas.
