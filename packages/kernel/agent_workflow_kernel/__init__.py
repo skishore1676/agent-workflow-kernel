@@ -16,6 +16,12 @@ from .adapters import (
     result_from_receipt,
     unsupported_operation_result,
 )
+from .adapter_registry import (
+    AdapterRegistration,
+    AdapterRegistry,
+    AdapterRegistryError,
+    adapter_family_for_stage,
+)
 from .contracts import (
     AdapterFamily,
     AdapterInvocation,
@@ -99,6 +105,7 @@ from .receipts import (
     receipt_digest,
 )
 from .runner import RunnerResult, RunnerStep, WorkflowRunner
+from .kernel import KernelRuntimeConfig, KernelStep, WorkflowKernel
 from .storage import LedgerConflict, RecoveryAction, WorkflowLedger
 from .validation import WorkflowValidationError, validate_workflow_def, validate_workflow_mapping
 
@@ -107,7 +114,10 @@ __all__ = [
     "AdapterError",
     "AdapterFamily",
     "AdapterInvocation",
+    "AdapterRegistration",
     "AdapterResult",
+    "AdapterRegistry",
+    "AdapterRegistryError",
     "ApprovalDecision",
     "ApprovalValidation",
     "ArtifactRef",
@@ -119,6 +129,8 @@ __all__ = [
     "HostAdapter",
     "HostDescriptor",
     "HumanApprovalReceipt",
+    "KernelRuntimeConfig",
+    "KernelStep",
     "LaneAdapter",
     "LaneDescriptor",
     "LedgerConflict",
@@ -160,11 +172,13 @@ __all__ = [
     "Transition",
     "WorkflowDef",
     "WorkflowInstance",
+    "WorkflowKernel",
     "WorkflowLedger",
     "WorkflowRunner",
     "WorkflowStatus",
     "WorkflowValidationError",
     "action_fingerprint",
+    "adapter_family_for_stage",
     "build_policy_snapshot",
     "build_prompt_provenance",
     "build_receipt",

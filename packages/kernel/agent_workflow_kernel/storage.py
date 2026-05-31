@@ -252,6 +252,76 @@ class WorkflowLedger:
                 ),
             )
 
+    def get_workflow_instance(self, instance_id: str) -> WorkflowInstance | None:
+        row = self.connection.execute(
+            "SELECT * FROM workflow_instances WHERE instance_id = ?", (instance_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return WorkflowInstance(
+            instance_id=row["instance_id"],
+            workflow_def_id=row["workflow_def_id"],
+            workflow_version=row["workflow_version"],
+            status=WorkflowStatus(row["status"]),
+            current_stage_id=row["current_stage_id"],
+            idempotency_key=row["idempotency_key"],
+            input_hash=row["input_hash"],
+            recovery_epoch=row["recovery_epoch"],
+        )
+
+    def update_workflow_instance(
+        self,
+        *,
+        instance_id: str,
+        status: WorkflowStatus | str,
+        current_stage_id: str | None,
+        updated_at: datetime | str | None = None,
+        actor: str = "kernel",
+        event_type: str = "workflow_updated",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        now = iso_timestamp(updated_at)
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                UPDATE workflow_instances
+                SET status = ?, current_stage_id = ?, updated_at = ?
+                WHERE instance_id = ?
+                """,
+                (_status_value(status), current_stage_id, now, instance_id),
+            )
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=None,
+                event_type=event_type,
+                actor=actor,
+                payload=payload or {},
+                created_at=now,
+            )
+
+    def append_event(
+        self,
+        *,
+        instance_id: str,
+        stage_run_id: str | None,
+        event_type: str,
+        actor: str,
+        payload: dict[str, Any],
+        created_at: datetime | str | None = None,
+    ) -> None:
+        now = iso_timestamp(created_at)
+        with self._transaction() as conn:
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=stage_run_id,
+                event_type=event_type,
+                actor=actor,
+                payload=payload,
+                created_at=now,
+            )
+
     def insert_stage_run(
         self,
         run: StageRun,
