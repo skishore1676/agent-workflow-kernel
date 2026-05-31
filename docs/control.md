@@ -65,6 +65,7 @@ Generic rail, domain-specific cargo.
 | D008 | Use the Codex AWK project for Wave 2 threads; leave completed Wave 1 projectless threads as historical worker records. | accepted |
 | D009 | Use stdlib dataclasses/enums for the first implementation, with YAML/pytest installed through `.venv` for integration verification. | accepted |
 | D010 | Keep a small stdlib YAML fallback and normalize PyYAML's YAML 1.1 `on:` boolean behavior in the loader. | accepted |
+| D011 | Launch Wave 3 as four independent AWK project threads: CLI/local execution, read-only OpenClaw adapter, parity reporting, and developer setup hardening. | accepted |
 
 ## Workstreams
 
@@ -157,6 +158,30 @@ Implementation Gate I1 passes at skeleton level. Parity Gate P1 remains
 deferred until the OpenClaw adapter can dual-run or fixture-run current
 OpenClaw behavior.
 
+## Wave 3 Registry
+
+Wave 3 starts from commit `be68730` on
+`codex/bootstrap-agent-workflow-kernel`. Its purpose is to move from skeleton
+to an operator-usable local harness while keeping OpenClaw integration
+read-only and parity-first.
+
+| Thread | Workstream | Status | Branch | Worktree |
+| --- | --- | --- | --- | --- |
+| `019e7fec-e01a-7343-bb6b-1ba80ba280f0` | CLI + local execution | running | `codex/wave3-cli-local-execution` | `/Users/suman/.codex/worktrees/3632/agent-workflow-kernel` |
+| `019e7fec-e01a-7343-bb6b-1b9cc1e16a3f` | OpenClaw read-only adapter | running | `codex/wave3-openclaw-readonly-adapter` | `/Users/suman/.codex/worktrees/261e/agent-workflow-kernel` |
+| `019e7fec-e0f8-7421-a600-bd6be59e274a` | Parity reporting fixtures | running | `codex/wave3-parity-reporting` | `/Users/suman/.codex/worktrees/de07/agent-workflow-kernel` |
+| `019e7fec-e0f4-77f3-896a-d21155214504` | Developer setup hardening | running | `codex/wave3-developer-setup` | `/Users/suman/.codex/worktrees/054c/agent-workflow-kernel` |
+
+Coordination notes:
+
+- Each thread has an explicit goal packet in `docs/worker-goals/wave-3/`.
+- Each thread is responsible for creating `.venv` if needed and keeping it
+  untracked.
+- No Wave 3 thread may mutate OpenClaw, oldmac, Telegram, Obsidian, launchd,
+  broker, auth, or public-send surfaces.
+- Read-only OpenClaw mapping and fixture-based parity must land before any
+  runtime replacement plan.
+
 ## Acceptance Gates
 
 ### Architecture Gate A1
@@ -198,12 +223,11 @@ against current behavior and produce equivalent receipts or a documented delta.
 
 ## Next Supervisor Actions
 
-1. Commit the integrated Wave 2 result.
-2. Launch Wave 3 OpenClaw-adapter design/implementation threads from the AWK
-   project.
-3. Build the first read-only OpenClaw parity fixture before replacing any live
+1. Monitor Wave 3 threads until each reaches a committed result or a clear
+   blocked note.
+2. Merge completed Wave 3 branches one by one and run both bare `unittest` and
+   venv-backed `pytest` after each integration.
+3. Produce the first fixture-based parity report before replacing any live
    OpenClaw path.
-4. Add a small CLI for validating workflows, compiling canonical JSON, and
-   running local fake adapter fixtures.
-5. Keep live OpenClaw behavior unchanged until parity reports show equivalent
+4. Keep live OpenClaw behavior unchanged until parity reports show equivalent
    receipts or documented deltas.
