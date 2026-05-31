@@ -203,6 +203,26 @@ Coordination notes:
 - Read-only OpenClaw mapping and fixture-based parity must land before any
   runtime replacement plan.
 
+## Wave 3 Result
+
+Wave 3 is merged into `codex/bootstrap-agent-workflow-kernel`.
+
+The implementation now adds:
+
+- CLI commands for workflow validation, canonical compilation, and local fake
+  adapter execution;
+- local execution that writes SQLite instances, stage runs, receipts, events,
+  and adapter invocations, then stops at human gates;
+- read-only OpenClaw adapter boundary outside the kernel package;
+- deterministic parity report models and fixtures;
+- repeatable developer setup and check scripts.
+
+Parity Gate P1 is partially satisfied at fixture level: the kernel can now
+compare host-shaped receipts to kernel-shaped receipts deterministically. P1
+does not pass for live OpenClaw replacement until a current OpenClaw path is
+dual-run or fixture-read from live artifacts and documented as equivalent or
+intentionally different.
+
 ## Acceptance Gates
 
 ### Architecture Gate A1
@@ -236,19 +256,16 @@ against current behavior and produce equivalent receipts or a documented delta.
 - How strict should output schemas be for creative work?
 - How much transcript retention is required?
 - What is the canonical human decision source when surfaces disagree?
-- What is the exact CLI shape for Wave 3?
 - When should OpenClaw Work Ledger compatibility become a wrapper versus a
   migration target?
-- What is the first OpenClaw parity fixture: Bumblebee review, Work Ledger
+- What is the first live OpenClaw parity source: Bumblebee review, Work Ledger
   claim/receipt, or human-gate surface readback?
 
 ## Next Supervisor Actions
 
-1. Monitor Wave 3 threads until each reaches a committed result or a clear
-   blocked note.
-2. Merge completed Wave 3 branches one by one and run both bare `unittest` and
-   venv-backed `pytest` after each integration.
-3. Produce the first fixture-based parity report before replacing any live
-   OpenClaw path.
-4. Keep live OpenClaw behavior unchanged until parity reports show equivalent
+1. Run a read-only parity fixture against a current OpenClaw artifact source
+   without mutating oldmac or operator surfaces.
+2. Decide whether the first OpenClaw adoption path is Bumblebee review, Work
+   Ledger compatibility, or human-gate surface readback.
+3. Keep live OpenClaw behavior unchanged until parity reports show equivalent
    receipts or documented deltas.

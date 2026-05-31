@@ -23,7 +23,7 @@ domain logic inside YAML.
 
 ## Current Status
 
-Wave 2 implementation skeleton. The living project control document is
+Wave 3 local harness is integrated. The living project control document is
 [`docs/control.md`](docs/control.md).
 
 Implemented so far:
@@ -34,7 +34,20 @@ Implemented so far:
 - prompt registry, context packets, and receipt provenance helpers;
 - policy engine with hard human gates;
 - runtime, surface, host, and lane adapter interfaces plus local fakes;
-- five example workflow fixtures.
+- five example workflow fixtures;
+- operator CLI commands for validating, compiling, and locally running workflow
+  fixtures;
+- fixture-based parity reporting;
+- read-only OpenClaw adapter boundary;
+- repeatable `make setup` and `make check` paths.
+
+Useful CLI entrypoints:
+
+```bash
+.venv/bin/python -m agent_workflow_kernel.cli validate workflows/bumblebee_quality_review.yaml
+.venv/bin/python -m agent_workflow_kernel.cli compile workflows/bumblebee_quality_review.yaml
+.venv/bin/python -m agent_workflow_kernel.cli run-local workflows/deterministic_system_action.yaml
+```
 
 ## Development Setup
 
