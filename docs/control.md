@@ -67,6 +67,7 @@ Generic rail, domain-specific cargo.
 | D010 | Keep a small stdlib YAML fallback and normalize PyYAML's YAML 1.1 `on:` boolean behavior in the loader. | accepted |
 | D011 | Launch Wave 3 as four independent AWK project threads: CLI/local execution, read-only OpenClaw adapter, parity reporting, and developer setup hardening. | accepted |
 | D012 | Keep developer checks split between bare `python3` unittest resilience and `.venv` dependency verification through `make setup` and `make check`. | accepted |
+| D013 | Treat Wave 4 as adoption pressure, not another abstract parity pass: Ivy/Jonah and Jarvis weekly update are the first OpenClaw lanes. | accepted |
 
 ## Workstreams
 
@@ -223,6 +224,36 @@ does not pass for live OpenClaw replacement until a current OpenClaw path is
 dual-run or fixture-read from live artifacts and documented as equivalent or
 intentionally different.
 
+## Wave 4 Launch Plan
+
+Wave 4 should be bold enough to test actual OpenClaw adoption while keeping
+irreversible external effects behind explicit gates.
+
+Target lanes:
+
+- Ivy/Jonah editorial: rich lane that stresses A2A review, Work Ledger
+  handoffs, P-stage gates, publish packets, and public-publish approval.
+- Suman/Jarvis weekly update: lower-risk operator lane that stresses
+  Blackboard/weekly readback and human follow-up gates.
+
+Worker packets:
+
+| Workstream | Goal Packet | Target Repo |
+| --- | --- | --- |
+| Ivy lane adoption | `docs/worker-goals/wave-4/ivy-lane-adoption.md` | AWK |
+| Jarvis weekly update adoption | `docs/worker-goals/wave-4/jarvis-weekly-update-adoption.md` | AWK |
+| OpenClaw lane fixture exporter | `docs/worker-goals/wave-4/openclaw-lane-fixture-exporter.md` | OpenClaw |
+| OpenClaw shadow runner | `docs/worker-goals/wave-4/openclaw-shadow-runner.md` | AWK |
+
+Boldness boundary:
+
+- Read from current OpenClaw source and runtime-shaped artifacts.
+- Generate fixtures, reports, and shadow receipts aggressively.
+- Allow local temp files and committed test fixtures.
+- Do not publish publicly, send Telegram, mutate Obsidian/Northstar, change
+  cron, touch credentials, trade, deploy, or write oldmac runtime state until a
+  human gate explicitly authorizes that step.
+
 ## Acceptance Gates
 
 ### Architecture Gate A1
@@ -263,9 +294,10 @@ against current behavior and produce equivalent receipts or a documented delta.
 
 ## Next Supervisor Actions
 
-1. Run a read-only parity fixture against a current OpenClaw artifact source
-   without mutating oldmac or operator surfaces.
-2. Decide whether the first OpenClaw adoption path is Bumblebee review, Work
-   Ledger compatibility, or human-gate surface readback.
-3. Keep live OpenClaw behavior unchanged until parity reports show equivalent
-   receipts or documented deltas.
+1. Launch Wave 4 adoption threads from the AWK and OpenClaw projects.
+2. Merge the OpenClaw exporter and AWK shadow runner first if they complete
+   cleanly, because they create the bridge for live-shaped fixture proof.
+3. Then merge Ivy and weekly lane adoption slices and run the shadow runner
+   against both fixture families.
+4. Decide the first lane where AWK can move from shadow to owning a low-risk
+   step.
