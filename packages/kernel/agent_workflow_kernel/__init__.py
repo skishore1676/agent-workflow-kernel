@@ -21,6 +21,26 @@ from .contracts import (
     WorkflowStatus,
     to_plain_data,
 )
+from .prompts import (
+    MissingPromptError,
+    PromptBundle,
+    PromptHashMismatchError,
+    PromptRecord,
+    PromptRegistry,
+    PromptRegistryError,
+    RenderedContext,
+    ResolvedPrompt,
+    digest_data,
+    hash_text,
+    render_context_packet,
+)
+from .receipts import (
+    build_policy_snapshot,
+    build_prompt_provenance,
+    build_receipt,
+    build_runtime_provenance,
+    receipt_digest,
+)
 
 __all__ = [
     "AdapterFamily",
@@ -41,5 +61,21 @@ __all__ = [
     "WorkflowDef",
     "WorkflowInstance",
     "WorkflowStatus",
+    "MissingPromptError",
+    "PromptBundle",
+    "PromptHashMismatchError",
+    "PromptRecord",
+    "PromptRegistry",
+    "PromptRegistryError",
+    "RenderedContext",
+    "ResolvedPrompt",
+    "build_policy_snapshot",
+    "build_prompt_provenance",
+    "build_receipt",
+    "build_runtime_provenance",
+    "digest_data",
+    "hash_text",
+    "receipt_digest",
+    "render_context_packet",
     "to_plain_data",
 ]

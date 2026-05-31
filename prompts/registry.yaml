@@ -1,0 +1,23 @@
+schema_version: prompt-registry.v1
+registry_id: local
+prompts:
+  - id: identity.portable_worker
+    kind: identity
+    version: 1.0.0
+    path: identities/portable-worker/v1.0.0.md
+    status: active
+  - id: policy.no_external_effects
+    kind: policy
+    version: 1.0.0
+    path: policies/no-external-effects/v1.0.0.yaml
+    status: active
+  - id: lane.quality_review
+    kind: lane
+    version: 1.0.0
+    path: lanes/quality-review/v1.0.0.md
+    status: active
+  - id: stage.review
+    kind: stage
+    version: 1.0.0
+    path: stages/review/v1.0.0.md
+    status: active
