@@ -1,4 +1,4 @@
-"""Portable workflow kernel contracts."""
+"""Portable workflow kernel contracts and helpers."""
 
 from .contracts import (
     AdapterFamily,
@@ -29,6 +29,26 @@ from .dsl import (
     workflow_to_canonical_json,
     workflow_to_canonical_json_bytes,
 )
+from .prompts import (
+    MissingPromptError,
+    PromptBundle,
+    PromptHashMismatchError,
+    PromptRecord,
+    PromptRegistry,
+    PromptRegistryError,
+    RenderedContext,
+    ResolvedPrompt,
+    digest_data,
+    hash_text,
+    render_context_packet,
+)
+from .receipts import (
+    build_policy_snapshot,
+    build_prompt_provenance,
+    build_receipt,
+    build_runtime_provenance,
+    receipt_digest,
+)
 from .runner import RunnerResult, RunnerStep, WorkflowRunner
 from .storage import LedgerConflict, RecoveryAction, WorkflowLedger
 from .validation import WorkflowValidationError, validate_workflow_def, validate_workflow_mapping
@@ -40,10 +60,22 @@ __all__ = [
     "ArtifactRef",
     "ContextPacket",
     "FailureClass",
+    "LedgerConflict",
+    "MissingPromptError",
     "PolicyGate",
+    "PromptBundle",
+    "PromptHashMismatchError",
+    "PromptRecord",
     "PromptRef",
+    "PromptRegistry",
+    "PromptRegistryError",
     "Receipt",
+    "RecoveryAction",
+    "RenderedContext",
+    "ResolvedPrompt",
     "RiskClass",
+    "RunnerResult",
+    "RunnerStep",
     "StageDef",
     "StageRun",
     "StageRunStatus",
@@ -51,17 +83,21 @@ __all__ = [
     "Transition",
     "WorkflowDef",
     "WorkflowInstance",
-    "WorkflowStatus",
-    "LedgerConflict",
-    "RecoveryAction",
-    "RunnerResult",
-    "RunnerStep",
     "WorkflowLedger",
     "WorkflowRunner",
+    "WorkflowStatus",
     "WorkflowValidationError",
+    "build_policy_snapshot",
+    "build_prompt_provenance",
+    "build_receipt",
+    "build_runtime_provenance",
     "canonical_json",
+    "digest_data",
+    "hash_text",
     "load_workflow_file",
     "load_workflow_yaml",
+    "receipt_digest",
+    "render_context_packet",
     "to_plain_data",
     "validate_workflow_def",
     "validate_workflow_mapping",
