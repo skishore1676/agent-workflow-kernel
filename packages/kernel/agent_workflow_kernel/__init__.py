@@ -56,6 +56,7 @@ from .local_adapters import (
     LocalFakeLaneAdapter,
     LocalFakeRuntimeAdapter,
     LocalFakeSurfaceAdapter,
+    LocalMarkdownHumanReviewSurfaceAdapter,
 )
 from .local_runner import (
     LOCAL_RUNNER_ACTOR,
@@ -140,6 +141,7 @@ __all__ = [
     "LocalFakeLaneAdapter",
     "LocalFakeRuntimeAdapter",
     "LocalFakeSurfaceAdapter",
+    "LocalMarkdownHumanReviewSurfaceAdapter",
     "LocalRunSummary",
     "LocalWorkflowExecutor",
     "MissingPromptError",

@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,7 @@ from agent_workflow_kernel import (  # noqa: E402
     LocalFakeLaneAdapter,
     LocalFakeRuntimeAdapter,
     LocalFakeSurfaceAdapter,
+    LocalMarkdownHumanReviewSurfaceAdapter,
     Receipt,
     RuntimeAdapter,
     StageRun,
@@ -85,6 +87,111 @@ class AdapterSpiLocalTest(unittest.TestCase):
             "Review packet",
         )
 
+    def test_local_markdown_human_review_publishes_card_and_reads_back(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            adapter = LocalMarkdownHumanReviewSurfaceAdapter(temp_dir)
+            call = invocation(AdapterFamily.SURFACE, adapter.adapter_id, "publish")
+
+            result = adapter.publish(call, self._review_packet())
+            note_path = Path(result.outputs["note_path"])
+            readback = adapter.readback(result.outputs["surface_ref"])
+            note_text = note_path.read_text(encoding="utf-8")
+
+        self.assertIsInstance(adapter, SurfaceAdapter)
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(readback.status, "succeeded")
+        self.assertTrue(result.outputs["non_live"])
+        self.assertIn("TEST ONLY - NON-LIVE LOCAL REVIEW PACKET", note_text)
+        self.assertIn("- Workflow ID: `workflow-1`", note_text)
+        self.assertIn("- Instance ID: `instance-1`", note_text)
+        self.assertIn("- Stage ID: `stage-1`", note_text)
+        self.assertIn("- Stage Run ID: `run-1`", note_text)
+        self.assertIn("- Exact action: `weekly_read_clear`", note_text)
+        self.assertIn("- Action fingerprint: `sha256:review-action`", note_text)
+        self.assertIn("- `fixture://weekly-card`", note_text)
+        self.assertIn("- [ ] `read_clear`", note_text)
+
+    def test_local_markdown_human_review_ingests_one_checked_decision(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            adapter = LocalMarkdownHumanReviewSurfaceAdapter(temp_dir)
+            result = adapter.publish(
+                invocation(AdapterFamily.SURFACE, adapter.adapter_id, "publish"),
+                self._review_packet(),
+            )
+            note_path = Path(result.outputs["note_path"])
+            note_path.write_text(
+                note_path.read_text(encoding="utf-8").replace(
+                    "- [ ] `read_clear`",
+                    "- [x] `read_clear`",
+                ),
+                encoding="utf-8",
+            )
+
+            receipts = adapter.ingest_decisions(self._decision_query(result))
+
+        self.assertEqual(len(receipts), 1)
+        receipt = receipts[0]
+        outputs = receipt.runtime_provenance["outputs"]
+        self.assertEqual(receipt.status, "succeeded")
+        self.assertEqual(outputs["schema"], "local_human_review_decision.v1")
+        self.assertEqual(outputs["canonical_surface"], "local_markdown_human_review")
+        self.assertEqual(outputs["human_ref"], "Suman(test)")
+        self.assertEqual(outputs["decision"], "read_clear")
+        self.assertEqual(outputs["exact_action_approved"], "weekly_read_clear")
+        self.assertEqual(outputs["action_fingerprint"], "sha256:review-action")
+        self.assertEqual(outputs["evidence_refs"], ["fixture://weekly-card"])
+        self.assertEqual(outputs["source_note_path"], str(note_path))
+        self.assertTrue(outputs["test_only"])
+        self.assertTrue(outputs["non_live"])
+
+    def test_local_markdown_human_review_blocks_ambiguous_or_invalid_decisions(self) -> None:
+        cases = {
+            "multiple_checked": lambda text: text.replace(
+                "- [ ] `read_clear`",
+                "- [x] `read_clear`",
+            ).replace(
+                "- [ ] `defer`",
+                "- [x] `defer`",
+            ),
+            "unknown_checked": lambda text: text + "- [x] `ship_it_anyway`\n",
+            "missing_fingerprint": lambda text: text.replace(
+                "- Action fingerprint: `sha256:review-action`\n",
+                "",
+            ),
+            "mismatched_fingerprint": lambda text: text.replace(
+                "- Action fingerprint: `sha256:review-action`",
+                "- Action fingerprint: `sha256:edited-action`",
+            ),
+        }
+        expected_errors = {
+            "multiple_checked": "ambiguous_decision_count",
+            "unknown_checked": "unknown_checked_decision",
+            "missing_fingerprint": "missing_action_fingerprint",
+            "mismatched_fingerprint": "action_fingerprint_mismatch",
+        }
+
+        for name, mutate in cases.items():
+            with self.subTest(name=name), TemporaryDirectory() as temp_dir:
+                adapter = LocalMarkdownHumanReviewSurfaceAdapter(temp_dir)
+                result = adapter.publish(
+                    invocation(AdapterFamily.SURFACE, adapter.adapter_id, "publish"),
+                    self._review_packet(),
+                )
+                note_path = Path(result.outputs["note_path"])
+                note_path.write_text(mutate(note_path.read_text(encoding="utf-8")), encoding="utf-8")
+                query = (
+                    {"surface_ref": result.outputs["surface_ref"]}
+                    if name == "unknown_checked"
+                    else self._decision_query(result)
+                )
+
+                receipt = adapter.ingest_decisions(query)[0]
+                outputs = receipt.runtime_provenance["outputs"]
+
+            self.assertEqual(receipt.status, "blocked")
+            self.assertEqual(outputs["error"]["error_class"], expected_errors[name])
+            self.assertEqual(outputs["source_note_path"], str(note_path))
+
     def test_host_adapter_describes_generic_local_host_and_receipts(self) -> None:
         adapter = LocalFakeHostAdapter()
 
@@ -145,6 +252,29 @@ class AdapterSpiLocalTest(unittest.TestCase):
 
         self.assertEqual(data["capability_set"]["family"], "host")
         self.assertIn("healthcheck", data["capability_set"]["operations"])
+
+    def _review_packet(self) -> dict[str, object]:
+        return {
+            "title": "Weekly review packet",
+            "stage_id": "stage-1",
+            "human_ask": "Mark the weekly update state.",
+            "allowed_decisions": ("read_clear", "follow_up_requested", "defer"),
+            "exact_action": "weekly_read_clear",
+            "action_fingerprint": "sha256:review-action",
+            "evidence_refs": ("fixture://weekly-card",),
+            "test_only": True,
+            "human_ref": "Suman(test)",
+        }
+
+    def _decision_query(self, publish_result: AdapterResult) -> dict[str, object]:
+        return {
+            "surface_ref": publish_result.outputs["surface_ref"],
+            "allowed_decisions": publish_result.outputs["allowed_decisions"],
+            "exact_action": publish_result.outputs["exact_action"],
+            "expected_action_fingerprint": publish_result.outputs["action_fingerprint"],
+            "evidence_refs": publish_result.outputs["evidence_refs"],
+            "human_ref": publish_result.outputs["human_ref"],
+        }
 
 
 if __name__ == "__main__":
