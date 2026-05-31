@@ -38,17 +38,26 @@ Implemented so far:
 
 ## Development Setup
 
-The code runs its core tests with bare `python3`, but the normal development
-environment should use the declared dependencies:
+The repeatable setup path creates a local virtual environment and installs the
+runtime plus development dependencies declared in `pyproject.toml`:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/python -m pytest
+make setup
 ```
 
-The loader intentionally keeps a small stdlib fallback for YAML-like fixture
-parsing, while the `.venv` path verifies the real `PyYAML` behavior.
+The repeatable check path always runs the bare-stdlib test suite first, then
+runs venv-backed `pytest` when `.venv` exists:
+
+```bash
+make check
+```
+
+The project keeps both paths on purpose. Bare `python3 -m unittest discover -s
+tests` protects worker threads and fresh machines where system `python3` may not
+have `PyYAML` installed yet. The `.venv` path verifies the declared package
+dependencies, including real `PyYAML` behavior and `pytest`, after `make setup`
+has installed `.[dev]`. Generated development outputs such as `.venv`,
+`__pycache__`, `.pytest_cache`, and egg-info directories are ignored.
 
 ## Starting Principles
 

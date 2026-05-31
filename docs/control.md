@@ -65,6 +65,7 @@ Generic rail, domain-specific cargo.
 | D008 | Use the Codex AWK project for Wave 2 threads; leave completed Wave 1 projectless threads as historical worker records. | accepted |
 | D009 | Use stdlib dataclasses/enums for the first implementation, with YAML/pytest installed through `.venv` for integration verification. | accepted |
 | D010 | Keep a small stdlib YAML fallback and normalize PyYAML's YAML 1.1 `on:` boolean behavior in the loader. | accepted |
+| D011 | Keep developer checks split between bare `python3` unittest resilience and `.venv` dependency verification through `make setup` and `make check`. | accepted |
 
 ## Workstreams
 
@@ -152,6 +153,12 @@ Verification:
 - `.venv/bin/python -m pytest` passes 47 tests.
 - `.venv` contains the declared runtime/dev dependencies, including `PyYAML`
   and `pytest`, and remains ignored by git.
+
+Developer setup hardening now provides `make setup` for creating `.venv` and
+installing `.[dev]`, plus `make check` for running bare `python3` unittest and
+venv-backed `pytest` when available. This preserves fresh-machine resilience
+when system `python3` lacks `PyYAML` while still verifying the declared package
+environment.
 
 Implementation Gate I1 passes at skeleton level. Parity Gate P1 remains
 deferred until the OpenClaw adapter can dual-run or fixture-run current
