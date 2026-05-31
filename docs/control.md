@@ -60,6 +60,9 @@ Generic rail, domain-specific cargo.
 | D003 | Incubate the kernel with OpenClaw as reference host, then extract once adapter boundaries are boring. | accepted |
 | D004 | Use Bumblebee/quality-review as first validation, not as the product design center. | accepted |
 | D005 | Use Ivy/Jonah as second validation for richer A2A reviewer/doer loops. | accepted |
+| D006 | Treat the kernel as a durable workflow state machine, not as an agent chat harness. | accepted |
+| D007 | Use YAML-authored workflow definitions that compile into canonical JSON for hashing, validation, and fixtures. | accepted |
+| D008 | Use the Codex AWK project for Wave 2 threads; leave completed Wave 1 projectless threads as historical worker records. | accepted |
 
 ## Workstreams
 
@@ -78,12 +81,37 @@ Generic rail, domain-specific cargo.
 
 | Thread | Workstream | Status | Notes |
 | --- | --- | --- | --- |
-| `019e7fd1-0910-7682-b738-f6ce902d8b93` | Domain model + workflow DSL | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/domain-model-workflow-dsl`; branch: `codex/domain-model-workflow-dsl` |
-| `019e7fd1-0a3b-7f12-be15-1bd6355e52fa` | Prompt registry + context packets | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/prompt-registry-context`; branch: `codex/prompt-registry-context` |
-| `019e7fd1-0c21-7e01-9299-952fe11cd4c1` | Runner/recovery + storage | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/runner-storage-recovery`; branch: `codex/runner-storage-recovery` |
-| `019e7fd1-0e37-73b0-a8a0-37d418c24c06` | Adapter contracts + OpenClaw host boundary | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/adapter-interfaces-openclaw`; branch: `codex/adapter-interfaces-openclaw` |
-| `019e7fd1-1008-7e62-9746-066d3258a6ac` | A2A stage + policy gates | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/a2a-policy-gates`; branch: `codex/a2a-policy-gates` |
-| `019e7fd1-12df-7ab3-806d-90ce576e0f68` | Example workflow validation matrix | running | Worktree: `/Users/suman/code/_worktrees/agent-workflow-kernel/example-validation-matrix`; branch: `codex/example-validation-matrix` |
+| `019e7fd1-0910-7682-b738-f6ce902d8b93` | Domain model + workflow DSL | completed | Commit `ec4f599`; merged into supervisor branch. |
+| `019e7fd1-0a3b-7f12-be15-1bd6355e52fa` | Prompt registry + context packets | completed | Commit `a0b98c0`; merged into supervisor branch. |
+| `019e7fd1-0c21-7e01-9299-952fe11cd4c1` | Runner/recovery + storage | completed | Commit `ad9733c`; merged into supervisor branch. |
+| `019e7fd1-0e37-73b0-a8a0-37d418c24c06` | Adapter contracts + OpenClaw host boundary | completed | Commit `b40eaf3`; merged into supervisor branch. |
+| `019e7fd1-1008-7e62-9746-066d3258a6ac` | A2A stage + policy gates | completed | Commit `ba38ad6`; merged into supervisor branch. |
+| `019e7fd1-12df-7ab3-806d-90ce576e0f68` | Example workflow validation matrix | completed | Commit `3b5b05d`; merged into supervisor branch. |
+
+## Wave 1 Result
+
+Wave 1 is merged into `codex/bootstrap-agent-workflow-kernel`. The combined
+view is recorded in `docs/synthesis/wave-1-combined-view.md`.
+
+Design-level Architecture Gate A1 passes. The design can express:
+
+- Bumblebee quality review;
+- Ivy/Jonah editorial A2A loop;
+- trading research human gate with no live execution;
+- Radhe-style generation/review pipeline;
+- deterministic system action with human final gate.
+
+The agreed architecture center is:
+
+- durable workflow state machine;
+- YAML-authored workflow graph compiled to canonical JSON;
+- SQLite ledger for instances, stage runs, leases, receipts, artifacts, and
+  recovery;
+- prompt registry and context packet provenance;
+- bounded `a2a_review_loop` as one stage type, not the whole system;
+- layered policy gates with hard human approval boundaries;
+- runtime, surface, host, and lane adapters keeping OpenClaw-specific details
+  out of the portable kernel.
 
 ## Acceptance Gates
 
@@ -115,17 +143,22 @@ against current behavior and produce equivalent receipts or a documented delta.
 
 ## Open Questions
 
-- Should workflow definitions be YAML, Python declarations, or both?
-- What is the minimum useful schema for `WorkflowDef` and `StageRun`?
+- Should schema models use Pydantic or standard dataclasses plus JSON Schema?
 - How strict should output schemas be for creative work?
 - How much transcript retention is required?
-- Should policy be global-first, workflow-first, or layered?
 - What is the canonical human decision source when surfaces disagree?
+- What is the exact package and CLI shape for Wave 2?
+- When should OpenClaw Work Ledger compatibility become a wrapper versus a
+  migration target?
 
 ## Next Supervisor Actions
 
-1. Commit the bootstrap skeleton.
-2. Create first-wave worktrees/branches.
-3. Launch worker threads with goal packets.
-4. Read back worker artifacts.
-5. Update this control document with the synthesis and next-wave plan.
+1. Verify merged Wave 1 docs and supervisor branch status.
+2. Launch Wave 2 threads in the Codex AWK project, each with one implementation
+   goal and one target worktree.
+3. Implement the core schema/DSL, SQLite ledger/runner, prompt/context receipt
+   layer, policy engine, adapter SPI, and fixtures in parallel.
+4. Use examples as tests for the vision, starting with Bumblebee as the lowest
+   risk validation slice.
+5. Defer OpenClaw replacement until the kernel can dual-run or fixture-run and
+   produce equivalent receipts or documented deltas.
