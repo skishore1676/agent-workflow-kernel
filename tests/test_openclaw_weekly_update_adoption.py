@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 sys.path.insert(0, str(ROOT / "packages" / "adapters" / "openclaw"))
 
-from agent_workflow_kernel import StageType  # noqa: E402
+from agent_workflow_kernel import ActionRequest, RiskClass, StageType, build_test_only_suman_approval  # noqa: E402
 from agent_workflow_kernel.dsl import load_workflow_file  # noqa: E402
 from agent_workflow_kernel_openclaw import (  # noqa: E402
     WEEKLY_UPDATE_ADOPTION_REPORT_SCHEMA,
@@ -110,6 +110,34 @@ class OpenClawWeeklyUpdateAdoptionTest(unittest.TestCase):
             self.assertEqual(receipt.policy_snapshot["risk_class"], "read_only")
             self.assertTrue(receipt.policy_snapshot["shadow_only"])
             self.assertFalse(receipt.policy_snapshot["external_effects"])
+
+    def test_ready_fixture_can_record_test_only_suman_read_clear(self) -> None:
+        fixture = load_weekly_update_fixture(READY_FIXTURE)
+        report = adoption_report_from_fixture(fixture)
+        human_gate_receipt = report.receipts[-1]
+        request = ActionRequest(
+            action="weekly_read_clear",
+            target_ref=f"fixture://{report.fixture_id}",
+            arguments={
+                "decision": "read_clear",
+                "stage_id": "suman_review_gate",
+                "receipt_id": human_gate_receipt.receipt_id,
+            },
+            risk_classes=(RiskClass.REVIEW_ONLY,),
+            evidence_refs=(human_gate_receipt.receipt_id,),
+        )
+
+        approval = build_test_only_suman_approval(
+            request,
+            evidence_refs=request.evidence_refs,
+            created_at="2026-05-31T12:00:00Z",
+        )
+
+        self.assertEqual(report.status, "waiting_on_human")
+        self.assertEqual(approval.human_ref, "Suman(test)")
+        self.assertTrue(approval.constraints["test_only"])
+        self.assertEqual(approval.constraints["allowed_scope"], "fixtures/tests/local_review_packets")
+        self.assertIn("external_send", approval.constraints["forbidden_live_effects"])
 
 
 if __name__ == "__main__":
