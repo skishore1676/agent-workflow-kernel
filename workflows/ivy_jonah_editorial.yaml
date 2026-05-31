@@ -1,0 +1,216 @@
+schema: workflow.kernel.v1
+workflow:
+  id: ivy_jonah_editorial
+  version: 0.1.0
+  name: Ivy Jonah Editorial Workflow
+  owner: editorial_lane_adapter
+  description: Editorial draft and review loop that stops at final human approval.
+
+inputs:
+  required:
+    - approved_source_packet
+    - editorial_brief
+  optional:
+    - source_trail
+    - target_surface
+
+defaults:
+  policy_class: internal_generation
+  timeout_seconds: 1800
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: retry
+      invalid_output: block
+
+actors:
+  writer:
+    adapter: runtime.agent
+    role: editorial_writer
+  editor:
+    adapter: runtime.agent
+    role: editorial_reviewer
+  operator:
+    adapter: human.operator
+    role: final_approver
+
+stages:
+  - id: accept_source_approval
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: internal_generation
+      requires_explicit_approval: true
+      binds_to: input.approved_source_packet
+    inputs:
+      approved_source_packet: input.approved_source_packet
+    outputs:
+      receipt_kind: source_approval_selected.v1
+      outcome_schema: source_selection_decision.v1
+    outcomes:
+      - selected
+      - blocked
+
+  - id: build_draft_package
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      writer: actors.writer
+    inputs:
+      source_packet: input.approved_source_packet
+      editorial_brief: input.editorial_brief
+      source_trail: input.source_trail
+    outputs:
+      artifacts:
+        - role: draft_package
+          required: true
+        - role: source_trail
+          required: true
+      receipt_kind: draft_package.v1
+      outcome_schema: draft_package_result.v1
+    outcomes:
+      - ready
+      - blocked
+
+  - id: editor_review
+    type: a2a_review_loop
+    adapter: runtime.a2a
+    actors:
+      producer: actors.writer
+      reviewer: actors.editor
+    inputs:
+      draft_package: artifacts.build_draft_package.draft_package
+      source_trail: artifacts.build_draft_package.source_trail
+    budget:
+      max_questions: 4
+      max_revision_turns: 1
+      max_ping_pong_turns: 6
+    outputs:
+      artifacts:
+        - role: editor_transcript
+          required: true
+        - role: editor_verdict
+          required: true
+      receipt_kind: editorial_review.v1
+      outcome_schema: editorial_verdict.v1
+    outcomes:
+      - accepted
+      - needs_revision
+      - block
+
+  - id: revise_draft
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      writer: actors.writer
+    inputs:
+      draft_package: artifacts.build_draft_package.draft_package
+      editor_verdict: artifacts.editor_review.editor_verdict
+    budget:
+      max_revision_turns: 1
+    outputs:
+      artifacts:
+        - role: revised_draft_package
+          required: true
+      receipt_kind: draft_revision.v1
+      outcome_schema: revision_result.v1
+    outcomes:
+      - revised
+      - blocked
+
+  - id: validate_editorial_state
+    type: system_action
+    adapter: lane.artifact_hash_validator
+    inputs:
+      current_draft: artifacts.build_draft_package.draft_package
+      revised_draft: artifacts.revise_draft.revised_draft_package
+      editor_verdict: artifacts.editor_review.editor_verdict
+    outputs:
+      receipt_kind: editorial_hash_validation.v1
+      outcome_schema: hash_validation_result.v1
+    outcomes:
+      - valid
+      - stale_review
+      - blocked
+
+  - id: p5_final_approval
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: public_publish
+      requires_explicit_approval: true
+      binds_to: receipts.validate_editorial_state
+      external_publish_allowed: false
+    inputs:
+      draft_package: artifacts.build_draft_package.draft_package
+      editor_verdict: artifacts.editor_review.editor_verdict
+      validation_receipt: receipts.validate_editorial_state
+    outputs:
+      receipt_kind: final_editorial_decision.v1
+      outcome_schema: final_approval_decision.v1
+    outcomes:
+      - approve_packet
+      - revise
+      - park
+      - reject
+
+transitions:
+  - from: accept_source_approval
+    "on": selected
+    to: build_draft_package
+  - from: accept_source_approval
+    "on": blocked
+    terminal: blocked
+  - from: build_draft_package
+    "on": ready
+    to: editor_review
+  - from: build_draft_package
+    "on": blocked
+    terminal: blocked
+  - from: editor_review
+    "on": accepted
+    to: validate_editorial_state
+  - from: editor_review
+    "on": needs_revision
+    to: revise_draft
+    guard: within_revision_budget
+  - from: editor_review
+    "on": block
+    terminal: blocked
+  - from: revise_draft
+    "on": revised
+    to: editor_review
+    guard: within_revision_budget
+  - from: revise_draft
+    "on": blocked
+    terminal: blocked
+  - from: validate_editorial_state
+    "on": valid
+    to: p5_final_approval
+  - from: validate_editorial_state
+    "on": stale_review
+    terminal: blocked
+  - from: validate_editorial_state
+    "on": blocked
+    terminal: blocked
+  - from: p5_final_approval
+    "on": approve_packet
+    terminal: done
+  - from: p5_final_approval
+    "on": revise
+    to: build_draft_package
+    guard: within_revision_budget
+  - from: p5_final_approval
+    "on": park
+    terminal: blocked
+  - from: p5_final_approval
+    "on": reject
+    terminal: policy_denied
+
+compatibility:
+  fixture_id: example.ivy_jonah_editorial.v1
+  portability_note: Editorial identities and packet semantics resolve through lane and runtime adapters.
