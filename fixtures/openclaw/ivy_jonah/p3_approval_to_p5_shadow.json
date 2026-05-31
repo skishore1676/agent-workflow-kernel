@@ -1,0 +1,149 @@
+{
+  "schema": "openclaw.ivy-jonah.fixture.v1",
+  "fixture_id": "ivy-jonah-p3-approval-to-p5-shadow",
+  "created_at": "2026-05-31T12:00:00Z",
+  "invocation": {
+    "operation": "inspect_fixture"
+  },
+  "project": {
+    "project_id": "agent-to-agent-communication-live",
+    "title": "Agent-to-Agent Communication Needs Boring Receipts",
+    "p_stage": "P3",
+    "target_channel": "substack_medium"
+  },
+  "handoff": {
+    "handoff_type": "or_research_p3_approved_to_p4",
+    "action": "advance_to_p4",
+    "p_stage": "P3",
+    "source": "or_research_p3_approved_review_handoff",
+    "phase": "p4_editor_review"
+  },
+  "actors": {
+    "ivy": {
+      "name": "Ivy",
+      "agent_id": "or_research",
+      "role": "editorial_writer",
+      "session_key": "agent:or_research:work-ledger:work_shadow-ivy-a2a"
+    },
+    "jonah": {
+      "name": "Jonah",
+      "agent_id": "jonah_editor",
+      "role": "editorial_reviewer",
+      "session_key": "agent:jonah_editor:work-ledger:work_shadow-jonah-a2a"
+    },
+    "human": {
+      "name": "Suman",
+      "role": "final_approver"
+    }
+  },
+  "mapping": {
+    "lane_id": "or_research",
+    "agent_id": "or_research",
+    "host_ref": "openclaw-core:workspace-main",
+    "work_ledger": {
+      "work_item_id": "work_shadow_p3_to_p5",
+      "handoff_id": "handoff_shadow_p4_editor",
+      "receipt_ids": [
+        "receipt:p3_review_selected",
+        "receipt:or_research_p4_ready",
+        "receipt:artifact_review_verdict",
+        "receipt:or_research_p5_ready"
+      ],
+      "interaction_id": "interaction_shadow_native_a2a",
+      "turn_id": "turn_shadow_jonah_verdict"
+    },
+    "surface_refs": [
+      {
+        "surface_id": "surface:p5-review-note-shadow",
+        "kind": "obsidian_review_note",
+        "external_id": "03 Agent Org/or_research/Reviews/2026-05-31-agent-to-agent-communication-p5.md",
+        "title": "Agent-to-Agent Communication - P5 Review",
+        "readback_required": true,
+        "status": "approval_required"
+      }
+    ],
+    "runtime_refs": [
+      {
+        "runtime_id": "runtime:ivy-native-a2a-shadow",
+        "kind": "native_session",
+        "external_id": "agent:or_research:work-ledger:work_shadow-ivy-a2a",
+        "host_ref": "openclaw-core:workspace-main",
+        "redacted_locator": "openclaw-session:ivy-a2a-shadow",
+        "status": "completed"
+      },
+      {
+        "runtime_id": "runtime:jonah-native-a2a-shadow",
+        "kind": "native_session",
+        "external_id": "agent:jonah_editor:work-ledger:work_shadow-jonah-a2a",
+        "host_ref": "openclaw-core:workspace-main",
+        "redacted_locator": "openclaw-session:jonah-a2a-shadow",
+        "status": "completed"
+      }
+    ]
+  },
+  "review_surfaces": [
+    {
+      "surface_id": "surface:p5-review-note-shadow",
+      "kind": "obsidian_review_note",
+      "title": "Agent-to-Agent Communication - P5 Review",
+      "uri": "fixture://openclaw/ivy_jonah/p5-review-note.md",
+      "p_stage": "P5",
+      "status": "approval_required",
+      "readback_required": true
+    }
+  ],
+  "transcript_refs": [
+    {
+      "transcript_id": "transcript:native-ivy-jonah-a2a-shadow",
+      "kind": "native_a2a_transcript",
+      "uri": "fixture://openclaw/ivy_jonah/native-ivy-jonah-a2a.md",
+      "proof_schema": "native_session_proof.v1",
+      "status": "completed"
+    }
+  ],
+  "publish_packet_refs": [
+    {
+      "packet_id": "packet:p5-review-surface-shadow",
+      "kind": "p5_review_surface",
+      "uri": "fixture://openclaw/ivy_jonah/p5-final-review.md",
+      "status": "approval_required",
+      "external_publish_performed": false
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "artifact:p4-draft-package-shadow",
+      "role": "draft_package",
+      "uri": "fixture://openclaw/ivy_jonah/p4-draft-package.md",
+      "content_hash": "sha256:p4-shadow-fixture",
+      "mime_type": "text/markdown",
+      "created_by": "Ivy"
+    },
+    {
+      "artifact_id": "artifact:p4-editor-review-shadow",
+      "role": "editor_verdict",
+      "uri": "fixture://openclaw/ivy_jonah/p4-editor-review.md",
+      "content_hash": "sha256:p4-editor-fixture",
+      "mime_type": "text/markdown",
+      "created_by": "Jonah"
+    },
+    {
+      "artifact_id": "artifact:p5-final-review-shadow",
+      "role": "p5_review_surface",
+      "uri": "fixture://openclaw/ivy_jonah/p5-final-review.md",
+      "content_hash": "sha256:p5-shadow-fixture",
+      "mime_type": "text/markdown",
+      "created_by": "work_ledger_runner"
+    }
+  ],
+  "forbidden_actions": [
+    "publish",
+    "send externally",
+    "push",
+    "deploy"
+  ],
+  "open_questions": [
+    "Shadow takeover still needs live dual-run evidence against a current Work Ledger item before replacing the OpenClaw runner."
+  ],
+  "residual_risk": "Fixture data can drift from live OpenClaw Work Ledger state."
+}

@@ -1,5 +1,24 @@
 """Read-only OpenClaw compatibility adapter boundary."""
 
+from .ivy_lane import (
+    IVY_JONAH_ADOPTION_REPORT_SCHEMA,
+    IVY_JONAH_FIXTURE_SCHEMA,
+    IVY_JONAH_WORKFLOW_ID,
+    IvyJonahActorRef,
+    IvyJonahAdoption,
+    IvyJonahAdoptionReport,
+    IvyJonahFixture,
+    IvyJonahPublishPacketRef,
+    IvyJonahReviewSurface,
+    IvyJonahStageObservation,
+    IvyJonahTranscriptRef,
+    adopt_ivy_jonah_fixture,
+    adoption_report_from_observations,
+    ivy_jonah_fixture_from_mapping,
+    load_ivy_jonah_fixture,
+    receipts_from_stage_observations,
+    stage_observations_from_fixture,
+)
 from .mapping import (
     OpenClawReferenceMapping,
     OpenClawWorkLedgerIds,
@@ -17,15 +36,32 @@ from .readonly import (
 )
 
 __all__ = [
+    "IVY_JONAH_ADOPTION_REPORT_SCHEMA",
+    "IVY_JONAH_FIXTURE_SCHEMA",
+    "IVY_JONAH_WORKFLOW_ID",
+    "IvyJonahActorRef",
+    "IvyJonahAdoption",
+    "IvyJonahAdoptionReport",
+    "IvyJonahFixture",
+    "IvyJonahPublishPacketRef",
+    "IvyJonahReviewSurface",
+    "IvyJonahStageObservation",
+    "IvyJonahTranscriptRef",
     "OpenClawMutationBlocked",
     "OpenClawReadOnlyAdapter",
     "OpenClawReadOnlyInspection",
     "OpenClawReferenceMapping",
     "OpenClawWorkLedgerIds",
+    "adopt_ivy_jonah_fixture",
+    "adoption_report_from_observations",
     "artifact_refs_from_fixture",
     "guard_read_only_operation",
     "invocation_from_fixture",
+    "ivy_jonah_fixture_from_mapping",
+    "load_ivy_jonah_fixture",
     "mapping_from_fixture",
+    "receipts_from_stage_observations",
     "runtime_refs_from_fixture",
     "surface_refs_from_fixture",
+    "stage_observations_from_fixture",
 ]
