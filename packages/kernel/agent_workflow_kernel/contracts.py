@@ -8,6 +8,7 @@ fighting over package shape.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -265,6 +266,8 @@ def to_plain_data(value: Any) -> Any:
         return value.value
     if is_dataclass(value):
         return to_plain_data(asdict(value))
+    if isinstance(value, datetime | date):
+        return value.isoformat()
     if isinstance(value, dict):
         return {str(key): to_plain_data(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

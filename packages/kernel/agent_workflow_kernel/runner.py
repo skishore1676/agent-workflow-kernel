@@ -10,7 +10,7 @@ from .contracts import FailureClass, Receipt, StageRun, StageRunStatus
 from .storage import WorkflowLedger
 
 
-RunDecision = Literal["succeeded", "failed", "retry", "blocked"]
+RunDecision = Literal["succeeded", "failed", "retry", "blocked", "waiting_on_human"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,6 +104,15 @@ class WorkflowRunner:
                 failure_class=result.failure_class or FailureClass.DOMAIN_BLOCKED,
                 failure_summary=result.failure_summary or "Stage blocked by handler.",
                 approval_required=result.approval_required,
+                now=now,
+                actor=self.owner_id,
+            )
+        elif result.decision == "waiting_on_human":
+            self.ledger.wait_stage_run_for_human_decision(
+                stage_run_id=run.stage_run_id,
+                lease_token=run.lease_token,
+                failure_class=result.failure_class or FailureClass.DOMAIN_BLOCKED,
+                failure_summary=result.failure_summary or "Stage is waiting on a human decision.",
                 now=now,
                 actor=self.owner_id,
             )

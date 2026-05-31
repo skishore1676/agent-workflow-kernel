@@ -22,6 +22,7 @@ from .contracts import (
     WorkflowStatus,
     to_plain_data,
 )
+from .policy import HumanApprovalReceipt
 
 
 UTC = timezone.utc
@@ -64,6 +65,10 @@ def _status_value(value: StageRunStatus | WorkflowStatus | str) -> str:
 def _failure_value(value: FailureClass | str | None) -> str | None:
     if value is None:
         return None
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _decision_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
@@ -210,6 +215,20 @@ class WorkflowLedger:
               deadline_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS human_decisions (
+              decision_id TEXT PRIMARY KEY,
+              instance_id TEXT NOT NULL REFERENCES workflow_instances(instance_id),
+              stage_run_id TEXT NOT NULL REFERENCES stage_runs(stage_run_id),
+              gate_id TEXT NOT NULL,
+              decision TEXT NOT NULL,
+              human_ref TEXT NOT NULL,
+              canonical_surface TEXT NOT NULL,
+              exact_action_approved TEXT NOT NULL,
+              action_fingerprint TEXT NOT NULL,
+              receipt_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
             );
             """
         )
@@ -709,6 +728,181 @@ class WorkflowLedger:
                 },
                 created_at=blocked_at,
             )
+
+    def wait_stage_run_for_human_decision(
+        self,
+        *,
+        stage_run_id: str,
+        lease_token: str,
+        failure_class: FailureClass | str = FailureClass.DOMAIN_BLOCKED,
+        failure_summary: str,
+        now: datetime | str | None = None,
+        actor: str = "runner",
+    ) -> None:
+        waiting_at = iso_timestamp(now)
+        with self._transaction() as conn:
+            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            conn.execute(
+                """
+                UPDATE stage_runs
+                SET status = ?, failure_class = ?, failure_summary = ?,
+                    approval_required = 1, lease_owner = NULL, lease_token = NULL,
+                    lease_expires_at = NULL, updated_at = ?
+                WHERE stage_run_id = ? AND lease_token = ?
+                """,
+                (
+                    StageRunStatus.WAITING_ON_HUMAN.value,
+                    _failure_value(failure_class),
+                    failure_summary,
+                    waiting_at,
+                    stage_run_id,
+                    lease_token,
+                ),
+            )
+            self._append_event(
+                conn,
+                instance_id=row["instance_id"],
+                stage_run_id=stage_run_id,
+                event_type="stage_waiting_on_human",
+                actor=actor,
+                payload={
+                    "failure_class": _failure_value(failure_class),
+                    "failure_summary": failure_summary,
+                    "approval_required": True,
+                },
+                created_at=waiting_at,
+            )
+
+    def find_waiting_human_stage_run(self, *, instance_id: str) -> StageRun | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM stage_runs
+            WHERE instance_id = ? AND status = ?
+            ORDER BY updated_at DESC, stage_run_id DESC
+            LIMIT 1
+            """,
+            (instance_id, StageRunStatus.WAITING_ON_HUMAN.value),
+        ).fetchone()
+        return self._stage_run_from_row(row) if row else None
+
+    def record_human_decision(
+        self,
+        decision: HumanApprovalReceipt,
+        *,
+        instance_id: str,
+        stage_run_id: str,
+        created_at: datetime | str | None = None,
+        actor: str = "kernel",
+    ) -> None:
+        decided_at = iso_timestamp(created_at if created_at is not None else decision.created_at)
+        decision_text = _decision_value(decision.decision)
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO human_decisions (
+                  decision_id, instance_id, stage_run_id, gate_id, decision,
+                  human_ref, canonical_surface, exact_action_approved,
+                  action_fingerprint, receipt_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision.approval_id,
+                    instance_id,
+                    stage_run_id,
+                    decision.gate_id,
+                    decision_text,
+                    decision.human_ref,
+                    decision.canonical_surface,
+                    decision.exact_action_approved,
+                    decision.action_fingerprint,
+                    _json(decision),
+                    decided_at,
+                ),
+            )
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=stage_run_id,
+                event_type="human_decision_recorded",
+                actor=actor,
+                payload={
+                    "approval_id": decision.approval_id,
+                    "gate_id": decision.gate_id,
+                    "decision": decision_text,
+                    "canonical_surface": decision.canonical_surface,
+                },
+                created_at=decided_at,
+            )
+
+    def complete_waiting_human_stage_run(
+        self,
+        *,
+        stage_run_id: str,
+        status: StageRunStatus,
+        receipt_id: str | None = None,
+        output_hash: str | None = None,
+        failure_class: FailureClass | str | None = None,
+        failure_summary: str | None = None,
+        now: datetime | str | None = None,
+        actor: str = "kernel",
+    ) -> None:
+        completed_at = iso_timestamp(now)
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM stage_runs WHERE stage_run_id = ? AND status = ?",
+                (stage_run_id, StageRunStatus.WAITING_ON_HUMAN.value),
+            ).fetchone()
+            if row is None:
+                raise LedgerConflict(
+                    f"stage run {stage_run_id!r} is not waiting on a human decision"
+                )
+            conn.execute(
+                """
+                UPDATE stage_runs
+                SET status = ?, receipt_id = COALESCE(?, receipt_id),
+                    output_hash = COALESCE(?, output_hash),
+                    failure_class = ?, failure_summary = ?,
+                    completed_at = ?, updated_at = ?
+                WHERE stage_run_id = ? AND status = ?
+                """,
+                (
+                    status.value,
+                    receipt_id,
+                    output_hash,
+                    _failure_value(failure_class),
+                    failure_summary,
+                    completed_at,
+                    completed_at,
+                    stage_run_id,
+                    StageRunStatus.WAITING_ON_HUMAN.value,
+                ),
+            )
+            self._append_event(
+                conn,
+                instance_id=row["instance_id"],
+                stage_run_id=stage_run_id,
+                event_type="human_stage_decided",
+                actor=actor,
+                payload={
+                    "status": status.value,
+                    "receipt_id": receipt_id,
+                    "output_hash": output_hash,
+                    "failure_class": _failure_value(failure_class),
+                    "failure_summary": failure_summary,
+                },
+                created_at=completed_at,
+            )
+
+    def next_stage_attempt(self, *, instance_id: str, stage_id: str) -> int:
+        row = self.connection.execute(
+            """
+            SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
+            FROM stage_runs
+            WHERE instance_id = ? AND stage_id = ?
+            """,
+            (instance_id, stage_id),
+        ).fetchone()
+        return int(row["next_attempt"])
 
     def sweep_stale_leases(
         self, *, now: datetime | str | None = None, actor: str = "recovery"

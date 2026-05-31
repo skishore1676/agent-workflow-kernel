@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 from agent_workflow_kernel import (  # noqa: E402
     AdapterRegistration,
     AdapterRegistry,
+    ApprovalDecision,
+    HumanApprovalReceipt,
     KernelRuntimeConfig,
     LocalFakeRuntimeAdapter,
     PromptRef,
@@ -20,6 +22,7 @@ from agent_workflow_kernel import (  # noqa: E402
     StageDef,
     StageRunStatus,
     StageType,
+    Transition,
     WorkflowDef,
     WorkflowKernel,
     WorkflowLedger,
@@ -242,12 +245,12 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
 
         step = kernel.run_once(now=self.now)
 
-        self.assertEqual(step.decision, "blocked")
-        self.assertIn("Human gate reached", step.failure_summary or "")
+        self.assertEqual(step.decision, "waiting_on_human")
+        self.assertIn("waiting for explicit decision", step.failure_summary or "")
         run = self.ledger.get_stage_run("instance-1:approve:1")
         self.assertIsNotNone(run)
         assert run is not None
-        self.assertEqual(run.status, StageRunStatus.BLOCKED)
+        self.assertEqual(run.status, StageRunStatus.WAITING_ON_HUMAN)
         stored = self.ledger.get_workflow_instance("instance-1")
         self.assertIsNotNone(stored)
         assert stored is not None
@@ -257,6 +260,153 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             ("instance-1:approve:1",),
         ).fetchone()["approval_required"]
         self.assertEqual(approval_required, 1)
+        events = [event["event_type"] for event in self.ledger.list_events()]
+        self.assertIn("human_gate_waiting", events)
+
+    def test_success_queues_next_stage_from_transition(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_human_gate())
+        kernel.start(instance_id="instance-1", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "succeeded")
+        draft = self.ledger.get_stage_run("instance-1:draft:1")
+        approve = self.ledger.get_stage_run("instance-1:approve:1")
+        self.assertIsNotNone(draft)
+        self.assertIsNotNone(approve)
+        assert draft is not None
+        assert approve is not None
+        self.assertEqual(draft.status, StageRunStatus.SUCCEEDED)
+        self.assertEqual(approve.status, StageRunStatus.QUEUED)
+        stored = self.ledger.get_workflow_instance("instance-1")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.RUNNING)
+        self.assertEqual(stored.current_stage_id, "approve")
+
+    def test_approved_human_decision_resumes_to_next_stage(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_human_gate())
+        self._run_to_waiting_gate(kernel, instance_id="instance-1")
+        decision = self._decision_from_waiting_gate(
+            approval_id="approval-1",
+            decision=ApprovalDecision.APPROVED,
+        )
+
+        result = kernel.ingest_human_decision(
+            instance_id="instance-1",
+            decision=decision,
+            now=self.now,
+        )
+
+        self.assertEqual(result.decision, "queued")
+        self.assertEqual(result.outcome, "approval_granted")
+        self.assertEqual(result.queued_stage_id, "apply")
+        approve = self.ledger.get_stage_run("instance-1:approve:1")
+        apply = self.ledger.get_stage_run("instance-1:apply:1")
+        self.assertIsNotNone(approve)
+        self.assertIsNotNone(apply)
+        assert approve is not None
+        assert apply is not None
+        self.assertEqual(approve.status, StageRunStatus.SUCCEEDED)
+        self.assertEqual(approve.receipt_id, "approval-1")
+        self.assertEqual(apply.status, StageRunStatus.QUEUED)
+        stored = self.ledger.get_workflow_instance("instance-1")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.RUNNING)
+        self.assertEqual(stored.current_stage_id, "apply")
+        decision_count = self.ledger.connection.execute(
+            "SELECT COUNT(*) AS count FROM human_decisions"
+        ).fetchone()["count"]
+        self.assertEqual(decision_count, 1)
+
+    def test_rejected_human_decision_does_not_queue_unsafe_next_stage(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_human_gate())
+        self._run_to_waiting_gate(kernel, instance_id="instance-1")
+        decision = self._decision_from_waiting_gate(
+            approval_id="approval-reject",
+            decision=ApprovalDecision.REJECTED,
+        )
+
+        result = kernel.ingest_human_decision(
+            instance_id="instance-1",
+            decision=decision,
+            now=self.now,
+        )
+
+        self.assertEqual(result.decision, "terminal")
+        self.assertEqual(result.outcome, "reject")
+        self.assertEqual(result.terminal_status, WorkflowStatus.POLICY_DENIED)
+        self.assertIsNone(self.ledger.get_stage_run("instance-1:apply:1"))
+        stored = self.ledger.get_workflow_instance("instance-1")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.POLICY_DENIED)
+        self.assertIsNone(stored.current_stage_id)
+
+    def test_revise_human_decision_queues_configured_revision_path_only(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_human_gate())
+        self._run_to_waiting_gate(kernel, instance_id="instance-1")
+        decision = self._decision_from_waiting_gate(
+            approval_id="approval-revise",
+            decision=ApprovalDecision.REVISE,
+        )
+
+        result = kernel.ingest_human_decision(
+            instance_id="instance-1",
+            decision=decision,
+            now=self.now,
+        )
+
+        self.assertEqual(result.decision, "queued")
+        self.assertEqual(result.outcome, "revise_plan")
+        self.assertEqual(result.queued_stage_id, "draft")
+        draft_retry = self.ledger.get_stage_run("instance-1:draft:2")
+        self.assertIsNotNone(draft_retry)
+        assert draft_retry is not None
+        self.assertEqual(draft_retry.status, StageRunStatus.QUEUED)
+        self.assertIsNone(self.ledger.get_stage_run("instance-1:apply:1"))
+
+    def test_missing_human_decision_blocks_waiting_gate(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_human_gate())
+        self._run_to_waiting_gate(kernel, instance_id="instance-1")
+
+        missing = kernel.ingest_human_decision(
+            instance_id="instance-1",
+            decision=None,
+            now=self.now,
+        )
+
+        self.assertEqual(missing.decision, "blocked")
+        self.assertIn("Missing human decision", missing.failure_summary or "")
+        run = self.ledger.get_stage_run("instance-1:approve:1")
+        self.assertIsNotNone(run)
+        assert run is not None
+        self.assertEqual(run.status, StageRunStatus.BLOCKED)
+        self.assertIsNone(self.ledger.get_stage_run("instance-1:apply:1"))
+
+    def test_mismatched_human_decision_blocks_waiting_gate(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_human_gate())
+        self._run_to_waiting_gate(kernel, instance_id="instance-1")
+        mismatched = self._decision_from_waiting_gate(
+            approval_id="approval-mismatch",
+            decision=ApprovalDecision.APPROVED,
+            action_fingerprint="wrong-fingerprint",
+        )
+
+        result = kernel.ingest_human_decision(
+            instance_id="instance-1",
+            decision=mismatched,
+            now=self.now,
+        )
+
+        self.assertEqual(result.decision, "blocked")
+        self.assertIn("fingerprint", result.failure_summary or "")
+        run = self.ledger.get_stage_run("instance-1:approve:1")
+        self.assertIsNotNone(run)
+        assert run is not None
+        self.assertEqual(run.status, StageRunStatus.BLOCKED)
+        self.assertIsNone(self.ledger.get_stage_run("instance-1:apply:1"))
 
     def test_non_readonly_registration_requires_human_before_invocation(self) -> None:
         adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
@@ -327,6 +477,77 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
                 ),
             ),
             transitions=(),
+        )
+
+    def workflow_with_human_gate(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-resume",
+            version="0.1.0",
+            name="Toy resumable workflow",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="approve",
+                    type=StageType.HUMAN_GATE,
+                    adapter="surface.local_fake",
+                    outcomes=("approval_granted", "reject", "revise_plan"),
+                    actors={"operator": "Suman"},
+                ),
+                StageDef(
+                    id="apply",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("applied",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="approve"),
+                Transition(from_stage="approve", on="approval_granted", to_stage="apply"),
+                Transition(from_stage="approve", on="reject", terminal="policy_denied"),
+                Transition(from_stage="approve", on="revise_plan", to_stage="draft"),
+                Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def _run_to_waiting_gate(self, kernel: WorkflowKernel, *, instance_id: str) -> None:
+        kernel.start(instance_id=instance_id, inputs={}, now=self.now)
+        first = kernel.run_once(now=self.now)
+        self.assertEqual(first.decision, "succeeded")
+        gate = kernel.run_once(now=self.now)
+        self.assertEqual(gate.decision, "waiting_on_human")
+
+    def _decision_from_waiting_gate(
+        self,
+        *,
+        approval_id: str,
+        decision: ApprovalDecision,
+        action_fingerprint: str | None = None,
+    ) -> HumanApprovalReceipt:
+        gate_event = next(
+            event for event in self.ledger.list_events()
+            if event["event_type"] == "human_gate_waiting"
+        )
+        payload = gate_event["payload"]
+        return HumanApprovalReceipt(
+            approval_id=approval_id,
+            gate_id=payload["gate_id"],
+            human_ref="Suman",
+            canonical_surface="local_test_fixture",
+            decision=decision,
+            exact_action_approved=payload["requested_action"],
+            action_fingerprint=action_fingerprint or payload["action_fingerprint"],
+            evidence_refs=(f"event:{gate_event['event_id']}",),
+            created_at=self.now,
+            transcript_or_message_ref="local-test://human-decision",
         )
 
 
