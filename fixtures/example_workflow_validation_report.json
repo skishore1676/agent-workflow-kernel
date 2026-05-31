@@ -1,0 +1,126 @@
+{
+  "schema": "workflow.kernel.validation-report.v1",
+  "summary": "Five portable workflow fixtures mapped to the kernel capabilities they prove.",
+  "workflow_ids": [
+    "bumblebee_quality_review",
+    "ivy_jonah_editorial",
+    "trading_research_gate",
+    "radhe_review_pipeline",
+    "deterministic_system_action"
+  ],
+  "core_capabilities": [
+    "versioned_workflow_def",
+    "typed_stage_run",
+    "prompt_context_refs",
+    "artifact_refs",
+    "immutable_receipts",
+    "a2a_review_loop",
+    "human_gate",
+    "system_action",
+    "policy_gates",
+    "surface_adapter",
+    "host_runtime_adapter",
+    "lane_adapter"
+  ],
+  "workflows": [
+    {
+      "workflow_id": "bumblebee_quality_review",
+      "proves": [
+        "a2a_review_loop",
+        "artifact_refs",
+        "immutable_receipts",
+        "surface_adapter"
+      ],
+      "must_not_depend_on": [
+        "host_paths",
+        "runtime_specific_session_api",
+        "surface_formatting"
+      ],
+      "acceptance_checks": [
+        "bounded reviewer questions",
+        "review transcript and verdict artifacts",
+        "human gate only for uncertain or escalated verdicts"
+      ]
+    },
+    {
+      "workflow_id": "ivy_jonah_editorial",
+      "proves": [
+        "versioned_workflow_def",
+        "a2a_review_loop",
+        "human_gate",
+        "artifact_hash_validation",
+        "policy_gates"
+      ],
+      "must_not_depend_on": [
+        "publisher_api",
+        "surface_formatting",
+        "project_ledger_storage"
+      ],
+      "acceptance_checks": [
+        "bounded revision loop",
+        "stale review blocks advancement",
+        "final approval does not publish externally"
+      ]
+    },
+    {
+      "workflow_id": "trading_research_gate",
+      "proves": [
+        "policy_gates",
+        "system_action",
+        "agent_gate",
+        "human_gate",
+        "lane_adapter"
+      ],
+      "must_not_depend_on": [
+        "broker_execution",
+        "account_mutation",
+        "live_strategy_enablement"
+      ],
+      "acceptance_checks": [
+        "read-only capability allowlist",
+        "broker actions explicitly forbidden",
+        "execution route requires a separate workflow"
+      ]
+    },
+    {
+      "workflow_id": "radhe_review_pipeline",
+      "proves": [
+        "wait_schedule",
+        "recovery",
+        "system_action",
+        "artifact_refs",
+        "human_gate"
+      ],
+      "must_not_depend_on": [
+        "media_generation_internals",
+        "specific_scheduler",
+        "public_upload_api"
+      ],
+      "acceptance_checks": [
+        "long-running run can be running, resumed, complete, or blocked",
+        "approval binds to exact publish packet",
+        "public publish remains outside default execution"
+      ]
+    },
+    {
+      "workflow_id": "deterministic_system_action",
+      "proves": [
+        "system_action",
+        "human_gate",
+        "policy_gates",
+        "host_runtime_adapter",
+        "immutable_receipts"
+      ],
+      "must_not_depend_on": [
+        "specific_host_path",
+        "unredacted_secret_output",
+        "ungated_mutation"
+      ],
+      "acceptance_checks": [
+        "apply follows exact human approval",
+        "approval binds to dry-run plan hash",
+        "done requires readback verification"
+      ]
+    }
+  ]
+}

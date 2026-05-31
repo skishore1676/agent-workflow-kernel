@@ -1,0 +1,217 @@
+schema: workflow.kernel.v1
+workflow:
+  id: deterministic_system_action
+  version: 0.1.0
+  name: Deterministic System Action With Human Final Gate
+  owner: host_action_adapter
+  description: Inspect, dry-run, approve, apply, and read back a deterministic side effect.
+
+inputs:
+  required:
+    - action_request
+    - source_of_truth
+  optional:
+    - rollback_expectation
+    - operator_surface
+
+defaults:
+  policy_class: deploy_or_prod_mutation
+  timeout_seconds: 900
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      unknown_side_effect_state: block
+      deterministic_test_failure: block
+  redaction_policy:
+    redact_secret_patterns: true
+    preserve_command_fingerprints: true
+
+actors:
+  planner:
+    adapter: runtime.agent
+    role: action_planner
+  operator:
+    adapter: human.operator
+    role: change_approver
+
+stages:
+  - id: inspect_current_state
+    type: system_action
+    adapter: host.state_reader
+    policy:
+      class: read_only_review
+    inputs:
+      action_request: input.action_request
+      source_of_truth: input.source_of_truth
+    outputs:
+      artifacts:
+        - role: state_snapshot
+          required: true
+      receipt_kind: state_inspection.v1
+      outcome_schema: inspection_result.v1
+    outcomes:
+      - ready
+      - blocked
+
+  - id: propose_plan
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      planner: actors.planner
+    inputs:
+      action_request: input.action_request
+      state_snapshot: artifacts.inspect_current_state.state_snapshot
+      rollback_expectation: input.rollback_expectation
+    outputs:
+      artifacts:
+        - role: mutation_plan
+          required: true
+      receipt_kind: mutation_plan.v1
+      outcome_schema: mutation_plan_result.v1
+    outcomes:
+      - ready
+      - blocked
+
+  - id: dry_run
+    type: system_action
+    adapter: host.dry_run
+    policy:
+      class: deploy_or_prod_mutation
+      dry_run_only: true
+    inputs:
+      mutation_plan: artifacts.propose_plan.mutation_plan
+      state_snapshot: artifacts.inspect_current_state.state_snapshot
+    outputs:
+      artifacts:
+        - role: dry_run_plan
+          required: true
+        - role: predicted_diff
+          required: true
+      receipt_kind: dry_run_receipt.v1
+      outcome_schema: dry_run_result.v1
+    outcomes:
+      - ready_for_approval
+      - unsafe
+      - blocked
+
+  - id: approval
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: deploy_or_prod_mutation
+      requires_explicit_approval: true
+      binds_to: artifacts.dry_run.dry_run_plan
+      approval_fingerprint: artifacts.dry_run.dry_run_plan.content_hash
+    inputs:
+      dry_run_plan: artifacts.dry_run.dry_run_plan
+      predicted_diff: artifacts.dry_run.predicted_diff
+    outputs:
+      receipt_kind: exact_action_approval.v1
+      outcome_schema: exact_approval_decision.v1
+    outcomes:
+      - approval_granted
+      - revise_plan
+      - reject
+      - defer
+
+  - id: apply_action
+    type: system_action
+    adapter: host.apply_action
+    policy:
+      class: deploy_or_prod_mutation
+      requires_prior_approval: true
+      approval_ref: receipts.approval
+      apply_fingerprint: artifacts.dry_run.dry_run_plan.content_hash
+    inputs:
+      approved_plan: artifacts.dry_run.dry_run_plan
+      approval_receipt: receipts.approval
+      prior_snapshot: artifacts.inspect_current_state.state_snapshot
+    outputs:
+      artifacts:
+        - role: mutation_receipt
+          required: true
+      receipt_kind: mutation_apply_receipt.v1
+      outcome_schema: apply_result.v1
+    outcomes:
+      - applied
+      - unknown_side_effect_state
+      - blocked
+
+  - id: readback_verify
+    type: system_action
+    adapter: host.readback
+    policy:
+      class: read_only_review
+    inputs:
+      mutation_receipt: artifacts.apply_action.mutation_receipt
+      dry_run_plan: artifacts.dry_run.dry_run_plan
+      source_of_truth: input.source_of_truth
+    outputs:
+      artifacts:
+        - role: readback_receipt
+          required: true
+      receipt_kind: readback_verification.v1
+      outcome_schema: readback_result.v1
+    outcomes:
+      - verified
+      - mismatch
+      - blocked
+
+transitions:
+  - from: inspect_current_state
+    "on": ready
+    to: propose_plan
+  - from: inspect_current_state
+    "on": blocked
+    terminal: blocked
+  - from: propose_plan
+    "on": ready
+    to: dry_run
+  - from: propose_plan
+    "on": blocked
+    terminal: blocked
+  - from: dry_run
+    "on": ready_for_approval
+    to: approval
+  - from: dry_run
+    "on": unsafe
+    terminal: blocked
+  - from: dry_run
+    "on": blocked
+    terminal: blocked
+  - from: approval
+    "on": approval_granted
+    to: apply_action
+  - from: approval
+    "on": revise_plan
+    to: propose_plan
+  - from: approval
+    "on": reject
+    terminal: policy_denied
+  - from: approval
+    "on": defer
+    terminal: blocked
+  - from: apply_action
+    "on": applied
+    to: readback_verify
+  - from: apply_action
+    "on": unknown_side_effect_state
+    terminal: blocked
+  - from: apply_action
+    "on": blocked
+    terminal: blocked
+  - from: readback_verify
+    "on": verified
+    terminal: done
+  - from: readback_verify
+    "on": mismatch
+    terminal: blocked
+  - from: readback_verify
+    "on": blocked
+    terminal: blocked
+
+compatibility:
+  fixture_id: example.deterministic_system_action.v1
+  portability_note: Host commands, rollback details, and readback commands live behind adapters.

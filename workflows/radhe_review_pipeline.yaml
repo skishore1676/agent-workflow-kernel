@@ -1,0 +1,268 @@
+schema: workflow.kernel.v1
+workflow:
+  id: radhe_review_pipeline
+  version: 0.1.0
+  name: Radhe Review Pipeline
+  owner: media_lane_adapter
+  description: Scheduled or manual media run with resumable deterministic stages and publish approval.
+
+inputs:
+  required:
+    - run_request
+    - lane_contract_ref
+  optional:
+    - schedule_event
+    - operator_surface
+
+defaults:
+  policy_class: internal_generation
+  timeout_seconds: 7200
+  retry:
+    max_attempts: 2
+    on_failure_class:
+      runtime_failure: retry
+      deterministic_test_failure: block
+  public_publish_default: disabled
+
+actors:
+  reviewer:
+    adapter: runtime.agent
+    role: message_reviewer
+  operator:
+    adapter: human.operator
+    role: publish_approver
+
+stages:
+  - id: wait_for_schedule
+    type: wait_schedule
+    adapter: host.scheduler
+    inputs:
+      schedule_event: input.schedule_event
+      run_request: input.run_request
+    outputs:
+      receipt_kind: schedule_wait.v1
+      outcome_schema: schedule_result.v1
+    outcomes:
+      - ready
+      - skipped
+      - blocked
+
+  - id: load_lane_contract
+    type: system_action
+    adapter: lane.media_contract_loader
+    inputs:
+      lane_contract_ref: input.lane_contract_ref
+      run_request: input.run_request
+    outputs:
+      artifacts:
+        - role: run_contract
+          required: true
+      receipt_kind: run_contract.v1
+      outcome_schema: run_contract_result.v1
+    outcomes:
+      - ready
+      - blocked
+
+  - id: pre_generation_message_review
+    type: agent_gate
+    adapter: runtime.agent
+    actors:
+      reviewer: actors.reviewer
+    policy:
+      class: high_cost_compute
+      requires_explicit_approval: false
+    inputs:
+      run_contract: artifacts.load_lane_contract.run_contract
+    outputs:
+      artifacts:
+        - role: message_verdict
+          required: true
+      receipt_kind: message_review.v1
+      outcome_schema: message_review_result.v1
+    outcomes:
+      - approved_for_generation
+      - revise_message
+      - blocked
+
+  - id: run_or_resume_pipeline
+    type: system_action
+    adapter: lane.media_pipeline_runner
+    inputs:
+      run_contract: artifacts.load_lane_contract.run_contract
+      message_verdict: artifacts.pre_generation_message_review.message_verdict
+    budget:
+      lease_seconds: 1800
+      max_resume_attempts: 2
+    outputs:
+      artifacts:
+        - role: run_manifest
+          required: true
+        - role: media_outputs
+          required: true
+      receipt_kind: media_pipeline_run.v1
+      outcome_schema: media_pipeline_result.v1
+    outcomes:
+      - package_ready
+      - running
+      - retry_needed
+      - blocked
+
+  - id: recover_pipeline_state
+    type: recovery
+    adapter: host.recovery
+    inputs:
+      run_manifest: artifacts.run_or_resume_pipeline.run_manifest
+      latest_receipt: receipts.run_or_resume_pipeline
+    outputs:
+      receipt_kind: recovery_sweep.v1
+      outcome_schema: recovery_result.v1
+    outcomes:
+      - resumed
+      - still_running
+      - blocked
+
+  - id: qa_and_package_review
+    type: system_action
+    adapter: lane.media_package_qa
+    inputs:
+      run_manifest: artifacts.run_or_resume_pipeline.run_manifest
+      media_outputs: artifacts.run_or_resume_pipeline.media_outputs
+    outputs:
+      artifacts:
+        - role: qa_report
+          required: true
+        - role: review_note
+          required: true
+        - role: publish_packet
+          required: true
+      receipt_kind: media_qa_package.v1
+      outcome_schema: media_qa_result.v1
+    outcomes:
+      - approval_needed
+      - retry_needed
+      - blocked
+      - done_without_publish
+
+  - id: publish_owner_note
+    type: system_action
+    adapter: surface.owner_note
+    inputs:
+      qa_report: artifacts.qa_and_package_review.qa_report
+      review_note: artifacts.qa_and_package_review.review_note
+      publish_packet: artifacts.qa_and_package_review.publish_packet
+    outputs:
+      artifacts:
+        - role: owner_note
+          required: true
+      receipt_kind: owner_note_surface_packet.v1
+      outcome_schema: owner_note_result.v1
+    outcomes:
+      - surfaced
+      - blocked
+
+  - id: human_publish_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: public_publish
+      requires_explicit_approval: true
+      binds_to: artifacts.qa_and_package_review.publish_packet
+    inputs:
+      owner_note: artifacts.publish_owner_note.owner_note
+      publish_packet: artifacts.qa_and_package_review.publish_packet
+    outputs:
+      receipt_kind: publish_approval_decision.v1
+      outcome_schema: publish_decision.v1
+    outcomes:
+      - approve_publish_workflow
+      - reject
+      - revise
+      - skip
+
+transitions:
+  - from: wait_for_schedule
+    "on": ready
+    to: load_lane_contract
+  - from: wait_for_schedule
+    "on": skipped
+    terminal: done
+  - from: wait_for_schedule
+    "on": blocked
+    terminal: blocked
+  - from: load_lane_contract
+    "on": ready
+    to: pre_generation_message_review
+  - from: load_lane_contract
+    "on": blocked
+    terminal: blocked
+  - from: pre_generation_message_review
+    "on": approved_for_generation
+    to: run_or_resume_pipeline
+  - from: pre_generation_message_review
+    "on": revise_message
+    terminal: blocked
+  - from: pre_generation_message_review
+    "on": blocked
+    terminal: blocked
+  - from: run_or_resume_pipeline
+    "on": package_ready
+    to: qa_and_package_review
+  - from: run_or_resume_pipeline
+    "on": running
+    to: recover_pipeline_state
+    guard: lease_not_expired
+  - from: run_or_resume_pipeline
+    "on": retry_needed
+    to: recover_pipeline_state
+    guard: within_resume_budget
+  - from: run_or_resume_pipeline
+    "on": blocked
+    terminal: blocked
+  - from: recover_pipeline_state
+    "on": resumed
+    to: run_or_resume_pipeline
+    guard: within_resume_budget
+  - from: recover_pipeline_state
+    "on": still_running
+    terminal: waiting_on_schedule
+  - from: recover_pipeline_state
+    "on": blocked
+    terminal: blocked
+  - from: qa_and_package_review
+    "on": approval_needed
+    to: publish_owner_note
+  - from: qa_and_package_review
+    "on": retry_needed
+    to: run_or_resume_pipeline
+    guard: within_resume_budget
+  - from: qa_and_package_review
+    "on": blocked
+    terminal: blocked
+  - from: qa_and_package_review
+    "on": done_without_publish
+    terminal: done
+  - from: publish_owner_note
+    "on": surfaced
+    to: human_publish_gate
+  - from: publish_owner_note
+    "on": blocked
+    terminal: blocked
+  - from: human_publish_gate
+    "on": approve_publish_workflow
+    terminal: done
+  - from: human_publish_gate
+    "on": reject
+    terminal: policy_denied
+  - from: human_publish_gate
+    "on": revise
+    to: load_lane_contract
+    guard: within_revision_budget
+  - from: human_publish_gate
+    "on": skip
+    terminal: done
+
+compatibility:
+  fixture_id: example.radhe_review_pipeline.v1
+  portability_note: Media internals and publish surfaces resolve through adapters; public upload is outside this fixture.
