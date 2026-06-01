@@ -308,6 +308,44 @@ Boldness boundary:
   cron, touch credentials, trade, deploy, or write oldmac runtime state until a
   human gate explicitly authorizes that step.
 
+## Wave 18 Audit Cutover Result
+
+Wave 18 was launched after two independent audits:
+
+- design/architecture audit: `019e8392-bc32-7f91-bd40-bbaf2c39b271`;
+- OpenClaw behavior-parity audit: `019e8392-fae1-74f3-8516-27f33b127f88`.
+
+The agreed audit verdict was that AWK is an independent kernel with the intended
+generic-rail/domain-cargo shape, but it is not yet a full OpenClaw runtime
+replacement. OpenClaw still owns live scheduled behavior for Blackboard ingest,
+Jarvis runner pickup, weekly synthesis, and Ivy/Jonah Work Ledger/native A2A.
+
+Wave 18 therefore implemented controlled read-only owned participation:
+
+- OpenClaw adapter packaging and boundary cleanup: commit `b3faa68`, merged as
+  `039c243`.
+- OpenClaw/AWK identity crosswalk: commit `4a8bff1`, merged as `30a8866`.
+- Scheduler-safe owned-completion plan/run command: commit `a1676cb`, merged as
+  `5e89ace`.
+- Policy budget guards: commit `ee2398e`, merged as `6acf494`.
+
+Integration verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests` passed 198
+  tests.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/check.sh` passed 198 unittest tests and
+  198 pytest tests.
+- The owned-completion bridge CLI defaults to plan/no-op mode and does not
+  create an AWK ledger unless `--run` is explicitly supplied.
+
+Current readiness is controlled read-only owned participation. The next safe
+live-test step is oldmac plan-mode readback, followed by explicit `--run` only
+after the plan agrees with current OpenClaw state. Telegram sends, Obsidian
+writes, launchd/cron changes, public publishing, trading, auth, and deployment
+remain behind explicit human gates.
+
+Detailed synthesis: `docs/worker-reports/wave-18-supervisor-audit-cutover.md`.
+
 ## Acceptance Gates
 
 ### Architecture Gate A1
