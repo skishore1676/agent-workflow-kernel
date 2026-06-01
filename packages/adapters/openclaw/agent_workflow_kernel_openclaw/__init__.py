@@ -1,5 +1,10 @@
 """Read-only OpenClaw compatibility adapter boundary."""
 
+from .blackboard import (
+    BLACKBOARD_POINTER_RECORD_SCHEMA,
+    BlackboardPointerPacket,
+    OpenClawBlackboardReviewAdapter,
+)
 from .ivy_lane import (
     IVY_JONAH_ADOPTION_REPORT_SCHEMA,
     IVY_JONAH_FIXTURE_SCHEMA,
@@ -59,6 +64,8 @@ __all__ = [
     "IVY_JONAH_ADOPTION_REPORT_SCHEMA",
     "IVY_JONAH_FIXTURE_SCHEMA",
     "IVY_JONAH_WORKFLOW_ID",
+    "BLACKBOARD_POINTER_RECORD_SCHEMA",
+    "BlackboardPointerPacket",
     "IvyJonahActorRef",
     "IvyJonahAdoption",
     "IvyJonahAdoptionReport",
@@ -68,6 +75,7 @@ __all__ = [
     "IvyJonahStageObservation",
     "IvyJonahTranscriptRef",
     "OpenClawMutationBlocked",
+    "OpenClawBlackboardReviewAdapter",
     "OpenClawReadOnlyAdapter",
     "OpenClawReadOnlyInspection",
     "OpenClawReferenceMapping",

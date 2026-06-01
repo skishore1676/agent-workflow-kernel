@@ -16,7 +16,8 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_PATH = ROOT / "packages" / "kernel"
-for package_path in (str(KERNEL_PATH), str(ROOT / "scripts")):
+OPENCLAW_ADAPTER_PATH = ROOT / "packages" / "adapters" / "openclaw"
+for package_path in (str(KERNEL_PATH), str(OPENCLAW_ADAPTER_PATH), str(ROOT / "scripts")):
     if package_path not in sys.path:
         sys.path.insert(0, package_path)
 
@@ -30,6 +31,7 @@ from agent_workflow_kernel import (  # noqa: E402
     digest_data,
     to_plain_data,
 )
+from agent_workflow_kernel_openclaw import OpenClawBlackboardReviewAdapter  # noqa: E402
 from agent_workflow_kernel.local_adapters import OpenClawTelegramSurfaceAdapter  # noqa: E402
 from openclaw_auto_review_packet import auto_review_packet  # noqa: E402
 from openclaw_two_lane_onboarding import build_onboarding_packet  # noqa: E402
@@ -78,6 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allow_live_obsidian=args.allow_live_obsidian,
             allow_live_telegram=args.allow_live_telegram,
             output_dir=args.output_dir,
+            openclaw_root=args.openclaw_root,
             telegram_send_cmd=args.telegram_send_cmd,
             telegram_delivery=args.telegram_delivery,
         )
@@ -93,6 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "receipt_json": receipt["artifacts"]["receipt_json"],
                 "receipt_md": receipt["artifacts"]["receipt_md"],
                 "telegram_status": receipt["telegram"]["send_result"]["status"],
+                "blackboard_status": receipt["blackboard"]["status"],
                 "obsidian_notes": [note.get("note_path") for note in receipt["obsidian"].get("notes", [])],
             }
         ),
@@ -113,6 +117,7 @@ def build_live_cutover(
     allow_live_obsidian: bool = False,
     allow_live_telegram: bool = False,
     output_dir: str | Path,
+    openclaw_root: str | Path | None = None,
     telegram_send_cmd: str | None = None,
     telegram_delivery: str = "subprocess",
 ) -> dict[str, Any]:
@@ -160,12 +165,23 @@ def build_live_cutover(
         blocked_actions=blocked_actions,
     )
     obsidian_trust_blockers = _obsidian_trust_blockers(obsidian)
+    blackboard = _publish_blackboard_pointers(
+        packet_summary=packet_summary,
+        obsidian=obsidian,
+        output_root=output_root,
+        openclaw_root=Path(openclaw_root).resolve() if openclaw_root is not None else None,
+        vault_root=Path(vault_root).resolve() if vault_root is not None else None,
+        allow_live_obsidian=allow_live_obsidian,
+    )
+    blackboard_trust_blockers = _blackboard_trust_blockers(blackboard)
+    operator_surface_blockers = [*obsidian_trust_blockers, *blackboard_trust_blockers]
     pointer = _telegram_pointer(
         obsidian=obsidian,
+        blackboard=blackboard,
         blocked_actions=blocked_actions,
         allow_live_obsidian=allow_live_obsidian,
         allow_live_telegram=allow_live_telegram,
-        obsidian_trust_blockers=obsidian_trust_blockers,
+        obsidian_trust_blockers=operator_surface_blockers,
     )
     telegram = _publish_telegram_pointer(
         pointer=pointer,
@@ -175,11 +191,11 @@ def build_live_cutover(
         allow_live_telegram=allow_live_telegram,
         telegram_send_cmd=telegram_send_cmd,
         telegram_delivery=telegram_delivery,
-        upstream_obsidian_trusted=not obsidian_trust_blockers,
-        upstream_obsidian_blockers=obsidian_trust_blockers,
+        upstream_obsidian_trusted=not operator_surface_blockers,
+        upstream_obsidian_blockers=operator_surface_blockers,
     )
 
-    status = _overall_status(obsidian=obsidian, telegram=telegram, decisions=decisions)
+    status = _overall_status(obsidian=obsidian, blackboard=blackboard, telegram=telegram, decisions=decisions)
     receipt: dict[str, Any] = {
         "schema": CUTOVER_SCHEMA,
         "status": status,
@@ -189,6 +205,7 @@ def build_live_cutover(
             "packet_dir": str(packet_root),
             "ivy_fixture": str(ivy_fixture) if ivy_fixture is not None else None,
             "weekly_fixture": str(weekly_fixture) if weekly_fixture is not None else None,
+            "openclaw_root": str(openclaw_root) if openclaw_root is not None else None,
         },
         "review": {
             "reviewer_human_ref": AUTOMATED_SUMAN_REVIEWER_HUMAN_REF,
@@ -197,6 +214,7 @@ def build_live_cutover(
             "auto_review_summary": auto_summary["artifacts"]["summary_json"],
         },
         "obsidian": obsidian,
+        "blackboard": blackboard,
         "telegram": telegram,
         "safety": {
             "default_no_live_writes": True,
@@ -512,6 +530,107 @@ def _publish_obsidian_notes(
     }
 
 
+def _publish_blackboard_pointers(
+    *,
+    packet_summary: Mapping[str, Any],
+    obsidian: Mapping[str, Any],
+    output_root: Path,
+    openclaw_root: Path | None,
+    vault_root: Path | None,
+    allow_live_obsidian: bool,
+) -> dict[str, Any]:
+    if not allow_live_obsidian or openclaw_root is None or vault_root is None:
+        return {
+            "enabled": False,
+            "status": "not_configured",
+            "reason": (
+                "requires allow_live_obsidian, vault_root, and openclaw_root"
+                if allow_live_obsidian
+                else "live Obsidian write not enabled"
+            ),
+            "records": [],
+        }
+
+    adapter = OpenClawBlackboardReviewAdapter(
+        openclaw_root=openclaw_root,
+        vault_root=vault_root,
+        created_at=DETERMINISTIC_CREATED_AT,
+    )
+    packet_id = str(packet_summary.get("packet_id") or "openclaw-cutover")
+    records: list[dict[str, Any]] = []
+    notes = [note for note in _list(obsidian.get("notes")) if isinstance(note, Mapping)]
+    for note in notes:
+        lane_id = str(note.get("lane_id") or "lane")
+        artifact_id = f"awk-cutover-{lane_id}-{digest_data({'packet_id': packet_id, 'lane_id': lane_id})[7:19]}"
+        invocation = AdapterInvocation(
+            invocation_id=f"cutover:blackboard:{lane_id}",
+            workflow_id="openclaw_cutover",
+            instance_id="openclaw-cutover",
+            stage_run_id=f"{lane_id}_blackboard_pointer",
+            adapter_family=AdapterFamily.SURFACE,
+            adapter_id=adapter.adapter_id,
+            operation="publish_pointer",
+            input_ref=f"cutover:obsidian:{lane_id}",
+            context_packet_ref="cutover:blackboard-pointer",
+            idempotency_key=f"cutover:blackboard:{lane_id}:{note.get('action_fingerprint')}",
+        )
+        receipt = adapter.publish_pointer(
+            invocation,
+            {
+                "artifact_id": artifact_id,
+                "title": f"AWK Suman loop: {LANE_LABELS.get(lane_id, lane_id)} review",
+                "review_note": str(note.get("note_path") or note.get("relative_note_path") or ""),
+                "why": (
+                    "AWK created a live review note and needs Suman to check exactly one decision "
+                    "before ingesting the human gate."
+                ),
+                "next_action": (
+                    "Open the linked review note and check exactly one box: "
+                    "acknowledged, needs_follow_up, or blocked."
+                ),
+                "owner": "Suman",
+                "producer": "AWK/OpenClaw live cutover",
+                "decision_labels": ("acknowledged", "needs_follow_up", "blocked"),
+                "lane_id": lane_id,
+                "gate_id": f"cutover:{lane_id}",
+                "action_fingerprint": note.get("action_fingerprint"),
+                "receipt_path": str(output_root / "cutover_receipt.json"),
+            },
+        )
+        outputs = _mapping(receipt.runtime_provenance.get("outputs"))
+        readback = _mapping(outputs.get("readback"))
+        refresh = _mapping(outputs.get("refresh"))
+        error = _mapping(outputs.get("error"))
+        records.append(
+            {
+                "lane_id": lane_id,
+                "status": receipt.status,
+                "summary": receipt.summary,
+                "artifact_id": artifact_id,
+                "record_path": outputs.get("record_path"),
+                "record_hash": outputs.get("record_hash"),
+                "blackboard_path": outputs.get("blackboard_path"),
+                "blackboard_item_id": outputs.get("blackboard_item_id"),
+                "refresh_status": refresh.get("status"),
+                "refresh_returncode": refresh.get("returncode"),
+                "readback_found": readback.get("found"),
+                "readback_hash": readback.get("blackboard_hash"),
+                "receipt_id": receipt.receipt_id,
+                "error_class": error.get("error_class"),
+                "error_message": error.get("message") or refresh.get("error"),
+            }
+        )
+    status = "succeeded" if records and all(record.get("status") == "succeeded" for record in records) else "blocked"
+    return {
+        "enabled": True,
+        "status": status,
+        "adapter_id": adapter.adapter_id,
+        "openclaw_root": str(openclaw_root),
+        "vault_root": str(vault_root),
+        "records": records,
+    }
+
+
 def _publish_telegram_pointer(
     *,
     pointer: str,
@@ -734,6 +853,7 @@ def _send_live_telegram_pointer(
 def _telegram_pointer(
     *,
     obsidian: Mapping[str, Any],
+    blackboard: Mapping[str, Any],
     blocked_actions: Sequence[str],
     allow_live_obsidian: bool,
     allow_live_telegram: bool,
@@ -749,6 +869,16 @@ def _telegram_pointer(
         )
         for note in _list(obsidian.get("notes"))
         if isinstance(note, Mapping)
+    ]
+    blackboard_lines = [
+        "- Blackboard {lane}: {item} (readback={readback}; status={status})".format(
+            lane=record.get("lane_id"),
+            item=record.get("blackboard_item_id"),
+            readback=record.get("readback_found"),
+            status=record.get("status"),
+        )
+        for record in _list(blackboard.get("records"))
+        if isinstance(record, Mapping)
     ]
     headline = (
         "OpenClaw AWK cutover review artifacts ready."
@@ -767,7 +897,7 @@ def _telegram_pointer(
         f"telegram_enabled={allow_live_telegram}; mutation_permission_granted=False; "
         "protected-action-gates=closed; see receipt for details"
     )
-    return "\n".join([headline, *note_lines, *blocker_lines, safety])
+    return "\n".join([headline, *note_lines, *blackboard_lines, *blocker_lines, safety])
 
 
 def _obsidian_trust_blockers(obsidian: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -805,6 +935,47 @@ def _obsidian_trust_blockers(obsidian: Mapping[str, Any]) -> list[dict[str, Any]
                     "reason": "readback_hash_mismatch",
                     "content_hash": note.get("content_hash"),
                     "readback_hash": note.get("readback_hash"),
+                }
+            )
+    return blockers
+
+
+def _blackboard_trust_blockers(blackboard: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if not blackboard.get("enabled"):
+        return []
+    records = [record for record in _list(blackboard.get("records")) if isinstance(record, Mapping)]
+    if not records:
+        return [{"lane_id": None, "reason": "no_blackboard_records"}]
+    blockers: list[dict[str, Any]] = []
+    for record in records:
+        lane_id = record.get("lane_id")
+        if record.get("status") != "succeeded":
+            blockers.append(
+                {
+                    "lane_id": lane_id,
+                    "reason": "blackboard_publish_failed",
+                    "status": record.get("status"),
+                    "error_class": record.get("error_class"),
+                    "error_message": record.get("error_message"),
+                }
+            )
+            continue
+        if record.get("refresh_status") != "succeeded":
+            blockers.append(
+                {
+                    "lane_id": lane_id,
+                    "reason": "blackboard_refresh_failed",
+                    "refresh_status": record.get("refresh_status"),
+                    "error_message": record.get("error_message"),
+                }
+            )
+            continue
+        if not record.get("readback_found"):
+            blockers.append(
+                {
+                    "lane_id": lane_id,
+                    "reason": "blackboard_readback_missing",
+                    "blackboard_item_id": record.get("blackboard_item_id"),
                 }
             )
     return blockers
@@ -863,6 +1034,7 @@ def _blocked_actions(*, allow_live_obsidian: bool, allow_live_telegram: bool) ->
 def _overall_status(
     *,
     obsidian: Mapping[str, Any],
+    blackboard: Mapping[str, Any],
     telegram: Mapping[str, Any],
     decisions: Sequence[Mapping[str, Any]],
 ) -> str:
@@ -872,6 +1044,8 @@ def _overall_status(
     if any(_mapping(note).get("readback_status") != "succeeded" for note in notes):
         return "blocked"
     if any(_mapping(decision).get("review_status") != "succeeded" for decision in decisions):
+        return "blocked"
+    if blackboard.get("enabled") and blackboard.get("status") != "succeeded":
         return "blocked"
     send_result = _mapping(_mapping(telegram).get("send_result"))
     if send_result.get("status") == "blocked":
@@ -902,6 +1076,21 @@ def _render_receipt_md(receipt: Mapping[str, Any]) -> str:
                 path=note.get("note_path"),
                 hash=note.get("readback_hash"),
                 status=note.get("readback_status"),
+            )
+        )
+    lines.extend(["", "## Blackboard", ""])
+    blackboard = _mapping(receipt.get("blackboard"))
+    lines.append(f"- Status: `{blackboard.get('status')}`")
+    lines.append(f"- Enabled: `{blackboard.get('enabled')}`")
+    for record in _list(blackboard.get("records")):
+        if not isinstance(record, Mapping):
+            continue
+        lines.append(
+            "- `{lane}`: `{item}` readback `{readback}` status `{status}`".format(
+                lane=record.get("lane_id"),
+                item=record.get("blackboard_item_id"),
+                readback=record.get("readback_found"),
+                status=record.get("status"),
             )
         )
     lines.extend(["", "## Decisions", ""])

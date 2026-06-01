@@ -28,6 +28,40 @@ def load_script():
 script = load_script()
 
 
+def write_blackboard_refresh_stub(openclaw_root: Path) -> None:
+    refresh = openclaw_root / "workspace-main" / "scripts" / "update_review_inbox.py"
+    refresh.parent.mkdir(parents=True)
+    refresh.write_text(
+        "\n".join(
+            [
+                "import json, os, re",
+                "from pathlib import Path",
+                "root = Path(__file__).resolve().parents[1]",
+                "vault = Path(os.environ['OPENCLAW_OBSIDIAN_VAULT'])",
+                "records = root / 'state' / 'artifact_outbox' / 'records'",
+                "def safe_id(value):",
+                "    return re.sub(r'[^A-Za-z0-9_.-]+', '-', value.strip()).strip('-').lower() or 'item'",
+                "lines = ['# Blackboard', '', '## Decide', '']",
+                "for path in sorted(records.glob('*.json')):",
+                "    data = json.loads(path.read_text())",
+                "    note = Path(data.get('review_note') or data.get('draft_path') or str(path))",
+                "    try: note_text = note.relative_to(vault).as_posix()",
+                "    except ValueError: note_text = str(note)",
+                "    item = 'artifact-' + safe_id(data.get('artifact_id') or path.stem)",
+                "    lines.append(f\"- [ ] {data.get('title')} <!-- inbox-item:{item} -->\")",
+                "    lines.append(f\"  - executive summary: {data.get('why')}\")",
+                "    lines.append(f\"  - decision / next action: {data.get('next')}\")",
+                "    lines.append(f\"  - owner: {data.get('owner')}\")",
+                "    lines.append(f\"  - evidence: [{note_text}](<{note_text}>)\")",
+                "vault.mkdir(parents=True, exist_ok=True)",
+                "(vault / '01 Blackboard.md').write_text('\\n'.join(lines) + '\\n')",
+                "print('review-inbox validation: OK')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 class OpenClawLiveCutoverTest(unittest.TestCase):
     def test_fixture_dry_run_writes_sandbox_artifacts_without_live_send(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -125,6 +159,40 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
                 self.assertTrue(note_path.resolve().is_relative_to(vault_root.resolve()))
                 self.assertIn("OpenClaw/Cutover", str(note_path))
                 self.assertTrue(note["trusted"])
+
+    def test_openclaw_root_publishes_blackboard_records_and_readback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_dir = root / "cutover"
+            vault_root = root / "sandbox-vault"
+            openclaw_root = root / "openclaw"
+            write_blackboard_refresh_stub(openclaw_root)
+
+            receipt = script.build_live_cutover(
+                ivy_fixture=IVY_FIXTURE,
+                weekly_fixture=WEEKLY_FIXTURE,
+                vault_root=vault_root,
+                obsidian_prefix="OpenClaw/Cutover",
+                telegram_target="owner-chat",
+                telegram_account="oldmac-account",
+                allow_live_obsidian=True,
+                output_dir=output_dir,
+                openclaw_root=openclaw_root,
+            )
+
+            self.assertEqual(receipt["status"], "ready")
+            self.assertTrue(receipt["blackboard"]["enabled"])
+            self.assertEqual(receipt["blackboard"]["status"], "succeeded")
+            self.assertEqual({record["lane_id"] for record in receipt["blackboard"]["records"]}, {"ivy", "weekly"})
+            self.assertTrue((vault_root / "01 Blackboard.md").exists())
+            blackboard = (vault_root / "01 Blackboard.md").read_text(encoding="utf-8")
+            for record in receipt["blackboard"]["records"]:
+                self.assertTrue(record["readback_found"])
+                self.assertTrue(Path(record["record_path"]).exists())
+                self.assertIn(record["blackboard_item_id"], blackboard)
+            self.assertIn("Blackboard", receipt["telegram"]["pointer"])
+            receipt_md = (output_dir / "cutover_receipt.md").read_text(encoding="utf-8")
+            self.assertIn("## Blackboard", receipt_md)
 
     def test_live_telegram_send_is_blocked_when_obsidian_receipts_are_untrusted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
