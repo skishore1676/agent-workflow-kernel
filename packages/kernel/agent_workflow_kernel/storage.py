@@ -349,26 +349,54 @@ class WorkflowLedger:
         workflow_def_id: str | None = None,
         workflow_version: str | None = None,
         include_waiting_human: bool = False,
+        prefer_waiting_human: bool = False,
         now: datetime | str | None = None,
     ) -> WorkflowInstance | None:
         """Return the next workflow instance with queued or waiting work.
 
         Queued stage runs are preferred because they can be claimed atomically by
-        the runner. Waiting human gates are returned only when requested, which
-        lets a higher-level runner publish or ingest local review surfaces
-        without knowing an instance id in advance.
+        the runner. Surface lifecycle callers can prefer waiting human gates so
+        an acknowledged gate remains discoverable even while unrelated queued
+        work exists in the same ledger.
         """
 
         timestamp = iso_timestamp(now)
         filters: list[str] = []
-        params: list[Any] = [StageRunStatus.QUEUED.value, timestamp]
         if workflow_def_id is not None:
             filters.append("wi.workflow_def_id = ?")
-            params.append(workflow_def_id)
         if workflow_version is not None:
             filters.append("wi.workflow_version = ?")
-            params.append(workflow_version)
         filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
+
+        def filter_params() -> list[Any]:
+            params: list[Any] = []
+            if workflow_def_id is not None:
+                params.append(workflow_def_id)
+            if workflow_version is not None:
+                params.append(workflow_version)
+            return params
+
+        def waiting_row() -> sqlite3.Row | None:
+            params: list[Any] = [StageRunStatus.WAITING_ON_HUMAN.value, *filter_params()]
+            return self.connection.execute(
+                f"""
+                SELECT wi.*
+                FROM stage_runs sr
+                JOIN workflow_instances wi ON wi.instance_id = sr.instance_id
+                WHERE sr.status = ?
+                  {filter_sql}
+                ORDER BY sr.updated_at, sr.stage_run_id
+                LIMIT 1
+                """,
+                tuple(params),
+            ).fetchone()
+
+        if include_waiting_human and prefer_waiting_human:
+            row = waiting_row()
+            if row is not None:
+                return self._workflow_instance_from_row(row)
+
+        params = [StageRunStatus.QUEUED.value, timestamp, *filter_params()]
         row = self.connection.execute(
             f"""
             SELECT wi.*
@@ -385,23 +413,7 @@ class WorkflowLedger:
         if row is not None or not include_waiting_human:
             return self._workflow_instance_from_row(row) if row else None
 
-        params = [StageRunStatus.WAITING_ON_HUMAN.value]
-        if workflow_def_id is not None:
-            params.append(workflow_def_id)
-        if workflow_version is not None:
-            params.append(workflow_version)
-        row = self.connection.execute(
-            f"""
-            SELECT wi.*
-            FROM stage_runs sr
-            JOIN workflow_instances wi ON wi.instance_id = sr.instance_id
-            WHERE sr.status = ?
-              {filter_sql}
-            ORDER BY sr.updated_at, sr.stage_run_id
-            LIMIT 1
-            """,
-            tuple(params),
-        ).fetchone()
+        row = waiting_row()
         return self._workflow_instance_from_row(row) if row else None
 
     def update_workflow_instance(
@@ -507,22 +519,30 @@ class WorkflowLedger:
         self,
         *,
         owner_id: str,
+        instance_id: str | None = None,
         lease_seconds: int = 300,
         now: datetime | str | None = None,
     ) -> StageRun | None:
         claimed_at = iso_timestamp(now)
         expires_at = iso_timestamp(_coerce_datetime(claimed_at) + timedelta(seconds=lease_seconds))
         lease_token = uuid.uuid4().hex
+        instance_filter = "AND instance_id = ?" if instance_id is not None else ""
+        params: tuple[Any, ...] = (
+            (StageRunStatus.QUEUED.value, claimed_at, instance_id)
+            if instance_id is not None
+            else (StageRunStatus.QUEUED.value, claimed_at)
+        )
         with self._transaction() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT * FROM stage_runs
                 WHERE status = ?
                   AND (retry_after_at IS NULL OR retry_after_at <= ?)
+                  {instance_filter}
                 ORDER BY created_at, stage_run_id
                 LIMIT 1
                 """,
-                (StageRunStatus.QUEUED.value, claimed_at),
+                params,
             ).fetchone()
             if row is None:
                 return None

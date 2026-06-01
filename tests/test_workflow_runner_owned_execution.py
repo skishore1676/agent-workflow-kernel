@@ -117,6 +117,75 @@ class WorkflowRunnerOwnedExecutionTest(unittest.TestCase):
         assert stored is not None
         self.assertEqual(stored.status, WorkflowStatus.DONE)
 
+    def test_owned_runner_discovers_waiting_gate_and_resumes_same_instance(self) -> None:
+        kernel = self.kernel_for(self.human_gate_workflow())
+        kernel.start(instance_id="instance-resume", inputs={}, now=self.now)
+        first = self.runner().run_kernel_until_idle(
+            kernel,
+            publish_human_gate=True,
+            now=self.now,
+        )
+        kernel.start(instance_id="instance-a-other", inputs={}, now=self.now)
+        note_path = Path(first.surface_results[0].outputs["note_path"])
+        self._check_decision(note_path, "approved")
+
+        resumed = self.runner().run_kernel_until_idle(
+            kernel,
+            publish_human_gate=True,
+            ingest_human_decision=True,
+            now=self.now,
+        )
+
+        self.assertEqual(resumed.status, "done")
+        self.assertEqual(resumed.instance_id, "instance-resume")
+        self.assertEqual(resumed.stages_run, 1)
+        approve = self.ledger.get_stage_run("instance-resume:approve:1")
+        apply = self.ledger.get_stage_run("instance-resume:apply:1")
+        other = self.ledger.get_stage_run("instance-a-other:draft:1")
+        self.assertIsNotNone(approve)
+        self.assertIsNotNone(apply)
+        self.assertIsNotNone(other)
+        assert approve is not None
+        assert apply is not None
+        assert other is not None
+        self.assertEqual(approve.status, StageRunStatus.SUCCEEDED)
+        self.assertEqual(apply.status, StageRunStatus.SUCCEEDED)
+        self.assertEqual(other.status, StageRunStatus.QUEUED)
+
+        terminal_events = [
+            event
+            for event in self.ledger.list_events()
+            if event["instance_id"] == "instance-resume"
+            and event["event_type"] == "workflow_terminal"
+        ]
+        self.assertEqual(len(terminal_events), 1)
+
+        rerun = self.runner().run_kernel_until_idle(
+            kernel,
+            instance_id="instance-resume",
+            publish_human_gate=True,
+            ingest_human_decision=True,
+            now=self.now,
+        )
+
+        self.assertEqual(rerun.status, "done")
+        self.assertEqual(rerun.stages_run, 0)
+        self.assertEqual(len(rerun.surface_results), 0)
+        stage_count = self.ledger.connection.execute(
+            "SELECT COUNT(*) AS count FROM stage_runs WHERE instance_id = ?",
+            ("instance-resume",),
+        ).fetchone()["count"]
+        completion_count = self.ledger.connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM events
+            WHERE instance_id = ? AND event_type = ?
+            """,
+            ("instance-resume", "workflow_terminal"),
+        ).fetchone()["count"]
+        self.assertEqual(stage_count, 3)
+        self.assertEqual(completion_count, 1)
+
     def test_owned_runner_blocks_mismatched_surface_decision_without_resuming(self) -> None:
         kernel = self.kernel_for(self.human_gate_workflow())
         kernel.start(instance_id="instance-mismatch", inputs={}, now=self.now)

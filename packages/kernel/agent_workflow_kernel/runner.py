@@ -55,7 +55,12 @@ class KernelExecutionFacade(Protocol):
     ledger: WorkflowLedger
     workflow: Any
 
-    def run_once(self, *, now: datetime | str | None = None) -> Any: ...
+    def run_once(
+        self,
+        *,
+        instance_id: str | None = None,
+        now: datetime | str | None = None,
+    ) -> Any: ...
 
     def publish_waiting_human_gate(
         self,
@@ -109,12 +114,16 @@ class WorkflowRunner:
         self,
         handler: StageHandler,
         *,
+        instance_id: str | None = None,
         lease_seconds: int = 300,
         now: datetime | str | None = None,
     ) -> RunnerStep:
         self.ledger.sweep_stale_leases(now=now, actor=self.owner_id)
         run = self.ledger.claim_next_queued_run(
-            owner_id=self.owner_id, lease_seconds=lease_seconds, now=now
+            owner_id=self.owner_id,
+            instance_id=instance_id,
+            lease_seconds=lease_seconds,
+            now=now,
         )
         if run is None:
             return RunnerStep(stage_run=None, decision="idle")
@@ -243,6 +252,7 @@ class WorkflowRunner:
         resolved_instance_id = instance_id or self._next_owned_instance_id(
             kernel,
             include_waiting_human=publish_human_gate or ingest_human_decision,
+            prefer_waiting_human=publish_human_gate or ingest_human_decision,
             now=now,
         )
         if resolved_instance_id is None:
@@ -362,7 +372,7 @@ class WorkflowRunner:
                     surface_results=tuple(surface_results),
                 )
 
-            step = kernel.run_once(now=now)
+            step = kernel.run_once(instance_id=resolved_instance_id, now=now)
             if getattr(step, "decision", None) == "idle" or getattr(step, "stage_run", None) is None:
                 status, stop_reason = self._idle_status(resolved_instance_id)
                 return OwnedRunSummary(
@@ -397,12 +407,14 @@ class WorkflowRunner:
         kernel: KernelExecutionFacade,
         *,
         include_waiting_human: bool,
+        prefer_waiting_human: bool,
         now: datetime | str | None,
     ) -> str | None:
         instance = self.ledger.find_next_workflow_instance_for_work(
             workflow_def_id=str(kernel.workflow.id),
             workflow_version=str(kernel.workflow.version),
             include_waiting_human=include_waiting_human,
+            prefer_waiting_human=prefer_waiting_human,
             now=now,
         )
         return instance.instance_id if instance is not None else None

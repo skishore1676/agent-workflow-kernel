@@ -222,11 +222,12 @@ class WorkflowKernel:
         )
         return instance
 
-    def run_once(self, *, now: Any = None) -> KernelStep:
+    def run_once(self, *, instance_id: str | None = None, now: Any = None) -> KernelStep:
         runner = WorkflowRunner(self.ledger, owner_id=self.config.owner_id)
         state: dict[str, Any] = {}
         step = runner.run_once(
             self._handle_stage(state, now=now),
+            instance_id=instance_id,
             lease_seconds=self.config.default_lease_seconds,
             now=now,
         )
