@@ -45,6 +45,25 @@ stages:
   - id: discover_weekly_artifact
     type: system_action
     adapter: lane.openclaw.weekly_update_discovery
+    prompt_refs:
+      - id: policy.openclaw.read_only_shadow
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.discover_artifact
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       weekly_update_fixture: input.weekly_update_fixture
     outputs:
@@ -65,6 +84,25 @@ stages:
   - id: readback_blackboard_card
     type: system_action
     adapter: surface.openclaw.blackboard_readback
+    prompt_refs:
+      - id: policy.openclaw.read_only_shadow
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.blackboard_readback
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       discovered_artifact: receipts.discover_weekly_artifact
       blackboard_snapshot: input.blackboard_snapshot
@@ -94,6 +132,25 @@ stages:
     adapter: surface.human_review
     actors:
       operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.suman_review_gate
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       weekly_update_card: receipts.readback_blackboard_card
     outputs:
@@ -127,7 +184,7 @@ stages:
         registry: local
         render_mode: markdown
         required: true
-      - id: policy.no_external_effects
+      - id: policy.openclaw.read_only_shadow
         kind: policy
         version: 1.0.0
         registry: local

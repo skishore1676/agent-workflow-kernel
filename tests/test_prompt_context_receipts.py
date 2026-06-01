@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 
 from agent_workflow_kernel import (  # noqa: E402
     ArtifactRef,
+    InactivePromptError,
     MissingPromptError,
     PromptRef,
     PromptRegistry,
@@ -88,6 +89,35 @@ class PromptContextReceiptTest(unittest.TestCase):
 
         with self.assertRaises(MissingPromptError):
             self.registry.resolve((missing,))
+
+    def test_non_active_required_prompt_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "stages" / "demo").mkdir(parents=True)
+            (root / "stages" / "demo" / "v1.0.0.md").write_text(
+                "# Demo\n\nRetired prompt.\n",
+                encoding="utf-8",
+            )
+            (root / "registry.yaml").write_text(
+                "\n".join(
+                    [
+                        "schema_version: prompt-registry.v1",
+                        "registry_id: local",
+                        "prompts:",
+                        "  - id: stage.demo",
+                        "    kind: stage",
+                        "    version: 1.0.0",
+                        "    path: stages/demo/v1.0.0.md",
+                        "    status: deprecated",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            registry = PromptRegistry.load(root)
+
+            with self.assertRaises(InactivePromptError):
+                registry.resolve((PromptRef(id="stage.demo", kind="stage", version="1.0.0"),))
 
     def test_context_packet_and_rendered_input_digests_are_deterministic(self) -> None:
         bundle = self.registry.resolve(tuple(reversed(PROMPT_REFS)))

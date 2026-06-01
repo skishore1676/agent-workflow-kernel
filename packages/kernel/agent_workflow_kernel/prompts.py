@@ -33,6 +33,10 @@ class PromptHashMismatchError(PromptRegistryError):
     """Raised when declared prompt hash does not match local content."""
 
 
+class InactivePromptError(PromptRegistryError):
+    """Raised when a prompt exists but is not active for execution."""
+
+
 @dataclass(frozen=True, slots=True)
 class PromptRecord:
     """Indexed prompt metadata from a local registry."""
@@ -216,6 +220,11 @@ class PromptRegistry:
         )
 
     def _resolve_record(self, record: PromptRecord, ref: PromptRef) -> ResolvedPrompt:
+        if record.status != "active" and ref.required:
+            raise InactivePromptError(
+                f"Prompt {record.registry}:{record.kind}:{record.id}@{record.version} "
+                f"is {record.status}; only active prompts may be resolved for execution"
+            )
         path = (self.root / record.path).resolve()
         try:
             path.relative_to(self.root)

@@ -1,0 +1,37 @@
+schema_version: adapter-prompt-import.v1
+adapter_id: host.openclaw
+imported_at: "2026-06-01T00:00:00Z"
+sources:
+  - source_uri: openclaw://workspace/agents/or_research/SOUL.md
+    source_hash: sha256:848c133227ffcd33ade27a58a9c2a75ca9eafa0f572e4bbf007292b2984944ef
+    mapped_prompt_ids:
+      - identity.ivy_or_research@1.0.0
+      - lane.ivy_jonah_editorial@1.0.0
+  - source_uri: openclaw://workspace/agents/or_research/skills/research-project-lifecycle/SKILL.md
+    source_hash: sha256:ec3a70c50a7e82c908ba87649e40d3b1097771c495db5d9c485ac24346e5385a
+    mapped_prompt_ids:
+      - lane.ivy_jonah_editorial@1.0.0
+      - stage.ivy_jonah.accept_source_approval@1.0.0
+      - stage.ivy_jonah.build_draft_package@1.0.0
+      - stage.ivy_jonah.revise_draft@1.0.0
+      - stage.ivy_jonah.validate_editorial_state@1.0.0
+      - stage.ivy_jonah.p5_final_approval@1.0.0
+  - source_uri: openclaw://workspace/agents/jonah_editor/SOUL.md
+    source_hash: sha256:7c44b01f137e2e523ff01cb347007146a706e1a9a4424f557de59af8ec9513cf
+    mapped_prompt_ids:
+      - identity.jonah_editor@1.0.0
+      - stage.ivy_jonah.editor_review@1.0.0
+  - source_uri: openclaw://workspace/agents/jonah_editor/skills/editorial-review/SKILL.md
+    source_hash: sha256:772bfe8508ab395cf9449e5d6e9ea1a7b15d827aec46f3d6ba8dd9900f022ec6
+    mapped_prompt_ids:
+      - identity.jonah_editor@1.0.0
+      - stage.ivy_jonah.editor_review@1.0.0
+  - source_uri: openclaw://workspace-main/docs/blackboard_decision_loop.md
+    source_hash: sha256:705a520257a597cb2c926d822ac7960209a43fffdbd0ba509290249ab34d92fe
+    mapped_prompt_ids:
+      - identity.jarvis_weekly_shadow_worker@1.0.0
+      - lane.jarvis_weekly_update_shadow@1.0.0
+      - stage.jarvis_weekly.discover_artifact@1.0.0
+      - stage.jarvis_weekly.blackboard_readback@1.0.0
+      - stage.jarvis_weekly.suman_review_gate@1.0.0
+      - stage.jarvis_weekly.route_follow_up@1.0.0

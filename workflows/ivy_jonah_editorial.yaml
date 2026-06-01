@@ -40,6 +40,25 @@ stages:
     adapter: surface.human_review
     actors:
       operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.ivy_jonah_editorial
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.ivy_jonah.accept_source_approval
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     policy:
       class: internal_generation
       requires_explicit_approval: true
@@ -65,7 +84,7 @@ stages:
         registry: local
         render_mode: markdown
         required: true
-      - id: policy.no_external_effects
+      - id: policy.openclaw.editorial_public_boundary
         kind: policy
         version: 1.0.0
         registry: local
@@ -118,7 +137,7 @@ stages:
         registry: local
         render_mode: markdown
         required: true
-      - id: policy.no_external_effects
+      - id: policy.openclaw.editorial_public_boundary
         kind: policy
         version: 1.0.0
         registry: local
@@ -168,7 +187,7 @@ stages:
         registry: local
         render_mode: markdown
         required: true
-      - id: policy.no_external_effects
+      - id: policy.openclaw.editorial_public_boundary
         kind: policy
         version: 1.0.0
         registry: local
@@ -204,6 +223,25 @@ stages:
   - id: validate_editorial_state
     type: system_action
     adapter: lane.artifact_hash_validator
+    prompt_refs:
+      - id: policy.openclaw.editorial_public_boundary
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.ivy_jonah_editorial
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.ivy_jonah.validate_editorial_state
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       current_draft: artifacts.build_draft_package.draft_package
       revised_draft: artifacts.revise_draft.revised_draft_package
@@ -221,6 +259,25 @@ stages:
     adapter: surface.human_review
     actors:
       operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.ivy_jonah_editorial
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.ivy_jonah.p5_final_approval
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     policy:
       class: public_publish
       requires_explicit_approval: true

@@ -98,6 +98,7 @@ from .policy import (
     validate_approval,
 )
 from .prompts import (
+    InactivePromptError,
     MissingPromptError,
     PromptBundle,
     PromptHashMismatchError,
@@ -170,6 +171,7 @@ __all__ = [
     "HumanGateSurfaceResult",
     "HumanApprovalReceipt",
     "IMPLEMENTED_TRANSITION_GUARDS",
+    "InactivePromptError",
     "KernelDecisionResult",
     "KernelRuntimeConfig",
     "KernelStep",

@@ -58,14 +58,17 @@ ADAPTER_REF = re.compile(r"^(runtime|surface|host|lane|human)\.[a-z0-9_.-]+$")
 IVY_JONAH_EXECUTABLE_PROMPT_STAGES = {
     "build_draft_package": {
         "identities": {"identity.ivy_or_research"},
+        "policy": "policy.openclaw.editorial_public_boundary",
         "stage": "stage.ivy_jonah.build_draft_package",
     },
     "editor_review": {
         "identities": {"identity.ivy_or_research", "identity.jonah_editor"},
+        "policy": "policy.openclaw.editorial_public_boundary",
         "stage": "stage.ivy_jonah.editor_review",
     },
     "revise_draft": {
         "identities": {"identity.ivy_or_research"},
+        "policy": "policy.openclaw.editorial_public_boundary",
         "stage": "stage.ivy_jonah.revise_draft",
     },
 }
@@ -268,7 +271,7 @@ class ExampleWorkflowFixtureTest(unittest.TestCase):
 
                 expected = IVY_JONAH_EXECUTABLE_PROMPT_STAGES[stage_id]
                 self.assertTrue(expected["identities"].issubset(prompt_ids))
-                self.assertIn("policy.no_external_effects", prompt_ids)
+                self.assertIn(expected["policy"], prompt_ids)
                 self.assertIn("lane.ivy_jonah_editorial", prompt_ids)
                 self.assertIn(expected["stage"], prompt_ids)
                 self.assertTrue({"identity", "policy", "lane", "stage"}.issubset(prompt_kinds))

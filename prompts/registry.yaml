@@ -26,6 +26,24 @@ prompts:
     version: 1.0.0
     path: policies/no-external-effects/v1.0.0.yaml
     status: active
+  - id: policy.openclaw.read_only_shadow
+    kind: policy
+    version: 1.0.0
+    path: policies/openclaw-read-only-shadow/v1.0.0.yaml
+    render_mode: yaml
+    status: active
+  - id: policy.openclaw.editorial_public_boundary
+    kind: policy
+    version: 1.0.0
+    path: policies/openclaw-editorial-public-boundary/v1.0.0.yaml
+    render_mode: yaml
+    status: active
+  - id: policy.openclaw.review_only_human_gate
+    kind: policy
+    version: 1.0.0
+    path: policies/openclaw-review-only-human-gate/v1.0.0.yaml
+    render_mode: yaml
+    status: active
   - id: lane.quality_review
     kind: lane
     version: 1.0.0
@@ -46,6 +64,11 @@ prompts:
     version: 1.0.0
     path: stages/review/v1.0.0.md
     status: active
+  - id: stage.ivy_jonah.accept_source_approval
+    kind: stage
+    version: 1.0.0
+    path: stages/ivy-jonah/accept-source-approval/v1.0.0.md
+    status: active
   - id: stage.ivy_jonah.build_draft_package
     kind: stage
     version: 1.0.0
@@ -61,8 +84,39 @@ prompts:
     version: 1.0.0
     path: stages/ivy-jonah/revise-draft/v1.0.0.md
     status: active
+  - id: stage.ivy_jonah.validate_editorial_state
+    kind: stage
+    version: 1.0.0
+    path: stages/ivy-jonah/validate-editorial-state/v1.0.0.md
+    status: active
+  - id: stage.ivy_jonah.p5_final_approval
+    kind: stage
+    version: 1.0.0
+    path: stages/ivy-jonah/p5-final-approval/v1.0.0.md
+    status: active
+  - id: stage.jarvis_weekly.discover_artifact
+    kind: stage
+    version: 1.0.0
+    path: stages/jarvis-weekly/discover-artifact/v1.0.0.md
+    status: active
+  - id: stage.jarvis_weekly.blackboard_readback
+    kind: stage
+    version: 1.0.0
+    path: stages/jarvis-weekly/blackboard-readback/v1.0.0.md
+    status: active
+  - id: stage.jarvis_weekly.suman_review_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/jarvis-weekly/suman-review-gate/v1.0.0.md
+    status: active
   - id: stage.jarvis_weekly.route_follow_up
     kind: stage
     version: 1.0.0
     path: stages/jarvis-weekly-route-follow-up/v1.0.0.md
+    status: active
+  - id: adapter_source.openclaw.imported_sources
+    kind: adapter_source
+    version: 2026.06.01
+    path: adapters/openclaw/imported-sources/v2026-06-01.yaml
+    render_mode: yaml
     status: active

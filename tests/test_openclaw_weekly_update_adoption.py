@@ -68,7 +68,7 @@ class OpenClawWeeklyUpdateAdoptionTest(unittest.TestCase):
                     [ref.id for ref in stage.prompt_refs],
                     [
                         "identity.jarvis_weekly_shadow_worker",
-                        "policy.no_external_effects",
+                        "policy.openclaw.read_only_shadow",
                         "lane.jarvis_weekly_update_shadow",
                         "stage.jarvis_weekly.route_follow_up",
                     ],
