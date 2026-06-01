@@ -39,6 +39,25 @@ class CapabilitySet:
 
 
 @dataclass(slots=True, frozen=True)
+class SurfaceCapabilityContract:
+    """Domain-neutral surface behavior declared by a surface adapter."""
+
+    surface_kind: str
+    mode: str
+    live_mutation_allowed: bool
+    dry_run_only: bool
+    readback_required: bool
+    decision_ingest_supported: bool
+    clear_requires_live_mutation: bool
+    external_effects: tuple[str, ...] = ()
+    receipt_schema: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def as_metadata(self) -> dict[str, Any]:
+        return to_plain_data(self)
+
+
+@dataclass(slots=True, frozen=True)
 class RuntimeRef:
     runtime_id: str
     kind: str

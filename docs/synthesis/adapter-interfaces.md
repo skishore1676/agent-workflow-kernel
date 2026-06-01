@@ -246,6 +246,32 @@ The kernel should require readback for high-value human surfaces. A publish call
 without readback is only a queued or attempted delivery, not confirmed operator
 visibility.
 
+Surface adapter capabilities should include a generic surface contract in
+metadata, independent of any host or lane:
+
+```text
+surface_contract
+- surface_kind: local_markdown | obsidian_note | telegram_message | sheet_range | ...
+- mode: local_artifact | dry_run | live
+- live_mutation_allowed
+- dry_run_only
+- readback_required
+- decision_ingest_supported
+- clear_requires_live_mutation
+- external_effects
+- receipt_schema
+```
+
+Local Markdown is the executable reference implementation because it can write,
+read back, validate, and ingest decisions entirely under a caller-provided local
+root. Obsidian, Telegram, and Sheets adapters may begin as dry-run adapters:
+they validate publish/query/decision contracts, return deterministic receipts,
+and expose the real external effect they are refusing, but they must not call or
+mutate the real service. A dry-run publish is proof of adapter readiness, not
+operator visibility; only an explicit readback receipt can confirm a generated
+view, and only an explicit live adapter with approval may perform external
+mutation.
+
 ## Host Adapter Contract
 
 Host adapters resolve where and how work runs. They provide the local facts that
