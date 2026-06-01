@@ -478,6 +478,13 @@ def _publish_obsidian_notes(
                 "mutation_permission_granted": False,
             }
         )
+        artifact_review = _lane_artifact_review(
+            lane_id=lane_id,
+            lane=lane,
+            auto_summary=auto_summary,
+            lane_decisions=lane_decisions,
+            blocked_actions=blocked_actions,
+        )
         invocation = AdapterInvocation(
             invocation_id=f"cutover:obsidian:{lane_id}",
             workflow_id=str(lane.get("workflow_id") or f"openclaw_{lane_id}_cutover"),
@@ -504,6 +511,10 @@ def _publish_obsidian_notes(
                 "exact_action": "Surface the OpenClaw AWK review state for operator readback only within this configured note path.",
                 "action_fingerprint": action_fingerprint,
                 "evidence_refs": _lane_evidence_refs(lane, auto_summary, lane_decisions),
+                "artifact_title": artifact_review["title"],
+                "artifact_intro": artifact_review["intro"],
+                "artifact_link": artifact_review["link"],
+                "artifact_markdown": artifact_review["markdown"],
                 "test_only": not allow_live_obsidian,
                 "non_live": not allow_live_obsidian,
                 "live_operator_surface_allowed": allow_live_obsidian,
@@ -539,6 +550,10 @@ def _publish_obsidian_notes(
                 "publish_receipt_ref": publish.receipt_ref,
                 "adapter_id": adapter.adapter_id,
                 "decision_count": len(lane_decisions),
+                "artifact_review_title": artifact_review["title"],
+                "artifact_review_embedded": bool(artifact_review["markdown"]),
+                "source_artifact_path": artifact_review["source_artifact_path"],
+                "summary_path": str(auto_summary.get("artifacts", {}).get("summary_json") or ""),
                 "idempotency_replayed": bool(publish.outputs.get("idempotency_replayed", False)),
                 "trusted": trusted,
                 "error_class": publish_error.get("error_class"),
@@ -619,6 +634,8 @@ def _publish_blackboard_pointers(
                 "lane_id": lane_id,
                 "gate_id": f"cutover:{lane_id}",
                 "action_fingerprint": note.get("action_fingerprint"),
+                "source_artifact_path": str(note.get("source_artifact_path") or ""),
+                "summary_path": str(note.get("summary_path") or ""),
                 "receipt_path": str(output_root / "cutover_receipt.json"),
             },
         )
@@ -1021,6 +1038,110 @@ def _obsidian_human_ask(
         f"Readiness is {readiness}. Local/test reviewer decisions: {decisions}. "
         "This note is evidence only and grants no mutation permission."
     )
+
+
+def _lane_artifact_review(
+    *,
+    lane_id: str,
+    lane: Mapping[str, Any],
+    auto_summary: Mapping[str, Any],
+    lane_decisions: Sequence[Mapping[str, Any]],
+    blocked_actions: Sequence[str],
+) -> dict[str, str]:
+    label = LANE_LABELS.get(lane_id, lane_id)
+    artifacts = _mapping(lane.get("artifacts"))
+    source_evidence = _mapping(lane.get("source_evidence"))
+    readiness = _mapping(lane.get("readiness"))
+    readiness_delta = _mapping(lane.get("readiness_delta"))
+    next_gate = _mapping(lane.get("next_owned_execution_gate"))
+    source_artifact_path = str(artifacts.get("lane_report") or artifacts.get("adoption_report") or "")
+    lines = [
+        f"## {label} Review Artifact",
+        "",
+        "### Operator Verdict Inputs",
+        "",
+        f"- Fixture: `{lane.get('fixture_id')}`",
+        f"- Workflow: `{lane.get('workflow_id')}`",
+        f"- Source classification: `{source_evidence.get('classification')}`",
+        f"- Source mode: `{source_evidence.get('source_mode')}`",
+        f"- Readiness: `{readiness.get('classification')}`",
+        f"- Ready for live onboarding: `{readiness.get('ready_for_live_onboarding')}`",
+        f"- Next owned-execution gate: `{next_gate.get('gate')}`",
+        f"- Human gates represented: `{len(_list(lane.get('human_gates')))}`",
+        f"- Local/test reviewer receipts: `{len(lane_decisions)}`",
+        f"- Mutation permission granted: `{lane.get('mutation_permission_granted')}`",
+        "",
+    ]
+    remaining = _list(readiness_delta.get("remaining_before_owned_execution"))
+    if remaining:
+        lines.extend(["### Remaining Before Owned Execution", "", *_bullet_lines(remaining), ""])
+    blockers = _list(lane.get("readiness_blockers"))
+    if blockers:
+        lines.extend(["### Readiness Blockers", "", *_mapping_bullet_lines(blockers, "code", "message"), ""])
+    if lane_id == "ivy":
+        lines.extend(
+            [
+                "### Ivy/Jonah Boundary",
+                "",
+                f"- Public publish blocked: `{lane.get('public_publish_blocked')}`",
+                "- Historical publish artifacts are evidence only; they are not mutation permission.",
+                *_mapping_bullet_lines(_list(lane.get("historical_publish_artifacts")), "path", "status"),
+                "",
+            ]
+        )
+    if lane_id == "weekly":
+        lines.extend(
+            [
+                "### Jarvis Weekly Boundary",
+                "",
+                f"- Observed read clear: `{lane.get('observed_read_clear')}`",
+                f"- Read clear is mutation permission: `{lane.get('read_clear_is_mutation_permission')}`",
+                f"- Blackboard or Obsidian write allowed by this artifact: `{lane.get('blackboard_or_obsidian_write_allowed')}`",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "### Safety Envelope",
+            "",
+            "- This review artifact is for operator readback and gate decision only.",
+            *_bullet_lines(blocked_actions),
+            "",
+            "### Evidence Paths",
+            "",
+            f"- Lane report: `{artifacts.get('lane_report')}`",
+            f"- Shadow report: `{artifacts.get('shadow_report')}`",
+            f"- Adoption report: `{artifacts.get('adoption_report')}`",
+            f"- Auto-review summary: `{_mapping(auto_summary.get('artifacts')).get('summary_json')}`",
+        ]
+    )
+    for decision in lane_decisions:
+        lines.append(f"- Review receipt: `{decision.get('review_receipt_path')}`")
+    return {
+        "title": f"{label} Artifact",
+        "intro": (
+            "Review this embedded lane artifact before checking a decision. "
+            "The evidence links remain below for audit, but the human-review payload is inline here."
+        ),
+        "link": source_artifact_path,
+        "markdown": "\n".join(lines).strip(),
+        "source_artifact_path": source_artifact_path,
+    }
+
+
+def _bullet_lines(items: Sequence[Any]) -> list[str]:
+    return [f"- `{item}`" for item in items if str(item).strip()]
+
+
+def _mapping_bullet_lines(items: Sequence[Any], primary_key: str, secondary_key: str) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        mapping = _mapping(item)
+        primary = mapping.get(primary_key)
+        secondary = mapping.get(secondary_key)
+        if primary or secondary:
+            lines.append(f"- `{primary or 'item'}`: {secondary or 'not provided'}")
+    return lines
 
 
 def _lane_evidence_refs(

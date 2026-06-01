@@ -91,8 +91,14 @@ class LiveOperatorSurfaceAdaptersTest(unittest.TestCase):
             )
             call = invocation(adapter.adapter_id)
 
-            first = adapter.publish(call, live_packet(note_path="Reviews/review.md"))
-            second = adapter.publish(call, live_packet(note_path="Reviews/review.md"))
+            packet = live_packet(
+                note_path="Reviews/review.md",
+                artifact_title="Weekly improvement review",
+                artifact_link="artifact.md",
+                artifact_markdown="## Improvement Review\n\nJarvis produced the reviewable payload.",
+            )
+            first = adapter.publish(call, packet)
+            second = adapter.publish(call, packet)
             readback = adapter.readback(first.outputs["surface_ref"])
             note_path = Path(first.outputs["note_path"])
             note_text = note_path.read_text(encoding="utf-8")
@@ -124,6 +130,11 @@ class LiveOperatorSurfaceAdaptersTest(unittest.TestCase):
         self.assertTrue(readback.runtime_provenance["outputs"]["hash_matches"])
         self.assertIn("live_operator_surface_allowed: true", note_text)
         self.assertIn("public_publish_blocked: true", note_text)
+        self.assertIn("## Artifact To Review", note_text)
+        self.assertIn("### Weekly improvement review", note_text)
+        self.assertIn("[Weekly improvement review](<artifact.md>)", note_text)
+        self.assertIn("Jarvis produced the reviewable payload.", note_text)
+        self.assertTrue(first.outputs["artifact_review"]["embedded"])
         self.assertEqual(decisions[0].status, "succeeded")
         outputs = decisions[0].runtime_provenance["outputs"]
         self.assertEqual(outputs["schema"], "live_operator_surface_decision.v1")

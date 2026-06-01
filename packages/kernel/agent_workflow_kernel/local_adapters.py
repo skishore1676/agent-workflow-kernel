@@ -892,6 +892,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
         evidence_refs = _string_tuple(packet.get("evidence_refs", ()))
         gate_id = str(packet.get("gate_id") or "").strip()
         requested_action = str(packet.get("requested_action") or exact_action).strip()
+        artifact_review = _artifact_review_from_packet(packet)
         note_text = _render_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -905,6 +906,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             exact_action=exact_action,
             action_fingerprint=action_fingerprint,
             evidence_refs=evidence_refs,
+            artifact_review=artifact_review,
             test_only=bool(packet.get("test_only", True)),
             non_live=True,
             created_at=self.created_at,
@@ -978,6 +980,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             "exact_action": exact_action,
             "action_fingerprint": action_fingerprint,
             "evidence_refs": list(evidence_refs),
+            "artifact_review": artifact_review,
             "mutation_mode": self.mutation_mode,
             "write_class": "sandbox",
             "test_only": bool(packet.get("test_only", True)),
@@ -2187,6 +2190,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
         evidence_refs = _string_tuple(packet.get("evidence_refs", ()))
         gate_id = str(packet.get("gate_id") or "").strip()
         requested_action = str(packet.get("requested_action") or exact_action).strip()
+        artifact_review = _artifact_review_from_packet(packet)
         note_text = _render_live_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -2200,6 +2204,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
             exact_action=exact_action,
             action_fingerprint=action_fingerprint,
             evidence_refs=evidence_refs,
+            artifact_review=artifact_review,
             created_at=self.created_at,
         )
         idempotency_replayed = False
@@ -2274,6 +2279,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
             "exact_action": exact_action,
             "action_fingerprint": action_fingerprint,
             "evidence_refs": list(evidence_refs),
+            "artifact_review": artifact_review,
             "mutation_mode": "live",
             "write_class": "live_operator_surface",
             "live_operator_surface_allowed": True,
@@ -2769,6 +2775,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         non_live = bool(packet.get("non_live", True))
         gate_id = str(packet.get("gate_id") or "").strip()
         requested_action = str(packet.get("requested_action") or exact_action).strip()
+        artifact_review = _artifact_review_from_packet(packet)
 
         safety_error = _non_live_safety_error(packet, require_test_only=False)
         if safety_error is not None:
@@ -2836,6 +2843,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             exact_action=exact_action,
             action_fingerprint=action_fingerprint,
             evidence_refs=evidence_refs,
+            artifact_review=artifact_review,
             test_only=test_only,
             non_live=non_live,
             created_at=self.created_at,
@@ -2867,6 +2875,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             "exact_action": exact_action,
             "action_fingerprint": action_fingerprint,
             "evidence_refs": list(evidence_refs),
+            "artifact_review": artifact_review,
             "test_only": test_only,
             "non_live": non_live,
         }
@@ -3187,6 +3196,49 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         return str(path.resolve().relative_to(self.root_dir))
 
 
+def _artifact_review_from_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
+    title = str(packet.get("artifact_title") or packet.get("artifact_label") or "").strip()
+    intro = str(packet.get("artifact_intro") or "").strip()
+    link = str(packet.get("artifact_link") or packet.get("artifact_path") or "").strip()
+    markdown = str(packet.get("artifact_markdown") or packet.get("artifact_body") or "").strip()
+    if not any((title, intro, link, markdown)):
+        return {}
+    if not title:
+        title = "Artifact To Review"
+    return {
+        "title": title,
+        "intro": intro,
+        "link": link,
+        "markdown": markdown,
+        "embedded": bool(markdown),
+    }
+
+
+def _artifact_review_metadata(artifact_review: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "title": str(artifact_review.get("title") or ""),
+        "link": str(artifact_review.get("link") or ""),
+        "embedded": bool(artifact_review.get("embedded")),
+    }
+
+
+def _render_artifact_review_section(artifact_review: Mapping[str, Any]) -> list[str]:
+    if not artifact_review:
+        return []
+    title = str(artifact_review.get("title") or "Artifact To Review")
+    intro = str(artifact_review.get("intro") or "").strip()
+    link = str(artifact_review.get("link") or "").strip()
+    markdown = str(artifact_review.get("markdown") or "").strip()
+    lines = ["## Artifact To Review", "", f"### {title}", ""]
+    if intro:
+        lines.extend([intro, ""])
+    if link:
+        lines.extend([f"- Review source: [{title}](<{link}>)", ""])
+    if markdown:
+        lines.extend([markdown, ""])
+    return lines
+
+
 def _render_review_card(
     *,
     invocation: AdapterInvocation,
@@ -3201,6 +3253,7 @@ def _render_review_card(
     exact_action: str,
     action_fingerprint: str,
     evidence_refs: tuple[str, ...],
+    artifact_review: Mapping[str, Any],
     test_only: bool,
     non_live: bool,
     created_at: str,
@@ -3222,10 +3275,13 @@ def _render_review_card(
         "non_live": non_live,
         "created_at": created_at,
     }
+    if artifact_review:
+        metadata["artifact_review"] = _artifact_review_metadata(artifact_review)
     frontmatter = "\n".join(
         f"{key}: {json.dumps(value, sort_keys=True)}" for key, value in metadata.items()
     )
     evidence_lines = "\n".join(f"- `{ref}`" for ref in evidence_refs) or "- `none`"
+    artifact_lines = _render_artifact_review_section(artifact_review)
     decision_lines = "\n".join(f"- [ ] `{decision}`" for decision in allowed_decisions)
     label = "TEST ONLY - NON-LIVE LOCAL REVIEW PACKET" if test_only else "LOCAL REVIEW PACKET - NON-LIVE"
     ask = human_ask or "Choose exactly one allowed decision below."
@@ -3252,6 +3308,7 @@ def _render_review_card(
             f"- Exact action: `{exact_action}`",
             f"- Action fingerprint: `{action_fingerprint}`",
             "",
+            *artifact_lines,
             "## Evidence",
             evidence_lines,
             "",
@@ -3280,6 +3337,7 @@ def _render_live_review_card(
     exact_action: str,
     action_fingerprint: str,
     evidence_refs: tuple[str, ...],
+    artifact_review: Mapping[str, Any],
     created_at: str,
 ) -> str:
     metadata = {
@@ -3299,10 +3357,13 @@ def _render_live_review_card(
         "public_publish_blocked": True,
         "created_at": created_at,
     }
+    if artifact_review:
+        metadata["artifact_review"] = _artifact_review_metadata(artifact_review)
     frontmatter = "\n".join(
         f"{key}: {json.dumps(value, sort_keys=True)}" for key, value in metadata.items()
     )
     evidence_lines = "\n".join(f"- `{ref}`" for ref in evidence_refs) or "- `none`"
+    artifact_lines = _render_artifact_review_section(artifact_review)
     decision_lines = "\n".join(f"- [ ] `{decision}`" for decision in allowed_decisions)
     ask = human_ask or "Choose exactly one allowed decision below."
     return "\n".join(
@@ -3329,6 +3390,7 @@ def _render_live_review_card(
             f"- Action fingerprint: `{action_fingerprint}`",
             f"- Public publish blocked: `true`",
             "",
+            *artifact_lines,
             "## Evidence",
             evidence_lines,
             "",

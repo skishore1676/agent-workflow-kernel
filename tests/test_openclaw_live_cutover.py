@@ -105,6 +105,17 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
                 self.assertIn(str(output_dir / "obsidian-sandbox"), str(note_path))
                 self.assertTrue(note["readback_hash"].startswith("sha256:"))
                 self.assertEqual(note["readback_hash"], note["content_hash"])
+                note_text = note_path.read_text(encoding="utf-8")
+                self.assertIn("## Artifact To Review", note_text)
+                self.assertIn("### Evidence Paths", note_text)
+                self.assertTrue(note["artifact_review_embedded"])
+                self.assertTrue(Path(note["source_artifact_path"]).exists())
+                if note["lane_id"] == "ivy":
+                    self.assertIn("### Ivy/Jonah Boundary", note_text)
+                    self.assertIn("Public publish blocked", note_text)
+                if note["lane_id"] == "weekly":
+                    self.assertIn("### Jarvis Weekly Boundary", note_text)
+                    self.assertIn("Read clear is mutation permission", note_text)
 
     def test_explicit_flags_write_temp_vault_notes_and_mock_telegram_send(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -158,6 +169,7 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
                 self.assertTrue(note_path.exists())
                 self.assertTrue(note_path.resolve().is_relative_to(vault_root.resolve()))
                 self.assertIn("OpenClaw/Cutover", str(note_path))
+                self.assertIn("## Artifact To Review", note_path.read_text(encoding="utf-8"))
                 self.assertTrue(note["trusted"])
 
     def test_openclaw_root_publishes_blackboard_records_and_readback(self) -> None:
@@ -189,6 +201,9 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
             for record in receipt["blackboard"]["records"]:
                 self.assertTrue(record["readback_found"])
                 self.assertTrue(Path(record["record_path"]).exists())
+                record_json = json.loads(Path(record["record_path"]).read_text(encoding="utf-8"))
+                self.assertTrue(Path(record_json["source_artifact_path"]).exists())
+                self.assertTrue(Path(record_json["summary_path"]).exists())
                 self.assertIn(record["blackboard_item_id"], blackboard)
             self.assertIn("Blackboard", receipt["telegram"]["pointer"])
             receipt_md = (output_dir / "cutover_receipt.md").read_text(encoding="utf-8")
