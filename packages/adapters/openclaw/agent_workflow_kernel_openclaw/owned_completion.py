@@ -338,7 +338,42 @@ def discover_openclaw_artifacts(
     for artifact_id in artifact_ids:
         if artifact_id:
             ids.setdefault(str(artifact_id), {})
+    if not ids:
+        ids.update(_discover_artifact_ids_from_openclaw_records(openclaw))
     return [_evidence_for_artifact(openclaw, artifact_id, metadata) for artifact_id, metadata in sorted(ids.items())]
+
+
+def _discover_artifact_ids_from_openclaw_records(openclaw: Path) -> dict[str, dict[str, Any]]:
+    records_dir = openclaw / "workspace-main" / "state" / "artifact_outbox" / "records"
+    ids: dict[str, dict[str, Any]] = {}
+    if not records_dir.exists():
+        return ids
+    for record_path in sorted(records_dir.glob("*.json")):
+        record = _load_json_if_exists(record_path)
+        if not isinstance(record, Mapping) or not _is_owned_completion_record(record):
+            continue
+        artifact_id = str(record.get("artifact_id") or "").strip()
+        if not artifact_id:
+            continue
+        awk_metadata = record.get("awk") if isinstance(record.get("awk"), Mapping) else {}
+        ids[artifact_id] = {
+            "lane_id": awk_metadata.get("lane_id") or record.get("lane_id") or record.get("lane"),
+            "title": record.get("title"),
+        }
+    return ids
+
+
+def _is_owned_completion_record(record: Mapping[str, Any]) -> bool:
+    if str(record.get("artifact_type") or "") == "awk_human_gate_review":
+        return True
+    if isinstance(record.get("awk"), Mapping):
+        return True
+    review_decision = record.get("review_decision")
+    return (
+        str(record.get("owner") or "") == "awk_openclaw"
+        and isinstance(review_decision, Mapping)
+        and str(review_decision.get("action") or "") == "continue_awk_workflow"
+    )
 
 
 def _run_one_artifact(

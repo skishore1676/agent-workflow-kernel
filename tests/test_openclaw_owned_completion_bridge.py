@@ -55,6 +55,37 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             self.assertEqual(result["next"]["owner"], "awk_openclaw")
             self.assertIsNone(result["predicted_next"])
 
+    def test_scheduler_plan_auto_discovers_openclaw_artifact_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            self.write_openclaw_done_state(openclaw, "awk-cutover-ivy-test", "Ivy/Jonah")
+            self.write_openclaw_done_state(openclaw, "awk-cutover-weekly-test", "Weekly")
+            self.write_non_awk_artifact_record(openclaw, "other-review-test")
+            before = self.snapshot_tree(openclaw)
+            ledger_path = root / "awk-ledger.sqlite3"
+
+            summary = plan_owned_completion_run(
+                ledger_path=ledger_path,
+                openclaw_root=openclaw,
+                now=NOW,
+            )
+
+            self.assertTrue(summary["ok"])
+            self.assertEqual(summary["mode"], "plan")
+            self.assertFalse(summary["ledger_write_enabled"])
+            self.assertFalse(ledger_path.exists())
+            self.assertEqual(before, self.snapshot_tree(openclaw))
+            self.assertEqual(summary["artifact_count"], 2)
+            self.assertEqual(
+                {result["artifact_id"] for result in summary["results"]},
+                {"awk-cutover-ivy-test", "awk-cutover-weekly-test"},
+            )
+            self.assertEqual(
+                {result["predicted_stop_reason"] for result in summary["results"]},
+                {"would_reach_terminal"},
+            )
+
     def test_scheduler_run_mode_against_fixtures_writes_only_awk_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -506,6 +537,8 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             json.dumps(
                 {
                     "artifact_id": artifact_id,
+                    "artifact_type": "awk_human_gate_review",
+                    "awk": {"lane_id": "test"},
                     "status": "approved",
                     "owner": "awk_openclaw",
                     "title": title,
@@ -513,6 +546,24 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
                         "work_id": f"work-{artifact_id}",
                         "work_item_id": f"item-{artifact_id}",
                     },
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    def write_non_awk_artifact_record(self, openclaw: Path, artifact_id: str) -> None:
+        records = openclaw / "workspace-main" / "state" / "artifact_outbox" / "records"
+        records.mkdir(parents=True, exist_ok=True)
+        (records / f"{artifact_id}.json").write_text(
+            json.dumps(
+                {
+                    "artifact_id": artifact_id,
+                    "artifact_type": "ordinary_review",
+                    "owner": "main",
+                    "status": "approved",
+                    "title": "Not an AWK migrated lane",
                 },
                 indent=2,
                 sort_keys=True,
