@@ -263,6 +263,23 @@ Policy shape:
 
 If the dry-run changes after approval, approval is stale.
 
+## Example: Guarded Operator Surface Write
+
+Policy shape:
+
+- allowed: write a bounded operator review note to an explicitly configured
+  Obsidian/Northstar prefix or send a bounded OpenClaw Telegram operator
+  message after adapter and packet authorization agree;
+- required receipt: target surface, exact path or message id, action
+  fingerprint, readback evidence, and explicit `public_publish_blocked`;
+- hard blocks: public publish, trading or money movement, auth or secrets,
+  deploy or production mutation, destructive actions, and unscoped live
+  mutation language.
+
+This approval covers only visibility on the operator surface. It does not
+approve the decision described by the note or message, and it does not approve
+any external effect beyond the configured operator-surface delivery.
+
 ## Stop Conditions
 
 Policy evaluation stops automatic progress when:

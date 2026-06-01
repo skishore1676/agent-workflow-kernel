@@ -365,6 +365,26 @@ A lane adapter may recommend a risk class. The kernel decides whether execution
 is allowed. A surface adapter may capture a human decision. The kernel decides
 what that decision authorizes.
 
+### Guarded Live Operator Surfaces
+
+Live operator-surface adapters are narrower than general live mutation adapters.
+They may write only to the configured human-operator surface after both adapter
+configuration and the surface packet explicitly authorize that surface effect.
+
+Current live write adapters:
+
+- `LiveObsidianMarkdownSurfaceAdapter` writes Markdown beneath a configured
+  vault root and allowed relative prefix, verifies the written path and content
+  hash by readback, and can ingest one checked Markdown decision.
+- `OpenClawTelegramSurfaceAdapter` sends through
+  `openclaw message send --channel telegram ... --json` only when live sending
+  is enabled and the packet authorizes the operator-surface send.
+
+Both adapters fail closed for public publish, trading or money movement, auth or
+secrets, deploy or production mutation, destructive actions, and unscoped live
+mutation language. Their receipts must state that the live operator-surface
+write was authorized and that public publish remains blocked.
+
 ## Failure And Recovery
 
 Adapters must fail with inspectable state rather than prose-only errors.
