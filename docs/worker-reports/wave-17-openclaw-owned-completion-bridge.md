@@ -76,7 +76,7 @@ The bridge tests cover:
 Commit deployed on oldmac:
 
 ```text
-ff73a73 Add OpenClaw owned completion bridge
+b30b32e Harden OpenClaw owned completion identity binding
 ```
 
 oldmac check:
@@ -96,10 +96,10 @@ Bridge command:
 cd /Users/sunny/code/agent-workflow-kernel
 python3 scripts/openclaw_owned_completion_bridge.py \
   --openclaw-root /Users/sunny/.openclaw \
-  --ledger /tmp/awk-openclaw-owned-completion-20260601.sqlite3 \
+  --ledger /tmp/awk-openclaw-owned-completion-20260601-v2.sqlite3 \
   --cutover-receipt /private/tmp/openclaw-awk-blackboard-native-20260601-1/awk-cutover/cutover_receipt.json \
   --artifact-id awk-suman-loop-weekly-20260601-1 \
-  --summary-json /tmp/awk-openclaw-owned-completion-20260601-summary.json
+  --summary-json /tmp/awk-openclaw-owned-completion-20260601-v2-summary.json
 ```
 
 Result:
