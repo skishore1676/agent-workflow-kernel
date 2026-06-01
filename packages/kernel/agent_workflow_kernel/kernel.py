@@ -59,6 +59,42 @@ from .storage import WorkflowLedger, iso_timestamp
 KernelDecision = Literal["idle", "succeeded", "failed", "retry", "blocked", "waiting_on_human"]
 KernelTransitionDecision = Literal["queued", "terminal", "blocked"]
 
+BUDGET_TRANSITION_GUARDS = frozenset(
+    {
+        "within_retry_budget",
+        "within_revision_budget",
+        "within_research_iteration_budget",
+        "within_resume_budget",
+    }
+)
+
+_BUDGET_GUARD_KEYS: Mapping[str, tuple[str, ...]] = {
+    "within_retry_budget": ("max_attempts", "max_retry_attempts", "max_retries"),
+    "within_revision_budget": ("max_revision_turns", "max_revisions"),
+    "within_research_iteration_budget": (
+        "max_research_iterations",
+        "max_research_turns",
+        "max_iterations",
+    ),
+    "within_resume_budget": ("max_resume_attempts", "max_resumes"),
+}
+
+_BUDGET_GUARD_NESTED_KEYS: Mapping[str, tuple[str, ...]] = {
+    "within_retry_budget": ("retry", "retry_budget"),
+    "within_revision_budget": ("revision_budget",),
+    "within_research_iteration_budget": ("research_budget", "iteration_budget"),
+    "within_resume_budget": ("resume_budget",),
+}
+
+_BUDGET_CONSUMING_OUTCOMES: Mapping[str, frozenset[str]] = {
+    "within_retry_budget": frozenset({"retry", "retry_needed", "retry_scheduled"}),
+    "within_revision_budget": frozenset({"needs_revision", "revise", "refine"}),
+    "within_research_iteration_budget": frozenset(
+        {"needs_more_research", "approve_more_research", "more_research"}
+    ),
+    "within_resume_budget": frozenset({"retry_needed", "resume_needed", "recover"}),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class KernelRuntimeConfig:
@@ -139,6 +175,14 @@ class _GuardDecision:
     guard: str | None
     reason: str
     details: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _BudgetLimit:
+    limit: int | None
+    source: str | None
+    key: str | None
+    reason: str | None = None
 
 
 class WorkflowKernel:
@@ -1589,6 +1633,15 @@ class WorkflowKernel:
                 "outcome": transition.on,
                 "to_stage": next_stage.id,
                 "queued_stage_run_id": f"{run.instance_id}:{next_stage.id}:{attempt}",
+                **(
+                    {
+                        "guard": guard.guard,
+                        "guard_details": to_plain_data(guard.details),
+                        "guard_budget": to_plain_data(guard.details.get("budget", {})),
+                    }
+                    if guard.guard
+                    else {}
+                ),
             },
         )
         return _TransitionResult(decision="queued", queued_stage_id=next_stage.id)
@@ -1617,6 +1670,13 @@ class WorkflowKernel:
             return _guard_has_required_artifacts(
                 stage=stage,
                 adapter_result=adapter_result,
+                guard=guard,
+            )
+        if guard in BUDGET_TRANSITION_GUARDS:
+            return self._guard_within_budget(
+                run=run,
+                stage=stage,
+                transition=transition,
                 guard=guard,
             )
         if guard in FAIL_CLOSED_TRANSITION_GUARDS:
@@ -1674,6 +1734,132 @@ class WorkflowKernel:
                 "canonical_surface": row["canonical_surface"],
             },
         )
+
+    def _guard_within_budget(
+        self,
+        *,
+        run: StageRun,
+        stage: StageDef,
+        transition: Transition,
+        guard: str,
+    ) -> _GuardDecision:
+        target_stage = self._next_stage_for_transition(transition)
+        budget = _resolve_budget_limit(
+            workflow=self.workflow,
+            stage=stage,
+            target_stage=target_stage,
+            guard=guard,
+        )
+        if budget.limit is None:
+            return _GuardDecision(
+                False,
+                guard,
+                f"Transition guard {guard!r} cannot resolve a valid budget; failing closed.",
+                {
+                    "budget": {
+                        "resolved": False,
+                        "source": budget.source,
+                        "key": budget.key,
+                        "reason": budget.reason or "missing budget",
+                    }
+                },
+            )
+
+        consumes_budget = _budget_guard_consumes_transition(guard, transition)
+        if guard == "within_retry_budget":
+            if target_stage is None:
+                return _GuardDecision(
+                    False,
+                    guard,
+                    "Transition guard 'within_retry_budget' requires a target stage.",
+                    {"budget": {"resolved": True, "limit": budget.limit}},
+                )
+            used = self._count_stage_runs(instance_id=run.instance_id, stage_id=target_stage.id)
+            requested = used + 1
+            allowed = requested <= budget.limit
+            usage_source = "stage_runs.target_stage"
+        else:
+            used, usage_source = self._budget_iteration_usage(
+                instance_id=run.instance_id,
+                guard=guard,
+                transition=transition,
+                consumes_budget=consumes_budget,
+            )
+            requested = used + 1 if consumes_budget else used
+            allowed = requested <= budget.limit
+
+        details = {
+            "budget": {
+                "resolved": True,
+                "guard": guard,
+                "limit": budget.limit,
+                "source": budget.source,
+                "key": budget.key,
+                "used": used,
+                "requested": requested,
+                "consumed": consumes_budget,
+                "usage_source": usage_source,
+            }
+        }
+        if not allowed:
+            return _GuardDecision(
+                False,
+                guard,
+                (
+                    f"Transition guard {guard!r} exhausted budget "
+                    f"{requested}/{budget.limit}; failing closed."
+                ),
+                details,
+            )
+        return _GuardDecision(
+            True,
+            guard,
+            f"Transition guard {guard!r} is within budget {requested}/{budget.limit}.",
+            details,
+        )
+
+    def _budget_iteration_usage(
+        self,
+        *,
+        instance_id: str,
+        guard: str,
+        transition: Transition,
+        consumes_budget: bool,
+    ) -> tuple[int, str]:
+        consumed = 0
+        saw_budget_metadata = False
+        for event in self.ledger.list_events():
+            if event["instance_id"] != instance_id or event["event_type"] != "workflow_transitioned":
+                continue
+            payload = event["payload"]
+            if payload.get("guard") != guard:
+                continue
+            guard_budget = payload.get("guard_budget")
+            if isinstance(guard_budget, Mapping):
+                saw_budget_metadata = True
+                if guard_budget.get("consumed") is True:
+                    consumed += 1
+        if saw_budget_metadata:
+            return consumed, "events.guard_budget"
+
+        fallback_stage_id = transition.to_stage if consumes_budget else transition.from_stage
+        if fallback_stage_id is None:
+            return 0, "stage_runs.unavailable"
+        return (
+            self._count_stage_runs(instance_id=instance_id, stage_id=fallback_stage_id),
+            "stage_runs.fallback",
+        )
+
+    def _count_stage_runs(self, *, instance_id: str, stage_id: str) -> int:
+        row = self.ledger.connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM stage_runs
+            WHERE instance_id = ? AND stage_id = ?
+            """,
+            (instance_id, stage_id),
+        ).fetchone()
+        return int(row["count"]) if row is not None else 0
 
     def _block_transition_guard(
         self,
@@ -2145,6 +2331,123 @@ def _guard_has_required_artifacts(
         "all required artifact roles are present",
         {"required_roles": list(required_roles), "present_roles": list(present_roles)},
     )
+
+
+def _resolve_budget_limit(
+    *,
+    workflow: WorkflowDef,
+    stage: StageDef,
+    target_stage: StageDef | None,
+    guard: str,
+) -> _BudgetLimit:
+    for source, candidate in _budget_sources_for_guard(
+        workflow=workflow,
+        stage=stage,
+        target_stage=target_stage,
+        guard=guard,
+    ):
+        budget = _budget_limit_from_mapping(source=source, value=candidate, guard=guard)
+        if budget is not None:
+            return budget
+    return _BudgetLimit(
+        limit=None,
+        source=None,
+        key=None,
+        reason=f"no configured budget found for {guard}",
+    )
+
+
+def _budget_sources_for_guard(
+    *,
+    workflow: WorkflowDef,
+    stage: StageDef,
+    target_stage: StageDef | None,
+    guard: str,
+) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    sources: list[tuple[str, Mapping[str, Any]]] = []
+
+    def add(source: str, value: Any) -> None:
+        if isinstance(value, Mapping):
+            sources.append((source, value))
+
+    add(f"stages.{stage.id}.budget", stage.budget)
+    if guard == "within_retry_budget":
+        add(f"stages.{stage.id}.retry", stage.retry)
+    add(f"stages.{stage.id}.policy", stage.policy)
+    if target_stage is not None and target_stage.id != stage.id:
+        add(f"stages.{target_stage.id}.budget", target_stage.budget)
+        if guard == "within_retry_budget":
+            add(f"stages.{target_stage.id}.retry", target_stage.retry)
+        add(f"stages.{target_stage.id}.policy", target_stage.policy)
+    defaults = workflow.defaults
+    if guard == "within_retry_budget":
+        add("defaults.retry", defaults.get("retry"))
+    add("defaults.budget", defaults.get("budget"))
+    add("defaults", defaults)
+    add("policies.budget", workflow.policies.get("budget"))
+    add("policies", workflow.policies)
+    return tuple(sources)
+
+
+def _budget_limit_from_mapping(
+    *,
+    source: str,
+    value: Mapping[str, Any],
+    guard: str,
+) -> _BudgetLimit | None:
+    for key in _BUDGET_GUARD_KEYS[guard]:
+        if key in value:
+            return _coerce_budget_limit(value[key], source=source, key=key)
+    for nested_key in _BUDGET_GUARD_NESTED_KEYS[guard]:
+        nested = value.get(nested_key)
+        if isinstance(nested, Mapping):
+            for key in _BUDGET_GUARD_KEYS[guard]:
+                if key in nested:
+                    return _coerce_budget_limit(
+                        nested[key],
+                        source=f"{source}.{nested_key}",
+                        key=key,
+                    )
+        elif nested_key in value and nested not in (None, ""):
+            return _BudgetLimit(
+                limit=None,
+                source=source,
+                key=nested_key,
+                reason="budget section is not a mapping",
+            )
+    return None
+
+
+def _coerce_budget_limit(value: Any, *, source: str, key: str) -> _BudgetLimit:
+    if isinstance(value, bool):
+        return _BudgetLimit(
+            limit=None,
+            source=source,
+            key=key,
+            reason="budget value must be an integer, not boolean",
+        )
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return _BudgetLimit(
+            limit=None,
+            source=source,
+            key=key,
+            reason="budget value must be an integer",
+        )
+    if limit < 0:
+        return _BudgetLimit(
+            limit=None,
+            source=source,
+            key=key,
+            reason="budget value must be non-negative",
+        )
+    return _BudgetLimit(limit=limit, source=source, key=key)
+
+
+def _budget_guard_consumes_transition(guard: str, transition: Transition) -> bool:
+    outcome = transition.on.strip().lower().replace("-", "_").replace(" ", "_")
+    return outcome in _BUDGET_CONSUMING_OUTCOMES.get(guard, frozenset())
 
 
 def _policy_snapshot(gate: Any, effective_policy: _EffectivePolicy | None = None) -> dict[str, Any]:
