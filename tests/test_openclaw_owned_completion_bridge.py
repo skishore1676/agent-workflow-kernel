@@ -132,6 +132,70 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             ][0]
             self.assertEqual(waiting["status"], "waiting_on_human")
 
+    def test_mismatched_handoff_artifact_id_does_not_import_acknowledgement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("ivy",))
+            self.write_openclaw_done_state(openclaw, "awk-cutover-ivy-test", "Ivy/Jonah")
+            handoff = (
+                openclaw
+                / "workspace"
+                / "agents"
+                / "codex"
+                / "handoffs"
+                / "review_decisions"
+                / "awk-cutover-ivy-test.json"
+            )
+            handoff_data = json.loads(handoff.read_text(encoding="utf-8"))
+            handoff_data["artifact_id"] = "different-artifact"
+            handoff.write_text(json.dumps(handoff_data), encoding="utf-8")
+
+            summary = run_owned_completion_bridge(
+                ledger_path=root / "awk-ledger.sqlite3",
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                now=NOW,
+            )
+
+            self.assertFalse(summary["ok"])
+            self.assertEqual(summary["results"][0]["status"], "waiting_on_human")
+            self.assertFalse(summary["results"][0]["acknowledged"])
+            self.assertEqual(summary["results"][0]["terminal_event_count"], 0)
+
+    def test_mismatched_runner_receipt_artifact_id_keeps_verify_stage_queued(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("weekly",))
+            self.write_openclaw_done_state(openclaw, "awk-cutover-weekly-test", "Weekly")
+            runner = (
+                openclaw
+                / "workspace-main"
+                / "state"
+                / "agent_review_runner"
+                / "receipts"
+                / "awk_openclaw"
+                / "awk-cutover-weekly-test-20260601T160000Z.json"
+            )
+            runner_data = json.loads(runner.read_text(encoding="utf-8"))
+            runner_data["artifact_id"] = "different-artifact"
+            runner.write_text(json.dumps(runner_data), encoding="utf-8")
+
+            summary = run_owned_completion_bridge(
+                ledger_path=root / "awk-ledger.sqlite3",
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                now=NOW,
+            )
+
+            self.assertFalse(summary["ok"])
+            result = summary["results"][0]
+            self.assertTrue(result["acknowledged"])
+            self.assertFalse(result["runner_done"])
+            self.assertEqual(result["status"], "waiting_on_openclaw_runner")
+            self.assertEqual(result["terminal_event_count"], 0)
+
     def write_cutover_receipt(self, root: Path, lanes: tuple[str, ...]) -> Path:
         records = []
         for lane in lanes:

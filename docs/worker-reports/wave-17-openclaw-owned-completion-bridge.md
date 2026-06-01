@@ -35,8 +35,12 @@ State handling:
 
 - If the OpenClaw handoff is missing, the AWK instance remains
   `waiting_on_human`.
+- If the handoff file exists but its JSON `artifact_id` does not match the AWK
+  artifact ID being bridged, the acknowledgement is not imported.
 - If the handoff is acknowledged but the OpenClaw runner receipt is missing, the
   AWK instance keeps `verify_openclaw_review_runner` queued for the next pickup.
+- If the runner receipt file exists but its JSON `artifact_id` does not match
+  the AWK artifact ID being bridged, the verify stage remains queued.
 - If both acknowledgement and runner receipt exist, AWK records the human
   decision, runs the verification stage, and writes `workflow_terminal`.
 - If rerun after terminal completion, the bridge reports `already_terminal` and
@@ -54,15 +58,17 @@ python3 -m unittest discover -s tests
 
 Results:
 
-- Focused bridge tests: 3 passed.
-- Full unittest suite: 184 passed.
-- Full check script: 184 passed under unittest and 184 passed under pytest.
+- Focused bridge tests: 5 passed.
+- Full unittest suite: 186 passed.
+- Full check script: 186 passed under unittest and 186 passed under pytest.
 
 The bridge tests cover:
 
 - acknowledged Blackboard artifacts reaching AWK terminal workflow state;
 - missing runner receipt leaving the verify stage queued until the next pickup;
 - unacknowledged artifact waiting at the human gate;
+- mismatched handoff `artifact_id` refusing acknowledgement import;
+- mismatched runner receipt `artifact_id` keeping verify queued;
 - rerun idempotence after terminal completion.
 
 ## oldmac Verification

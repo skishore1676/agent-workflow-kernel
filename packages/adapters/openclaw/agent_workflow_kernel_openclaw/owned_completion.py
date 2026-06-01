@@ -56,6 +56,9 @@ class OpenClawArtifactEvidence:
     def acknowledged(self) -> bool:
         if not isinstance(self.handoff, Mapping):
             return False
+        handoff_artifact_id = self.handoff.get("artifact_id")
+        if handoff_artifact_id is not None and str(handoff_artifact_id) != self.artifact_id:
+            return False
         return (
             str(self.handoff.get("action") or "") == "continue_awk_workflow"
             and str(self.handoff.get("status") or "") == "done"
@@ -64,7 +67,12 @@ class OpenClawArtifactEvidence:
 
     @property
     def runner_done(self) -> bool:
-        return isinstance(self.runner_receipt, Mapping) and str(self.runner_receipt.get("status") or "") == "done"
+        if not isinstance(self.runner_receipt, Mapping):
+            return False
+        receipt_artifact_id = self.runner_receipt.get("artifact_id")
+        if receipt_artifact_id is not None and str(receipt_artifact_id) != self.artifact_id:
+            return False
+        return str(self.runner_receipt.get("status") or "") == "done"
 
 
 def owned_completion_workflow() -> WorkflowDef:
