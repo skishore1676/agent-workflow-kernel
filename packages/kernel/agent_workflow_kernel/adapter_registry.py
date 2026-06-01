@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .adapters import RuntimeAdapter
+from .adapters import RuntimeAdapter, SurfaceAdapter
 from .contracts import AdapterFamily, RiskClass, StageType
 
 
@@ -44,6 +44,26 @@ class AdapterRegistration:
             operations=capabilities.operations,
             side_effects=side_effects,
             replay_safe=replay_safe,
+            metadata=dict(capabilities.metadata),
+        )
+
+    @classmethod
+    def from_surface_adapter(
+        cls,
+        adapter: SurfaceAdapter,
+        *,
+        side_effects: tuple[RiskClass, ...] = (RiskClass.INTERNAL_STATE,),
+        replay_safe: bool = False,
+    ) -> "AdapterRegistration":
+        capabilities = adapter.capabilities()
+        return cls(
+            adapter_id=capabilities.adapter_id,
+            family=capabilities.family,
+            adapter=adapter,
+            operations=capabilities.operations,
+            side_effects=side_effects,
+            replay_safe=replay_safe,
+            metadata=dict(capabilities.metadata),
         )
 
     def supports(self, operation: str) -> bool:

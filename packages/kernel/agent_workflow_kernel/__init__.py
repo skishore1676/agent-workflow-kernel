@@ -107,7 +107,13 @@ from .receipts import (
     receipt_digest,
 )
 from .runner import RunnerResult, RunnerStep, WorkflowRunner
-from .kernel import KernelDecisionResult, KernelRuntimeConfig, KernelStep, WorkflowKernel
+from .kernel import (
+    HumanGateSurfaceResult,
+    KernelDecisionResult,
+    KernelRuntimeConfig,
+    KernelStep,
+    WorkflowKernel,
+)
 from .storage import LedgerConflict, RecoveryAction, WorkflowLedger
 from .validation import WorkflowValidationError, validate_workflow_def, validate_workflow_mapping
 
@@ -130,6 +136,7 @@ __all__ = [
     "HardGate",
     "HostAdapter",
     "HostDescriptor",
+    "HumanGateSurfaceResult",
     "HumanApprovalReceipt",
     "KernelDecisionResult",
     "KernelRuntimeConfig",
