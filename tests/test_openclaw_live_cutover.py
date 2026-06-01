@@ -56,6 +56,7 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
             self.assertTrue((output_dir / "cutover_receipt.json").exists())
             self.assertTrue((output_dir / "cutover_receipt.md").exists())
             self.assertEqual(receipt["telegram"]["send_result"]["status"], "not_sent")
+            self.assertTrue(receipt["telegram"]["upstream_obsidian_trusted"])
             self.assertTrue(Path(receipt["telegram"]["outbox_message_path"]).exists())
             self.assertEqual(
                 {item["reviewer_human_ref"] for item in receipt["review"]["decisions"]},
@@ -115,11 +116,71 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
             self.assertNotIn("telegram_send", receipt["safety"]["blocked_actions"])
             self.assertEqual(receipt["telegram"]["send_result"]["status"], "sent")
             self.assertEqual(receipt["telegram"]["send_result"]["message_id"], "message/ref/123")
+            self.assertTrue(receipt["telegram"]["upstream_obsidian_trusted"])
             for note in receipt["obsidian"]["notes"]:
                 note_path = Path(note["note_path"])
                 self.assertTrue(note_path.exists())
                 self.assertTrue(note_path.resolve().is_relative_to(vault_root.resolve()))
                 self.assertIn("OpenClaw/Cutover", str(note_path))
+                self.assertTrue(note["trusted"])
+
+    def test_live_telegram_send_is_blocked_when_obsidian_receipts_are_untrusted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_dir = root / "cutover"
+            vault_root = root / "sandbox-vault"
+            conflicting_note = vault_root / "OpenClaw" / "Cutover" / "ivy" / "cutover-review.md"
+            conflicting_note.parent.mkdir(parents=True)
+            conflicting_note.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "gate_id: cutover:ivy",
+                        "---",
+                        "",
+                        "# Old cutover review",
+                        "",
+                        "- Action fingerprint: `sha256:old-action`",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess(
+                args=["openclaw"],
+                returncode=0,
+                stdout='{"message_id":"message/ref/123"}\n',
+                stderr="",
+            )
+
+            with patch.object(script.subprocess, "run", return_value=completed) as send:
+                receipt = script.build_live_cutover(
+                    ivy_fixture=IVY_FIXTURE,
+                    weekly_fixture=WEEKLY_FIXTURE,
+                    vault_root=vault_root,
+                    obsidian_prefix="OpenClaw/Cutover",
+                    telegram_target="owner-chat",
+                    telegram_account="oldmac-account",
+                    allow_live_obsidian=True,
+                    allow_live_telegram=True,
+                    output_dir=output_dir,
+                    telegram_send_cmd="openclaw",
+                )
+
+            send.assert_not_called()
+            self.assertEqual(receipt["status"], "blocked")
+            ivy_note = next(note for note in receipt["obsidian"]["notes"] if note["lane_id"] == "ivy")
+            self.assertEqual(ivy_note["status"], "blocked")
+            self.assertEqual(ivy_note["error_class"], "idempotency_conflict")
+            self.assertFalse(ivy_note["trusted"])
+            self.assertFalse(receipt["telegram"]["upstream_obsidian_trusted"])
+            self.assertEqual(receipt["telegram"]["send_result"]["status"], "blocked")
+            self.assertEqual(receipt["telegram"]["send_result"]["reason"], "obsidian_receipts_not_trusted")
+            self.assertFalse(receipt["telegram"]["send_result"]["performed"])
+            self.assertEqual(
+                receipt["telegram"]["send_result"]["upstream_blockers"][0]["reason"],
+                "publish_failed",
+            )
+            self.assertIn("artifacts are blocked", receipt["telegram"]["pointer"])
 
     def test_refuses_unsafe_obsidian_prefix_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

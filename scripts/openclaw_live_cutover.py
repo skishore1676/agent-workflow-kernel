@@ -159,11 +159,13 @@ def build_live_cutover(
         allow_live_obsidian=allow_live_obsidian,
         blocked_actions=blocked_actions,
     )
+    obsidian_trust_blockers = _obsidian_trust_blockers(obsidian)
     pointer = _telegram_pointer(
         obsidian=obsidian,
         blocked_actions=blocked_actions,
         allow_live_obsidian=allow_live_obsidian,
         allow_live_telegram=allow_live_telegram,
+        obsidian_trust_blockers=obsidian_trust_blockers,
     )
     telegram = _publish_telegram_pointer(
         pointer=pointer,
@@ -173,6 +175,8 @@ def build_live_cutover(
         allow_live_telegram=allow_live_telegram,
         telegram_send_cmd=telegram_send_cmd,
         telegram_delivery=telegram_delivery,
+        upstream_obsidian_trusted=not obsidian_trust_blockers,
+        upstream_obsidian_blockers=obsidian_trust_blockers,
     )
 
     status = _overall_status(obsidian=obsidian, telegram=telegram, decisions=decisions)
@@ -468,6 +472,14 @@ def _publish_obsidian_notes(
             surface_ref["note_path"] = publish.outputs["note_path"]
         readback = adapter.readback(surface_ref) if surface_ref else None
         readback_outputs = _mapping(readback.runtime_provenance.get("outputs")) if readback else {}
+        publish_error = _mapping(publish.outputs.get("error"))
+        readback_hash = readback_outputs.get("content_hash")
+        trusted = (
+            publish.status == "succeeded"
+            and getattr(readback, "status", None) == "succeeded"
+            and bool(readback_hash)
+            and readback_hash == publish.outputs.get("content_hash")
+        )
         notes.append(
             {
                 "lane_id": lane_id,
@@ -475,13 +487,19 @@ def _publish_obsidian_notes(
                 "note_path": publish.outputs.get("note_path"),
                 "relative_note_path": str(note_rel),
                 "content_hash": publish.outputs.get("content_hash"),
-                "readback_hash": readback_outputs.get("content_hash"),
+                "readback_hash": readback_hash,
+                "readback_confirmed": bool(readback_outputs.get("readback_confirmed", False)),
+                "readback_hash_matches": bool(readback_outputs.get("hash_matches", False)),
                 "readback_receipt_id": getattr(readback, "receipt_id", None),
                 "readback_status": getattr(readback, "status", None),
                 "action_fingerprint": action_fingerprint,
                 "publish_receipt_ref": publish.receipt_ref,
                 "adapter_id": adapter.adapter_id,
                 "decision_count": len(lane_decisions),
+                "idempotency_replayed": bool(publish.outputs.get("idempotency_replayed", False)),
+                "trusted": trusted,
+                "error_class": publish_error.get("error_class"),
+                "error_message": publish_error.get("message"),
             }
         )
     return {
@@ -503,6 +521,8 @@ def _publish_telegram_pointer(
     allow_live_telegram: bool,
     telegram_send_cmd: str | None,
     telegram_delivery: str,
+    upstream_obsidian_trusted: bool,
+    upstream_obsidian_blockers: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     adapter = SandboxTelegramOutboxSurfaceAdapter(
         output_root / "telegram-outbox",
@@ -516,6 +536,8 @@ def _publish_telegram_pointer(
             "telegram_account": telegram_account,
             "pointer": pointer,
             "allow_live_telegram": allow_live_telegram,
+            "upstream_obsidian_trusted": upstream_obsidian_trusted,
+            "upstream_obsidian_blockers": list(upstream_obsidian_blockers),
         }
     )
     invocation = AdapterInvocation(
@@ -550,16 +572,24 @@ def _publish_telegram_pointer(
     readback = adapter.readback(surface_ref) if surface_ref else None
     live_readback_hash = None
     if allow_live_telegram:
-        live = _send_live_telegram_pointer(
-            pointer=pointer,
-            telegram_target=telegram_target or "",
-            telegram_account=telegram_account or "",
-            output_root=output_root,
-            telegram_send_cmd=telegram_send_cmd,
-            telegram_delivery=telegram_delivery,
-        )
-        send_result = live["send_result"]
-        live_readback_hash = live.get("readback_hash")
+        if upstream_obsidian_trusted:
+            live = _send_live_telegram_pointer(
+                pointer=pointer,
+                telegram_target=telegram_target or "",
+                telegram_account=telegram_account or "",
+                output_root=output_root,
+                telegram_send_cmd=telegram_send_cmd,
+                telegram_delivery=telegram_delivery,
+            )
+            send_result = live["send_result"]
+            live_readback_hash = live.get("readback_hash")
+        else:
+            send_result = {
+                "status": "blocked",
+                "reason": "obsidian_receipts_not_trusted",
+                "performed": False,
+                "upstream_blockers": list(upstream_obsidian_blockers),
+            }
     else:
         send_result = {
             "status": "not_sent",
@@ -578,6 +608,8 @@ def _publish_telegram_pointer(
         "readback_receipt_id": getattr(readback, "receipt_id", None),
         "target": telegram_target,
         "account": telegram_account,
+        "upstream_obsidian_trusted": upstream_obsidian_trusted,
+        "upstream_obsidian_blockers": list(upstream_obsidian_blockers),
         "pointer": pointer,
         "send_result": send_result,
     }
@@ -705,18 +737,77 @@ def _telegram_pointer(
     blocked_actions: Sequence[str],
     allow_live_obsidian: bool,
     allow_live_telegram: bool,
+    obsidian_trust_blockers: Sequence[Mapping[str, Any]],
 ) -> str:
     note_lines = [
-        f"- {note.get('lane_id')}: {note.get('note_path')} ({note.get('readback_hash')})"
+        "- {lane}: {path} (readback={readback}; trusted={trusted}; status={status})".format(
+            lane=note.get("lane_id"),
+            path=note.get("note_path"),
+            readback=note.get("readback_hash"),
+            trusted=note.get("trusted"),
+            status=note.get("status"),
+        )
         for note in _list(obsidian.get("notes"))
         if isinstance(note, Mapping)
+    ]
+    headline = (
+        "OpenClaw AWK cutover review artifacts ready."
+        if not obsidian_trust_blockers
+        else "OpenClaw AWK cutover review artifacts are blocked; inspect receipt before trusting live surfaces."
+    )
+    blocker_lines = [
+        "- blocked {lane}: {reason}".format(
+            lane=blocker.get("lane_id"),
+            reason=blocker.get("reason"),
+        )
+        for blocker in obsidian_trust_blockers
     ]
     safety = (
         f"safety: obsidian_enabled={allow_live_obsidian}; "
         f"telegram_enabled={allow_live_telegram}; mutation_permission_granted=False; "
         "protected-action-gates=closed; see receipt for details"
     )
-    return "\n".join(["OpenClaw AWK cutover review artifacts ready.", *note_lines, safety])
+    return "\n".join([headline, *note_lines, *blocker_lines, safety])
+
+
+def _obsidian_trust_blockers(obsidian: Mapping[str, Any]) -> list[dict[str, Any]]:
+    notes = [note for note in _list(obsidian.get("notes")) if isinstance(note, Mapping)]
+    if not notes:
+        return [{"lane_id": None, "reason": "no_obsidian_notes"}]
+
+    blockers: list[dict[str, Any]] = []
+    for note in notes:
+        lane_id = note.get("lane_id")
+        if note.get("status") != "succeeded":
+            blockers.append(
+                {
+                    "lane_id": lane_id,
+                    "reason": "publish_failed",
+                    "status": note.get("status"),
+                    "error_class": note.get("error_class"),
+                    "error_message": note.get("error_message"),
+                }
+            )
+            continue
+        if note.get("readback_status") != "succeeded":
+            blockers.append(
+                {
+                    "lane_id": lane_id,
+                    "reason": "readback_failed",
+                    "readback_status": note.get("readback_status"),
+                }
+            )
+            continue
+        if not note.get("readback_hash") or note.get("readback_hash") != note.get("content_hash"):
+            blockers.append(
+                {
+                    "lane_id": lane_id,
+                    "reason": "readback_hash_mismatch",
+                    "content_hash": note.get("content_hash"),
+                    "readback_hash": note.get("readback_hash"),
+                }
+            )
+    return blockers
 
 
 def _obsidian_human_ask(
