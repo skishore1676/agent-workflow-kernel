@@ -20,3 +20,17 @@ The adapter:
 
 Portable AWK workflow definitions should emit generic human-gate review notes.
 This adapter is where OpenClaw-specific dashboard plumbing belongs.
+
+## Blackboard Decision Loop
+
+`OpenClawBlackboardDecisionLoopAdapter` wraps the existing OpenClaw scripts that
+consume checked review-note decisions and route follow-up work:
+
+- `workspace-main/scripts/ingest_agent_reviews.py`
+- `workspace-main/scripts/agent_review_runner.py`
+- `scripts/run_blackboard_decision_ingester.sh`
+
+The adapter deliberately reuses those scripts instead of duplicating lane rules
+inside AWK. Dry inspection can refresh Blackboard, run a non-applying decision
+ingest, and read the runner plan. Mutating ingest requires `allow_apply=True`.
+The full direct Jarvis/runner loop requires `allow_agent_dispatch=True`.

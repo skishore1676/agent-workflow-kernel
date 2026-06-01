@@ -39,6 +39,7 @@ from .readonly import (
     guard_read_only_operation,
     invocation_from_fixture,
 )
+from .review_loop import OpenClawBlackboardDecisionLoopAdapter
 from .weekly_update import (
     WEEKLY_UPDATE_ADOPTION_REPORT_SCHEMA,
     WEEKLY_UPDATE_FIXTURE_SCHEMA,
@@ -76,6 +77,7 @@ __all__ = [
     "IvyJonahTranscriptRef",
     "OpenClawMutationBlocked",
     "OpenClawBlackboardReviewAdapter",
+    "OpenClawBlackboardDecisionLoopAdapter",
     "OpenClawReadOnlyAdapter",
     "OpenClawReadOnlyInspection",
     "OpenClawReferenceMapping",
