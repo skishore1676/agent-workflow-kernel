@@ -80,11 +80,14 @@ from .parity import (
 )
 from .policy import (
     ActionRequest,
+    ALLOWED_TRANSITION_GUARDS,
     ApprovalDecision,
     ApprovalValidation,
+    FAIL_CLOSED_TRANSITION_GUARDS,
     GateDecision,
     HardGate,
     HumanApprovalReceipt,
+    IMPLEMENTED_TRANSITION_GUARDS,
     PolicyEngine,
     action_fingerprint,
     build_test_only_suman_approval,
@@ -124,6 +127,7 @@ from .validation import WorkflowValidationError, validate_workflow_def, validate
 
 __all__ = [
     "ActionRequest",
+    "ALLOWED_TRANSITION_GUARDS",
     "AdapterError",
     "AdapterFamily",
     "AdapterInvocation",
@@ -141,12 +145,14 @@ __all__ = [
     "DryRunSurfaceAdapter",
     "DryRunTelegramSurfaceAdapter",
     "FailureClass",
+    "FAIL_CLOSED_TRANSITION_GUARDS",
     "GateDecision",
     "HardGate",
     "HostAdapter",
     "HostDescriptor",
     "HumanGateSurfaceResult",
     "HumanApprovalReceipt",
+    "IMPLEMENTED_TRANSITION_GUARDS",
     "KernelDecisionResult",
     "KernelRuntimeConfig",
     "KernelStep",
