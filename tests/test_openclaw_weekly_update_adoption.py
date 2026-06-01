@@ -7,7 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 sys.path.insert(0, str(ROOT / "packages" / "adapters" / "openclaw"))
 
-from agent_workflow_kernel import ActionRequest, RiskClass, StageType, build_test_only_suman_approval  # noqa: E402
+from agent_workflow_kernel import (  # noqa: E402
+    ActionRequest,
+    PromptRegistry,
+    RiskClass,
+    StageType,
+    build_test_only_suman_approval,
+)
 from agent_workflow_kernel.dsl import load_workflow_file  # noqa: E402
 from agent_workflow_kernel_openclaw import (  # noqa: E402
     WEEKLY_UPDATE_ADOPTION_REPORT_SCHEMA,
@@ -46,6 +52,35 @@ class OpenClawWeeklyUpdateAdoptionTest(unittest.TestCase):
         transitions = {(transition.from_stage, transition.on): transition for transition in workflow.transitions}
         self.assertEqual(transitions[("readback_blackboard_card", "needs_review")].to_stage, "suman_review_gate")
         self.assertEqual(transitions[("readback_blackboard_card", "read_clear")].to_stage, "route_follow_up")
+
+    def test_jarvis_executable_agent_stages_have_resolvable_prompt_refs(self) -> None:
+        workflow = load_workflow_file(WORKFLOW_PATH)
+        registry = PromptRegistry.load(ROOT / "prompts")
+        jarvis_stages = [
+            stage for stage in workflow.stages if "actors.jarvis" in stage.actors.values()
+        ]
+
+        self.assertEqual([stage.id for stage in jarvis_stages], ["route_follow_up"])
+        for stage in jarvis_stages:
+            with self.subTest(stage_id=stage.id):
+                self.assertTrue(stage.prompt_refs, f"{stage.id} must not be prompt-anonymous")
+                self.assertEqual(
+                    [ref.id for ref in stage.prompt_refs],
+                    [
+                        "identity.jarvis_weekly_shadow_worker",
+                        "policy.no_external_effects",
+                        "lane.jarvis_weekly_update_shadow",
+                        "stage.jarvis_weekly.route_follow_up",
+                    ],
+                )
+
+                bundle = registry.resolve(stage.prompt_refs)
+
+                self.assertEqual(
+                    [prompt.ref.kind for prompt in bundle.prompts],
+                    ["identity", "policy", "lane", "stage"],
+                )
+                self.assertTrue(all(prompt.content_hash.startswith("sha256:") for prompt in bundle.prompts))
 
     def test_fixture_helpers_expose_weekly_update_blackboard_fields(self) -> None:
         fixture = load_weekly_update_fixture(READY_FIXTURE)

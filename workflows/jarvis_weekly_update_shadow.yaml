@@ -120,6 +120,31 @@ stages:
     adapter: lane.openclaw.weekly_followup_router
     actors:
       jarvis: actors.jarvis
+    prompt_refs:
+      - id: identity.jarvis_weekly_shadow_worker
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.no_external_effects
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.route_follow_up
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       weekly_update_card: receipts.readback_blackboard_card
       human_decision: receipts.suman_review_gate

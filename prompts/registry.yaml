@@ -16,6 +16,11 @@ prompts:
     version: 1.0.0
     path: identities/jonah-editor/v1.0.0.md
     status: active
+  - id: identity.jarvis_weekly_shadow_worker
+    kind: identity
+    version: 1.0.0
+    path: identities/jarvis-weekly-shadow/v1.0.0.md
+    status: active
   - id: policy.no_external_effects
     kind: policy
     version: 1.0.0
@@ -30,6 +35,11 @@ prompts:
     kind: lane
     version: 1.0.0
     path: lanes/ivy-jonah-editorial/v1.0.0.md
+    status: active
+  - id: lane.jarvis_weekly_update_shadow
+    kind: lane
+    version: 1.0.0
+    path: lanes/jarvis-weekly-update-shadow/v1.0.0.md
     status: active
   - id: stage.review
     kind: stage
@@ -50,4 +60,9 @@ prompts:
     kind: stage
     version: 1.0.0
     path: stages/ivy-jonah/revise-draft/v1.0.0.md
+    status: active
+  - id: stage.jarvis_weekly.route_follow_up
+    kind: stage
+    version: 1.0.0
+    path: stages/jarvis-weekly-route-follow-up/v1.0.0.md
     status: active
