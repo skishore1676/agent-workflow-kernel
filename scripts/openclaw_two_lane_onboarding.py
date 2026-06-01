@@ -99,10 +99,19 @@ def build_onboarding_packet(
         "weekly": _build_lane_packet("weekly", Path(weekly_fixture), output_root),
     }
     overall = _overall_readiness(lanes)
+    evidence_manifest = _evidence_manifest(output_root, lanes)
+    _write_json(output_root / "evidence_manifest.json", evidence_manifest)
     summary: dict[str, Any] = {
         "schema": PACKET_SCHEMA,
         "packet_id": _packet_id(lanes),
         "overall_readiness": overall,
+        "dual_run_evidence": {
+            "packet_kind": "local_dual_run_test_packet",
+            "inputs_read": evidence_manifest["inputs_read"],
+            "awk_generated": evidence_manifest["awk_generated"],
+            "readiness_deltas": evidence_manifest["readiness_deltas"],
+            "next_owned_execution_gate": evidence_manifest["next_owned_execution_gate"],
+        },
         "safety": {
             "local_output_only": True,
             "mutation_permission_granted": False,
@@ -113,6 +122,7 @@ def build_onboarding_packet(
         "artifacts": {
             "output_dir": str(output_root),
             "summary_json": str(output_root / "summary.json"),
+            "evidence_manifest": str(output_root / "evidence_manifest.json"),
             "readme": str(output_root / "README.md"),
         },
     }
@@ -149,6 +159,7 @@ def _build_lane_packet(lane_id: str, fixture_path: Path, output_root: Path) -> d
     lane_dir.mkdir(parents=True, exist_ok=True)
 
     fixture = _load_json(fixture_path)
+    source_evidence = _source_evidence(lane_id, fixture_path, fixture)
     shadow_report = build_shadow_report(fixture)
     lane_adoption = _mapping(shadow_report.get("lane_adoption"))
     adoption_report = _mapping(lane_adoption.get("report"))
@@ -169,17 +180,32 @@ def _build_lane_packet(lane_id: str, fixture_path: Path, output_root: Path) -> d
     _write_json(lane_dir / "review_notes.json", review_notes)
 
     readiness = _lane_readiness(lane_id, shadow_report, adoption_report, gate_specs)
+    safety_boundaries = _lane_safety_boundaries(lane_id, shadow_report, adoption_report, source_evidence)
+    readiness_delta = _readiness_delta(
+        lane_id=lane_id,
+        readiness=readiness,
+        gate_specs=gate_specs,
+        shadow_report=shadow_report,
+    )
+    next_owned_execution_gate = _next_owned_execution_gate(lane_id, readiness_delta)
     lane_summary = {
         "lane_id": lane_id,
         "label": config["label"],
         "workflow_id": config["workflow_id"],
         "fixture_path": str(fixture_path),
         "fixture_id": _fixture_id(shadow_report, fixture),
+        "source_evidence": source_evidence,
         "shadow_status": _mapping(shadow_report.get("adoption")).get("status"),
         "lane_adoption_status": lane_adoption.get("status"),
         "readiness": readiness,
+        "readiness_delta": readiness_delta,
+        "safety_boundaries": safety_boundaries,
+        "next_owned_execution_gate": next_owned_execution_gate,
         "human_gates": gate_specs,
         "review_notes": review_notes,
+        "review_note_readbacks": [
+            _mapping(note).get("readback") for note in review_notes if isinstance(note, Mapping)
+        ],
         "blocked_external_actions": _list(shadow_report.get("blocked_external_actions")),
         "readiness_blockers": _list(shadow_report.get("readiness_blockers")),
         "mutation_permission_granted": False,
@@ -189,14 +215,18 @@ def _build_lane_packet(lane_id: str, fixture_path: Path, output_root: Path) -> d
             "adoption_report": str(lane_dir / "adoption_report.json"),
             "receipts": str(lane_dir / "receipts.json"),
             "review_notes": str(lane_dir / "review_notes.json"),
+            "lane_report": str(lane_dir / "lane_report.json"),
         },
     }
     if lane_id == "ivy":
         lane_summary["public_publish_blocked"] = bool(adoption_report.get("public_publish_blocked"))
+        lane_summary["historical_publish_artifacts"] = _ivy_publish_artifact_boundary(adoption_report)
     if lane_id == "weekly":
         lane_summary["observed_read_clear"] = _weekly_read_clear_observed(adoption_report)
         lane_summary["read_clear_is_mutation_permission"] = False
         lane_summary["blackboard_or_obsidian_write_allowed"] = False
+    lane_summary["awk_generated"] = _awk_generated_artifacts(lane_dir, lane_summary)
+    _write_json(lane_dir / "lane_report.json", lane_summary)
     return lane_summary
 
 
@@ -253,6 +283,8 @@ def _publish_review_notes(
         readback = adapter.readback(surface_ref)
         validation = adapter.validate(surface_ref)
         note_path = str(publish.outputs.get("note_path", ""))
+        readback_outputs = _mapping(readback.runtime_provenance.get("outputs"))
+        validation_outputs = _mapping(validation.runtime_provenance.get("outputs"))
         notes.append(
             {
                 "lane_id": lane_id,
@@ -264,6 +296,27 @@ def _publish_review_notes(
                 "publish_receipt_ref": publish.receipt_ref,
                 "readback_receipt_id": readback.receipt_id,
                 "validation_receipt_id": validation.receipt_id,
+                "readback": {
+                    "status": readback.status,
+                    "receipt_id": readback.receipt_id,
+                    "note_path": str(readback_outputs.get("note_path") or note_path),
+                    "relative_note_path": _relative_to(
+                        output_root,
+                        str(readback_outputs.get("note_path") or note_path),
+                    ),
+                    "exists": bool(readback_outputs.get("exists")),
+                    "content_hash": readback_outputs.get("content_hash"),
+                    "action_fingerprint": readback_outputs.get("action_fingerprint"),
+                    "action_fingerprint_matches": (
+                        readback_outputs.get("action_fingerprint") == action_fingerprint
+                    ),
+                },
+                "validation": {
+                    "status": validation.status,
+                    "receipt_id": validation.receipt_id,
+                    "valid": bool(validation_outputs.get("valid")),
+                    "readback_receipt_ref": validation_outputs.get("readback_receipt_ref"),
+                },
                 "action_fingerprint": action_fingerprint,
                 "allowed_decisions": list(gate["allowed_decisions"]),
                 "exact_action": gate["exact_action"],
@@ -273,6 +326,209 @@ def _publish_review_notes(
             }
         )
     return notes
+
+
+def _source_evidence(lane_id: str, fixture_path: Path, fixture: Mapping[str, Any]) -> dict[str, Any]:
+    source_mode = _fixture_source_mode(fixture)
+    return {
+        "lane_id": lane_id,
+        "fixture_path": str(fixture_path),
+        "fixture_id": str(fixture.get("fixture_id") or "openclaw-fixture"),
+        "schema": fixture.get("schema"),
+        "source_mode": source_mode,
+        "classification": "live_readonly_fixture" if source_mode == "live_readonly" else "fixture_file",
+        "live_readonly": source_mode == "live_readonly",
+        "read_from": "supplied_fixture_file",
+        "runtime_contacted": False,
+        "mutation_permission_granted": False,
+    }
+
+
+def _fixture_source_mode(fixture: Mapping[str, Any]) -> str:
+    value = fixture.get("source_mode")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    source = fixture.get("source")
+    if isinstance(source, Mapping):
+        source_mode = source.get("mode") or source.get("source_mode")
+        if isinstance(source_mode, str) and source_mode.strip():
+            return source_mode.strip()
+    return "fixture"
+
+
+def _lane_safety_boundaries(
+    lane_id: str,
+    shadow_report: Mapping[str, Any],
+    adoption_report: Mapping[str, Any],
+    source_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    boundaries = {
+        "local_output_only": True,
+        "source_read_only": True,
+        "source_classification": source_evidence.get("classification"),
+        "mutation_permission_granted": False,
+        "external_sends_performed": False,
+        "live_runtime_contacted": False,
+        "blocked_external_actions": _list(shadow_report.get("blocked_external_actions")),
+        "forbidden_live_effects": list(FORBIDDEN_LIVE_EFFECTS),
+    }
+    if lane_id == "ivy":
+        publish_boundary = _ivy_publish_artifact_boundary(adoption_report)
+        boundaries.update(
+            {
+                "public_publish_blocked": bool(adoption_report.get("public_publish_blocked")),
+                "historical_publish_artifacts_are_mutation_permission": False,
+                "historical_publish_artifacts": publish_boundary,
+            }
+        )
+    if lane_id == "weekly":
+        boundaries.update(
+            {
+                "observed_read_clear": _weekly_read_clear_observed(adoption_report),
+                "read_clear_is_mutation_permission": False,
+                "blackboard_or_obsidian_write_allowed": False,
+            }
+        )
+    return boundaries
+
+
+def _ivy_publish_artifact_boundary(adoption_report: Mapping[str, Any]) -> dict[str, Any]:
+    evidence_refs = _mapping(adoption_report.get("evidence_refs"))
+    refs = _list(evidence_refs.get("publish_packet_refs"))
+    external_publish_performed = any(
+        bool(item.get("external_publish_performed")) for item in refs if isinstance(item, Mapping)
+    )
+    return {
+        "observed": bool(refs),
+        "count": len(refs),
+        "external_publish_performed": external_publish_performed,
+        "public_publish_blocked": bool(adoption_report.get("public_publish_blocked")),
+        "historical_publish_artifacts_are_mutation_permission": False,
+    }
+
+
+def _readiness_delta(
+    *,
+    lane_id: str,
+    readiness: Mapping[str, Any],
+    gate_specs: Sequence[Mapping[str, Any]],
+    shadow_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    blockers = _list(shadow_report.get("readiness_blockers"))
+    blocker_codes = [
+        str(item.get("code"))
+        for item in blockers
+        if isinstance(item, Mapping) and item.get("code") is not None
+    ]
+    human_gate_ids = [str(gate.get("stage_id")) for gate in gate_specs if gate.get("stage_id")]
+    remaining_before_owned = ["fresh_live_dual_run_equivalence_receipt"]
+    if human_gate_ids:
+        remaining_before_owned.append("human_review_decision_readback")
+    if "expected_host_receipt_missing" in blocker_codes:
+        remaining_before_owned.append("expected_host_receipt")
+    return {
+        "lane_id": lane_id,
+        "current_classification": readiness.get("classification"),
+        "target_classification": "owned_execution_ready",
+        "owned_execution_allowed": False,
+        "human_gate_ids": human_gate_ids,
+        "readiness_blocker_codes": sorted(dict.fromkeys(blocker_codes)),
+        "remaining_before_owned_execution": sorted(dict.fromkeys(remaining_before_owned)),
+    }
+
+
+def _next_owned_execution_gate(lane_id: str, readiness_delta: Mapping[str, Any]) -> dict[str, Any]:
+    human_gate_ids = _list(readiness_delta.get("human_gate_ids"))
+    if human_gate_ids:
+        return {
+            "gate": "human_review_decision_readback",
+            "lane_id": lane_id,
+            "stage_id": str(human_gate_ids[0]),
+            "owned_execution_allowed_after_gate": False,
+            "next_required_after_gate": "fresh_live_dual_run_equivalence_receipt",
+        }
+    return {
+        "gate": "fresh_live_dual_run_equivalence_receipt",
+        "lane_id": lane_id,
+        "stage_id": None,
+        "owned_execution_allowed_after_gate": False,
+        "next_required_after_gate": "explicit_owned_execution_approval",
+    }
+
+
+def _awk_generated_artifacts(lane_dir: Path, lane_summary: Mapping[str, Any]) -> list[dict[str, Any]]:
+    artifacts = _mapping(lane_summary.get("artifacts"))
+    generated = [
+        {"kind": "shadow_report", "path": artifacts.get("shadow_report"), "generated_by": "awk"},
+        {"kind": "adoption_report", "path": artifacts.get("adoption_report"), "generated_by": "awk"},
+        {"kind": "receipts", "path": artifacts.get("receipts"), "generated_by": "awk"},
+        {"kind": "review_notes_index", "path": artifacts.get("review_notes"), "generated_by": "awk"},
+        {"kind": "lane_report", "path": str(lane_dir / "lane_report.json"), "generated_by": "awk"},
+    ]
+    for note in _list(lane_summary.get("review_notes")):
+        if isinstance(note, Mapping):
+            generated.append(
+                {
+                    "kind": "local_review_note",
+                    "path": note.get("note_path"),
+                    "generated_by": "awk",
+                    "readback_receipt_id": note.get("readback_receipt_id"),
+                }
+            )
+    return generated
+
+
+def _evidence_manifest(output_root: Path, lanes: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    next_gates = {
+        lane_id: lane.get("next_owned_execution_gate")
+        for lane_id, lane in sorted(lanes.items())
+    }
+    if any(
+        _mapping(lane.get("next_owned_execution_gate")).get("gate") == "human_review_decision_readback"
+        for lane in lanes.values()
+    ):
+        next_gate = "human_review_decision_readback"
+    else:
+        next_gate = "fresh_live_dual_run_equivalence_receipt"
+    top_level_artifacts = [
+        {"kind": "summary", "path": str(output_root / "summary.json"), "generated_by": "awk"},
+        {
+            "kind": "evidence_manifest",
+            "path": str(output_root / "evidence_manifest.json"),
+            "generated_by": "awk",
+        },
+        {"kind": "readme", "path": str(output_root / "README.md"), "generated_by": "awk"},
+    ]
+    return {
+        "schema": "workflow.kernel.openclaw-two-lane-evidence-manifest.v1",
+        "output_dir": str(output_root),
+        "inputs_read": [
+            lane.get("source_evidence") for _, lane in sorted(lanes.items()) if lane.get("source_evidence")
+        ],
+        "awk_generated": top_level_artifacts + [
+            item
+            for _, lane in sorted(lanes.items())
+            for item in _list(lane.get("awk_generated"))
+            if isinstance(item, Mapping)
+        ],
+        "review_note_readbacks": [
+            item
+            for _, lane in sorted(lanes.items())
+            for item in _list(lane.get("review_note_readbacks"))
+            if isinstance(item, Mapping)
+        ],
+        "readiness_deltas": {
+            lane_id: lane.get("readiness_delta") for lane_id, lane in sorted(lanes.items())
+        },
+        "safety_boundaries": {
+            lane_id: lane.get("safety_boundaries") for lane_id, lane in sorted(lanes.items())
+        },
+        "next_owned_execution_gate": {
+            "gate": next_gate,
+            "owned_execution_allowed_after_gate": False,
+            "lane_gates": next_gates,
+        },
+    }
 
 
 def _human_gate_specs(
@@ -462,14 +718,21 @@ def _render_readme(summary: Mapping[str, Any]) -> str:
     for lane_id in sorted(lanes):
         lane = _mapping(lanes[lane_id])
         readiness = _mapping(lane.get("readiness"))
+        source_evidence = _mapping(lane.get("source_evidence"))
+        readiness_delta = _mapping(lane.get("readiness_delta"))
+        next_gate = _mapping(lane.get("next_owned_execution_gate"))
         lines.extend(
             [
                 f"### {lane.get('label', lane_id)}",
                 "",
                 f"- Fixture: `{lane.get('fixture_id')}`",
+                f"- Source classification: `{source_evidence.get('classification')}`",
+                f"- Source mode: `{source_evidence.get('source_mode')}`",
                 f"- Workflow: `{lane.get('workflow_id')}`",
                 f"- Readiness: `{readiness.get('classification')}`",
                 f"- Ready for live onboarding: `{readiness.get('ready_for_live_onboarding')}`",
+                f"- Remaining before owned execution: `{', '.join(_string_list(readiness_delta.get('remaining_before_owned_execution'), fallback=()))}`",
+                f"- Next owned-execution gate: `{next_gate.get('gate')}`",
                 f"- Human gates: `{len(_list(lane.get('human_gates')))}`",
                 f"- Review notes: `{len(_list(lane.get('review_notes')))}`",
                 f"- Mutation permission granted: `{lane.get('mutation_permission_granted')}`",
@@ -483,6 +746,7 @@ def _render_readme(summary: Mapping[str, Any]) -> str:
             [
                 f"- Shadow report: `{_mapping(lane.get('artifacts')).get('shadow_report')}`",
                 f"- Adoption report: `{_mapping(lane.get('artifacts')).get('adoption_report')}`",
+                f"- Lane report: `{_mapping(lane.get('artifacts')).get('lane_report')}`",
                 "",
             ]
         )
