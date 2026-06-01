@@ -735,6 +735,37 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
                 now=self.now,
             )
 
+    def test_external_effect_surface_adapter_blocks_before_publish(self) -> None:
+        surface = LocalFakeSurfaceAdapter(created_at=self.now.isoformat())
+        runtime = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry(
+            (
+                AdapterRegistration.from_runtime_adapter(runtime),
+                AdapterRegistration.from_surface_adapter(
+                    surface,
+                    side_effects=(RiskClass.EXTERNAL_EFFECT,),
+                ),
+            )
+        )
+        kernel = WorkflowKernel(
+            self.ledger,
+            self.workflow_with_surface_lifecycle_gate(surface.adapter_id),
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        self._run_to_waiting_gate(kernel, instance_id="instance-external-surface")
+
+        with self.assertRaisesRegex(AdapterRegistryError, "surface adapter policy blocked"):
+            kernel.publish_waiting_human_gate(
+                instance_id="instance-external-surface",
+                test_only=True,
+                non_live=True,
+                now=self.now,
+            )
+
+        self.assertEqual(surface.receipts, [])
+        events = [event["event_type"] for event in self.ledger.list_events()]
+        self.assertNotIn("human_gate_surface_published", events)
+
     def kernel_for(
         self,
         workflow: WorkflowDef,

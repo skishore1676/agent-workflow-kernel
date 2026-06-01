@@ -110,6 +110,8 @@ def action_fingerprint(
     arguments: Mapping[str, Any] | None = None,
     artifact_hashes: tuple[str, ...] = (),
     context_packet_digest: str | None = None,
+    risk_classes: tuple[RiskClass, ...] = (),
+    hard_gates: tuple[HardGate, ...] = (),
 ) -> str:
     """Return a stable digest for the exact action inputs that require approval."""
 
@@ -119,6 +121,8 @@ def action_fingerprint(
         "arguments": _canonical_data(arguments or {}),
         "artifact_hashes": list(artifact_hashes),
         "context_packet_digest": context_packet_digest,
+        "risk_classes": sorted(_canonical_data(risk_classes)),
+        "hard_gates": sorted(_canonical_data(hard_gates)),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -131,6 +135,8 @@ def fingerprint_request(request: ActionRequest) -> str:
         arguments=request.arguments,
         artifact_hashes=request.artifact_hashes,
         context_packet_digest=request.context_packet_digest,
+        risk_classes=request.risk_classes,
+        hard_gates=request.hard_gates,
     )
 
 

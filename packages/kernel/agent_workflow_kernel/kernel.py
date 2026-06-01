@@ -420,6 +420,14 @@ class WorkflowKernel:
             operation="publish",
             surface_adapter_ref=surface_adapter_ref,
         )
+        self._require_surface_policy_allows(
+            run=run,
+            stage=stage,
+            gate=gate,
+            registration=registration,
+            operation="publish",
+            now=now,
+        )
         packet = self._human_gate_surface_packet(
             run=run,
             stage=stage,
@@ -509,6 +517,14 @@ class WorkflowKernel:
             operation="readback",
             surface_adapter_ref=surface_adapter_ref,
         )
+        self._require_surface_policy_allows(
+            run=run,
+            stage=stage,
+            gate=gate,
+            registration=registration,
+            operation="readback",
+            now=now,
+        )
         resolved_surface_ref = self._resolve_human_gate_surface_ref(run, surface_ref)
         created_at = iso_timestamp(now)
         invocation = self._surface_invocation(
@@ -593,6 +609,14 @@ class WorkflowKernel:
             stage,
             operation="ingest_decisions",
             surface_adapter_ref=surface_adapter_ref,
+        )
+        self._require_surface_policy_allows(
+            run=run,
+            stage=stage,
+            gate=gate,
+            registration=registration,
+            operation="ingest_decisions",
+            now=now,
         )
         resolved_surface_ref = self._resolve_human_gate_surface_ref(run, surface_ref)
         query = self._human_gate_surface_query(
@@ -1033,6 +1057,43 @@ class WorkflowKernel:
             input_ref=f"stage:{run.stage_id}:human_gate_surface",
             idempotency_key=idempotency_key,
         )
+
+    def _require_surface_policy_allows(
+        self,
+        *,
+        run: StageRun,
+        stage: StageDef,
+        gate: Any,
+        registration: AdapterRegistration,
+        operation: str,
+        now: Any,
+    ) -> None:
+        surface_gate = self.config.policy_engine.evaluate(
+            ActionRequest(
+                action=f"human_gate_surface.{operation}",
+                target_ref=registration.adapter_id,
+                arguments={
+                    "stage_id": stage.id,
+                    "stage_run_id": run.stage_run_id,
+                    "stage_type": stage.type.value,
+                    "operation": operation,
+                    "waiting_gate_id": gate.gate_id,
+                },
+                risk_classes=registration.side_effects,
+                workflow_id=self.workflow.id,
+                instance_id=run.instance_id,
+                stage_id=stage.id,
+                actor_ref=run.actor_ref,
+                adapter_ref=registration.adapter_id,
+                evidence_refs=_human_gate_evidence_refs(stage, gate),
+            ),
+            now=now,
+        )
+        if surface_gate.decision in {GateDecision.DENY.value, GateDecision.REQUIRE_HUMAN.value}:
+            raise AdapterRegistryError(
+                "human gate surface adapter policy blocked "
+                f"{registration.adapter_id}.{operation}: {surface_gate.decision_reason}"
+            )
 
     def _human_gate_surface_packet(
         self,
