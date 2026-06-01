@@ -275,18 +275,68 @@ class WorkflowLedger:
         row = self.connection.execute(
             "SELECT * FROM workflow_instances WHERE instance_id = ?", (instance_id,)
         ).fetchone()
-        if row is None:
-            return None
-        return WorkflowInstance(
-            instance_id=row["instance_id"],
-            workflow_def_id=row["workflow_def_id"],
-            workflow_version=row["workflow_version"],
-            status=WorkflowStatus(row["status"]),
-            current_stage_id=row["current_stage_id"],
-            idempotency_key=row["idempotency_key"],
-            input_hash=row["input_hash"],
-            recovery_epoch=row["recovery_epoch"],
-        )
+        return self._workflow_instance_from_row(row) if row else None
+
+    def find_next_workflow_instance_for_work(
+        self,
+        *,
+        workflow_def_id: str | None = None,
+        workflow_version: str | None = None,
+        include_waiting_human: bool = False,
+        now: datetime | str | None = None,
+    ) -> WorkflowInstance | None:
+        """Return the next workflow instance with queued or waiting work.
+
+        Queued stage runs are preferred because they can be claimed atomically by
+        the runner. Waiting human gates are returned only when requested, which
+        lets a higher-level runner publish or ingest local review surfaces
+        without knowing an instance id in advance.
+        """
+
+        timestamp = iso_timestamp(now)
+        filters: list[str] = []
+        params: list[Any] = [StageRunStatus.QUEUED.value, timestamp]
+        if workflow_def_id is not None:
+            filters.append("wi.workflow_def_id = ?")
+            params.append(workflow_def_id)
+        if workflow_version is not None:
+            filters.append("wi.workflow_version = ?")
+            params.append(workflow_version)
+        filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
+        row = self.connection.execute(
+            f"""
+            SELECT wi.*
+            FROM stage_runs sr
+            JOIN workflow_instances wi ON wi.instance_id = sr.instance_id
+            WHERE sr.status = ?
+              AND (sr.retry_after_at IS NULL OR sr.retry_after_at <= ?)
+              {filter_sql}
+            ORDER BY sr.created_at, sr.stage_run_id
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+        if row is not None or not include_waiting_human:
+            return self._workflow_instance_from_row(row) if row else None
+
+        params = [StageRunStatus.WAITING_ON_HUMAN.value]
+        if workflow_def_id is not None:
+            params.append(workflow_def_id)
+        if workflow_version is not None:
+            params.append(workflow_version)
+        row = self.connection.execute(
+            f"""
+            SELECT wi.*
+            FROM stage_runs sr
+            JOIN workflow_instances wi ON wi.instance_id = sr.instance_id
+            WHERE sr.status = ?
+              {filter_sql}
+            ORDER BY sr.updated_at, sr.stage_run_id
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+        return self._workflow_instance_from_row(row) if row else None
 
     def update_workflow_instance(
         self,
@@ -1118,6 +1168,18 @@ class WorkflowLedger:
             receipt_id=row["receipt_id"],
             failure_class=FailureClass(row["failure_class"]) if row["failure_class"] else None,
             retry_after_at=row["retry_after_at"],
+        )
+
+    def _workflow_instance_from_row(self, row: sqlite3.Row) -> WorkflowInstance:
+        return WorkflowInstance(
+            instance_id=row["instance_id"],
+            workflow_def_id=row["workflow_def_id"],
+            workflow_version=row["workflow_version"],
+            status=WorkflowStatus(row["status"]),
+            current_stage_id=row["current_stage_id"],
+            idempotency_key=row["idempotency_key"],
+            input_hash=row["input_hash"],
+            recovery_epoch=row["recovery_epoch"],
         )
 
     def _event_from_row(self, row: sqlite3.Row) -> dict[str, Any]:

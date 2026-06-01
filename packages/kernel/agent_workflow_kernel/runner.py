@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Literal
+from typing import Any, Callable, Literal, Mapping, Protocol
 
-from .contracts import FailureClass, Receipt, StageRun, StageRunStatus
+from .contracts import FailureClass, Receipt, StageRun, StageRunStatus, WorkflowStatus
 from .storage import WorkflowLedger
 
 
 RunDecision = Literal["succeeded", "failed", "retry", "blocked", "waiting_on_human"]
+OwnedRunStatus = Literal["idle", "waiting_on_human", "blocked", "done", "max_steps"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -30,7 +31,67 @@ class RunnerStep:
     decision: RunDecision | Literal["idle"]
 
 
+@dataclass(slots=True, frozen=True)
+class OwnedRunSummary:
+    """Summary of a runner-owned kernel execution pass."""
+
+    status: OwnedRunStatus
+    instance_id: str | None
+    stop_reason: str
+    kernel_steps: tuple[Any, ...] = field(default_factory=tuple)
+    surface_results: tuple[Any, ...] = field(default_factory=tuple)
+
+    @property
+    def stages_run(self) -> int:
+        return len(self.kernel_steps)
+
+
 StageHandler = Callable[[StageRun], RunnerResult]
+
+
+class KernelExecutionFacade(Protocol):
+    """Subset of WorkflowKernel used by the owned runner loop."""
+
+    ledger: WorkflowLedger
+    workflow: Any
+
+    def run_once(self, *, now: datetime | str | None = None) -> Any: ...
+
+    def publish_waiting_human_gate(
+        self,
+        *,
+        instance_id: str,
+        surface_adapter_ref: str | None = None,
+        allowed_decisions: tuple[str, ...] | None = None,
+        evidence_refs: tuple[str, ...] | None = None,
+        title: str | None = None,
+        human_ask: str | None = None,
+        human_ref: str | None = None,
+        test_only: bool = False,
+        non_live: bool = False,
+        now: datetime | str | None = None,
+    ) -> Any: ...
+
+    def readback_human_gate_surface(
+        self,
+        *,
+        instance_id: str,
+        surface_ref: Mapping[str, Any] | None = None,
+        surface_adapter_ref: str | None = None,
+        now: datetime | str | None = None,
+    ) -> Any: ...
+
+    def ingest_human_gate_surface_decision(
+        self,
+        *,
+        instance_id: str,
+        surface_ref: Mapping[str, Any] | None = None,
+        surface_adapter_ref: str | None = None,
+        allowed_decisions: tuple[str, ...] | None = None,
+        evidence_refs: tuple[str, ...] | None = None,
+        human_ref: str | None = None,
+        now: datetime | str | None = None,
+    ) -> Any: ...
 
 
 class WorkflowRunner:
@@ -131,6 +192,196 @@ class WorkflowRunner:
 
         return RunnerStep(stage_run=run, decision=result.decision)
 
+    def run_kernel_until_idle(
+        self,
+        kernel: KernelExecutionFacade,
+        *,
+        instance_id: str | None = None,
+        max_steps: int = 50,
+        publish_human_gate: bool = False,
+        ingest_human_decision: bool = False,
+        surface_adapter_ref: str | None = None,
+        allowed_decisions: tuple[str, ...] | None = None,
+        evidence_refs: tuple[str, ...] | None = None,
+        title: str | None = None,
+        human_ask: str | None = None,
+        human_ref: str | None = None,
+        test_only: bool = True,
+        non_live: bool = True,
+        now: datetime | str | None = None,
+    ) -> OwnedRunSummary:
+        """Drive a WorkflowKernel until no automatic work remains.
+
+        This is the owned runner path: it discovers queued or waiting work from
+        the ledger, lets ``WorkflowKernel`` execute stage semantics, and uses the
+        kernel's human-gate surface lifecycle for publish/readback/ingest. A
+        previously published waiting-gate surface is reused on rerun so recovery
+        after an interruption does not create duplicate local review notes.
+        """
+
+        if kernel.ledger is not self.ledger:
+            raise ValueError("WorkflowRunner and WorkflowKernel must share the same ledger")
+
+        resolved_instance_id = instance_id or self._next_owned_instance_id(
+            kernel,
+            include_waiting_human=publish_human_gate or ingest_human_decision,
+            now=now,
+        )
+        if resolved_instance_id is None:
+            return OwnedRunSummary(status="idle", instance_id=None, stop_reason="no_work")
+
+        kernel_steps: list[Any] = []
+        surface_results: list[Any] = []
+
+        for _ in range(max_steps):
+            waiting_run = self.ledger.find_waiting_human_stage_run(
+                instance_id=resolved_instance_id
+            )
+            if waiting_run is not None:
+                surface_ref = _latest_successful_surface_ref(
+                    self.ledger,
+                    stage_run_id=waiting_run.stage_run_id,
+                )
+                if publish_human_gate and surface_ref is None:
+                    publish = kernel.publish_waiting_human_gate(
+                        instance_id=resolved_instance_id,
+                        surface_adapter_ref=surface_adapter_ref,
+                        allowed_decisions=allowed_decisions,
+                        evidence_refs=evidence_refs,
+                        title=title,
+                        human_ask=human_ask,
+                        human_ref=human_ref,
+                        test_only=test_only,
+                        non_live=non_live,
+                        now=now,
+                    )
+                    surface_results.append(publish)
+                    surface_ref = getattr(publish, "surface_ref", None)
+                    if getattr(publish, "status", None) != "succeeded":
+                        return OwnedRunSummary(
+                            status="blocked",
+                            instance_id=resolved_instance_id,
+                            stop_reason="human_gate_publish_blocked",
+                            kernel_steps=tuple(kernel_steps),
+                            surface_results=tuple(surface_results),
+                        )
+
+                if publish_human_gate and surface_ref is not None:
+                    readback = kernel.readback_human_gate_surface(
+                        instance_id=resolved_instance_id,
+                        surface_ref=surface_ref,
+                        surface_adapter_ref=surface_adapter_ref,
+                        now=now,
+                    )
+                    surface_results.append(readback)
+                    if getattr(readback, "status", None) != "succeeded":
+                        return OwnedRunSummary(
+                            status="blocked",
+                            instance_id=resolved_instance_id,
+                            stop_reason="human_gate_readback_blocked",
+                            kernel_steps=tuple(kernel_steps),
+                            surface_results=tuple(surface_results),
+                        )
+
+                if ingest_human_decision:
+                    if surface_ref is None:
+                        return OwnedRunSummary(
+                            status="blocked",
+                            instance_id=resolved_instance_id,
+                            stop_reason="human_gate_surface_missing",
+                            kernel_steps=tuple(kernel_steps),
+                            surface_results=tuple(surface_results),
+                        )
+                    ingest = kernel.ingest_human_gate_surface_decision(
+                        instance_id=resolved_instance_id,
+                        surface_ref=surface_ref,
+                        surface_adapter_ref=surface_adapter_ref,
+                        allowed_decisions=allowed_decisions,
+                        evidence_refs=evidence_refs,
+                        human_ref=human_ref,
+                        now=now,
+                    )
+                    surface_results.append(ingest)
+                    if getattr(ingest, "status", None) != "succeeded":
+                        return OwnedRunSummary(
+                            status="blocked",
+                            instance_id=resolved_instance_id,
+                            stop_reason="human_gate_decision_blocked",
+                            kernel_steps=tuple(kernel_steps),
+                            surface_results=tuple(surface_results),
+                        )
+                    continue
+
+                return OwnedRunSummary(
+                    status="waiting_on_human",
+                    instance_id=resolved_instance_id,
+                    stop_reason="waiting_on_human",
+                    kernel_steps=tuple(kernel_steps),
+                    surface_results=tuple(surface_results),
+                )
+
+            step = kernel.run_once(now=now)
+            if getattr(step, "decision", None) == "idle" or getattr(step, "stage_run", None) is None:
+                status, stop_reason = self._idle_status(resolved_instance_id)
+                return OwnedRunSummary(
+                    status=status,
+                    instance_id=resolved_instance_id,
+                    stop_reason=stop_reason,
+                    kernel_steps=tuple(kernel_steps),
+                    surface_results=tuple(surface_results),
+                )
+
+            kernel_steps.append(step)
+            decision = getattr(step, "decision", None)
+            if decision in {"blocked", "failed"}:
+                return OwnedRunSummary(
+                    status="blocked",
+                    instance_id=resolved_instance_id,
+                    stop_reason=str(decision),
+                    kernel_steps=tuple(kernel_steps),
+                    surface_results=tuple(surface_results),
+                )
+
+        return OwnedRunSummary(
+            status="max_steps",
+            instance_id=resolved_instance_id,
+            stop_reason="max_steps_exceeded",
+            kernel_steps=tuple(kernel_steps),
+            surface_results=tuple(surface_results),
+        )
+
+    def _next_owned_instance_id(
+        self,
+        kernel: KernelExecutionFacade,
+        *,
+        include_waiting_human: bool,
+        now: datetime | str | None,
+    ) -> str | None:
+        instance = self.ledger.find_next_workflow_instance_for_work(
+            workflow_def_id=str(kernel.workflow.id),
+            workflow_version=str(kernel.workflow.version),
+            include_waiting_human=include_waiting_human,
+            now=now,
+        )
+        return instance.instance_id if instance is not None else None
+
+    def _idle_status(self, instance_id: str) -> tuple[OwnedRunStatus, str]:
+        instance = self.ledger.get_workflow_instance(instance_id)
+        if instance is None:
+            return "idle", "instance_missing"
+        if instance.status == WorkflowStatus.WAITING_ON_HUMAN:
+            return "waiting_on_human", "waiting_on_human"
+        if instance.status in {
+            WorkflowStatus.BLOCKED,
+            WorkflowStatus.POLICY_DENIED,
+            WorkflowStatus.FINAL_APPROVAL_REQUIRED,
+            WorkflowStatus.CANCELLED,
+        }:
+            return "blocked", instance.status.value
+        if instance.status == WorkflowStatus.DONE:
+            return "done", "terminal"
+        return "idle", "no_queued_work"
+
 
 def _status_for_failure(failure_class: FailureClass | str | None) -> StageRunStatus:
     if failure_class == FailureClass.INVALID_OUTPUT or failure_class == "invalid_output":
@@ -138,4 +389,25 @@ def _status_for_failure(failure_class: FailureClass | str | None) -> StageRunSta
     return StageRunStatus.FAILED
 
 
-__all__ = ["RunnerResult", "RunnerStep", "StageHandler", "WorkflowRunner"]
+def _latest_successful_surface_ref(
+    ledger: WorkflowLedger,
+    *,
+    stage_run_id: str,
+) -> Mapping[str, Any] | None:
+    for event in reversed(ledger.list_events(stage_run_id=stage_run_id)):
+        if event["event_type"] != "human_gate_surface_published":
+            continue
+        payload = event["payload"]
+        candidate = payload.get("surface_ref")
+        if payload.get("status") == "succeeded" and isinstance(candidate, Mapping):
+            return dict(candidate)
+    return None
+
+
+__all__ = [
+    "OwnedRunSummary",
+    "RunnerResult",
+    "RunnerStep",
+    "StageHandler",
+    "WorkflowRunner",
+]

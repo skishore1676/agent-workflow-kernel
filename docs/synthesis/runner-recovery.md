@@ -45,6 +45,17 @@ The minimal runner loop is:
 The runner may process a batch, but each stage claim and completion must be
 transactional so another runner can resume after interruption.
 
+The owned kernel runner path is the generic batch loop over these primitives:
+it discovers the next queued instance from the ledger, calls the kernel stage
+stepper until no automatic stage remains, and treats waiting human gates as
+first-class resumable work. When configured for local review surfaces, it
+publishes a review packet through the registered surface adapter, reads that
+surface back, ingests exactly one structured human decision, and then resumes
+the workflow from the transition selected by that decision. Reruns reuse an
+already published waiting-gate surface instead of creating duplicate review
+notes, so an interruption between publish and decision ingest is recoverable
+from ledger events alone.
+
 ## Stage Statuses
 
 Recommended `StageRun.status` values:

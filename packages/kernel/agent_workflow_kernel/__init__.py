@@ -106,7 +106,7 @@ from .receipts import (
     build_runtime_provenance,
     receipt_digest,
 )
-from .runner import RunnerResult, RunnerStep, WorkflowRunner
+from .runner import OwnedRunSummary, RunnerResult, RunnerStep, WorkflowRunner
 from .kernel import (
     HumanGateSurfaceResult,
     KernelDecisionResult,
@@ -153,6 +153,7 @@ __all__ = [
     "LocalRunSummary",
     "LocalWorkflowExecutor",
     "MissingPromptError",
+    "OwnedRunSummary",
     "PARITY_FIXTURE_SCHEMA",
     "PARITY_REPORT_SCHEMA",
     "ParityField",
