@@ -59,15 +59,15 @@ IMPLEMENTED_TRANSITION_GUARDS: frozenset[str] = frozenset(
     {
         "policy_approved",
         "has_required_artifacts",
+        "within_retry_budget",
+        "within_revision_budget",
+        "within_research_iteration_budget",
+        "within_resume_budget",
     }
 )
 
 FAIL_CLOSED_TRANSITION_GUARDS: frozenset[str] = frozenset(
     {
-        "within_retry_budget",
-        "within_revision_budget",
-        "within_research_iteration_budget",
-        "within_resume_budget",
         "lease_not_expired",
     }
 )

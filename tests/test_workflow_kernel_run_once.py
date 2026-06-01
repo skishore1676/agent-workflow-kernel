@@ -46,6 +46,29 @@ PROMPT_REFS = (
 )
 
 
+class OutcomeSequenceRuntimeAdapter(LocalFakeRuntimeAdapter):
+    def __init__(
+        self,
+        *,
+        outcomes_by_stage: dict[str, tuple[str, ...]],
+        created_at: str,
+    ) -> None:
+        super().__init__(created_at=created_at)
+        self._outcomes_by_stage = outcomes_by_stage
+        self._counts_by_stage: dict[str, int] = {}
+
+    def invoke(self, invocation, runtime_input):
+        result = super().invoke(invocation, runtime_input)
+        stage_id = str(runtime_input["stage"]["id"])
+        count = self._counts_by_stage.get(stage_id, 0)
+        self._counts_by_stage[stage_id] = count + 1
+        sequence = self._outcomes_by_stage.get(stage_id, ())
+        if not sequence:
+            return result
+        outcome = sequence[min(count, len(sequence) - 1)]
+        return replace(result, outputs={**result.outputs, "outcome": outcome})
+
+
 class WorkflowKernelRunOnceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -907,15 +930,129 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         assert apply is not None
         self.assertEqual(apply.status, StageRunStatus.QUEUED)
 
-    def test_within_retry_budget_guard_is_typed_fail_closed_stub(self) -> None:
-        kernel = self.kernel_for(self.workflow_with_retry_guard_stub())
+    def test_within_retry_budget_allows_under_budget_and_blocks_exhausted_attempts(self) -> None:
+        adapter = OutcomeSequenceRuntimeAdapter(
+            outcomes_by_stage={"run": ("retry_needed", "retry_needed")},
+            created_at=self.now.isoformat(),
+        )
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        kernel = WorkflowKernel(
+            self.ledger,
+            self.workflow_with_retry_budget_guard(),
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
         kernel.start(instance_id="instance-retry-guard", inputs={}, now=self.now)
+
+        first = kernel.run_once(now=self.now)
+        second = kernel.run_once(now=self.now)
+
+        self.assertEqual(first.decision, "succeeded")
+        self.assertEqual(second.decision, "blocked")
+        self.assertIn("exhausted budget", second.failure_summary or "")
+        self.assertIsNotNone(self.ledger.get_stage_run("instance-retry-guard:run:2"))
+        self.assertIsNone(self.ledger.get_stage_run("instance-retry-guard:run:3"))
+
+    def test_within_revision_budget_counts_revision_turns_not_return_edge(self) -> None:
+        adapter = OutcomeSequenceRuntimeAdapter(
+            outcomes_by_stage={
+                "review": ("needs_revision", "needs_revision"),
+                "revise": ("revised",),
+            },
+            created_at=self.now.isoformat(),
+        )
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        kernel = WorkflowKernel(
+            self.ledger,
+            self.workflow_with_revision_budget_guard(),
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-revision-guard", inputs={}, now=self.now)
+
+        first = kernel.run_once(now=self.now)
+        second = kernel.run_once(now=self.now)
+        third = kernel.run_once(now=self.now)
+
+        self.assertEqual(first.decision, "succeeded")
+        self.assertEqual(second.decision, "succeeded")
+        self.assertEqual(third.decision, "blocked")
+        self.assertIn("within_revision_budget", third.failure_summary or "")
+        self.assertIsNotNone(self.ledger.get_stage_run("instance-revision-guard:revise:1"))
+        self.assertIsNotNone(self.ledger.get_stage_run("instance-revision-guard:review:2"))
+        self.assertIsNone(self.ledger.get_stage_run("instance-revision-guard:revise:2"))
+
+    def test_within_resume_budget_allows_one_recovery_cycle_then_blocks(self) -> None:
+        adapter = OutcomeSequenceRuntimeAdapter(
+            outcomes_by_stage={
+                "run_or_resume": ("retry_needed", "retry_needed"),
+                "recover": ("resumed",),
+            },
+            created_at=self.now.isoformat(),
+        )
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        kernel = WorkflowKernel(
+            self.ledger,
+            self.workflow_with_resume_budget_guard(),
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-resume-guard", inputs={}, now=self.now)
+
+        first = kernel.run_once(now=self.now)
+        second = kernel.run_once(now=self.now)
+        third = kernel.run_once(now=self.now)
+
+        self.assertEqual(first.decision, "succeeded")
+        self.assertEqual(second.decision, "succeeded")
+        self.assertEqual(third.decision, "blocked")
+        self.assertIn("within_resume_budget", third.failure_summary or "")
+        self.assertIsNotNone(self.ledger.get_stage_run("instance-resume-guard:recover:1"))
+        self.assertIsNotNone(self.ledger.get_stage_run("instance-resume-guard:run_or_resume:2"))
+        self.assertIsNone(self.ledger.get_stage_run("instance-resume-guard:recover:2"))
+
+    def test_budget_guard_without_budget_fails_closed(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_retry_guard_stub())
+        kernel.start(instance_id="instance-missing-budget", inputs={}, now=self.now)
 
         step = kernel.run_once(now=self.now)
 
         self.assertEqual(step.decision, "blocked")
-        self.assertIn("fails closed until implemented", step.failure_summary or "")
-        self.assertIsNone(self.ledger.get_stage_run("instance-retry-guard:apply:1"))
+        self.assertIn("cannot resolve a valid budget", step.failure_summary or "")
+        self.assertIsNone(self.ledger.get_stage_run("instance-missing-budget:apply:1"))
+
+    def test_unknown_transition_guard_still_fails_closed_at_runtime(self) -> None:
+        workflow = WorkflowDef(
+            id="toy-unknown-guard-runtime",
+            version="0.1.0",
+            name="Toy unknown guard workflow",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="apply",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("applied",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="apply", guard="typo_guard"),
+            ),
+        )
+        kernel = self.kernel_for(workflow)
+        kernel.start(instance_id="instance-unknown-guard", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("Unknown transition guard", step.failure_summary or "")
+        self.assertIsNone(self.ledger.get_stage_run("instance-unknown-guard:apply:1"))
 
     def test_human_gate_surface_lifecycle_publishes_reads_back_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as notes_dir:
@@ -1348,6 +1485,92 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             transitions=(
                 Transition(from_stage="draft", on="done", to_stage="apply", guard="within_retry_budget"),
                 Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def workflow_with_retry_budget_guard(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-retry-budget-guard",
+            version="0.1.0",
+            name="Toy retry budget workflow",
+            stages=(
+                StageDef(
+                    id="run",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("retry_needed", "done"),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                    retry={"max_attempts": 2},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="run", on="retry_needed", to_stage="run", guard="within_retry_budget"),
+                Transition(from_stage="run", on="done", terminal="done"),
+            ),
+        )
+
+    def workflow_with_revision_budget_guard(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-revision-budget-guard",
+            version="0.1.0",
+            name="Toy revision budget workflow",
+            stages=(
+                StageDef(
+                    id="review",
+                    type=StageType.A2A_REVIEW_LOOP,
+                    adapter="runtime.local_fake",
+                    outcomes=("needs_revision", "accepted"),
+                    inputs={"operation": "invoke"},
+                    actors={"reviewer": "kernel-test"},
+                    budget={"max_revision_turns": 1},
+                ),
+                StageDef(
+                    id="revise",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("revised",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                    budget={"max_revision_turns": 1},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="review", on="needs_revision", to_stage="revise", guard="within_revision_budget"),
+                Transition(from_stage="review", on="accepted", terminal="done"),
+                Transition(from_stage="revise", on="revised", to_stage="review", guard="within_revision_budget"),
+            ),
+        )
+
+    def workflow_with_resume_budget_guard(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-resume-budget-guard",
+            version="0.1.0",
+            name="Toy resume budget workflow",
+            stages=(
+                StageDef(
+                    id="run_or_resume",
+                    type=StageType.SYSTEM_ACTION,
+                    adapter="runtime.local_fake",
+                    outcomes=("retry_needed", "package_ready"),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                    budget={"max_resume_attempts": 1},
+                ),
+                StageDef(
+                    id="recover",
+                    type=StageType.RECOVERY,
+                    adapter="runtime.local_fake",
+                    outcomes=("resumed", "blocked"),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="run_or_resume", on="retry_needed", to_stage="recover", guard="within_resume_budget"),
+                Transition(from_stage="run_or_resume", on="package_ready", terminal="done"),
+                Transition(from_stage="recover", on="resumed", to_stage="run_or_resume", guard="within_resume_budget"),
+                Transition(from_stage="recover", on="blocked", terminal="blocked"),
             ),
         )
 
