@@ -177,6 +177,36 @@ class PolicyEngineTest(unittest.TestCase):
         self.assertEqual(gate.decision, GateDecision.REQUIRE_HUMAN.value)
         self.assertIn("fingerprint", gate.decision_reason)
 
+    def test_fingerprint_changes_when_risk_boundary_changes(self) -> None:
+        readonly = ActionRequest(
+            action="prepare_publish_packet",
+            target_ref="artifact://ivy/p5-packet",
+            arguments={"packet_id": "p5-1"},
+            risk_classes=(RiskClass.READ_ONLY,),
+        )
+        publish = ActionRequest(
+            action="prepare_publish_packet",
+            target_ref="artifact://ivy/p5-packet",
+            arguments={"packet_id": "p5-1"},
+            risk_classes=(RiskClass.EXTERNAL_EFFECT,),
+            hard_gates=(HardGate.PUBLIC_PUBLISH,),
+        )
+        stale_approval = HumanApprovalReceipt(
+            approval_id="approval-readonly",
+            gate_id="gate-readonly",
+            human_ref="suman",
+            canonical_surface="local-receipt",
+            decision=ApprovalDecision.APPROVED,
+            exact_action_approved=readonly.action,
+            action_fingerprint=fingerprint_request(readonly),
+        )
+
+        self.assertNotEqual(fingerprint_request(readonly), fingerprint_request(publish))
+        gate = self.engine.evaluate(publish, approval=stale_approval, now="2026-05-31T12:00:00Z")
+
+        self.assertEqual(gate.decision, GateDecision.REQUIRE_HUMAN.value)
+        self.assertIn("fingerprint", gate.decision_reason)
+
     def test_expired_approval_invalidates_hard_gate(self) -> None:
         request = ActionRequest(
             action="rotate_token",
