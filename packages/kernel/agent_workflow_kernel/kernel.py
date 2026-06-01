@@ -32,7 +32,16 @@ from .contracts import (
     WorkflowStatus,
     to_plain_data,
 )
-from .policy import ActionRequest, ApprovalDecision, GateDecision, HumanApprovalReceipt, PolicyEngine
+from .policy import (
+    ALLOWED_TRANSITION_GUARDS,
+    FAIL_CLOSED_TRANSITION_GUARDS,
+    ActionRequest,
+    ApprovalDecision,
+    GateDecision,
+    HardGate,
+    HumanApprovalReceipt,
+    PolicyEngine,
+)
 from .prompts import (
     PromptHashMismatchError,
     PromptRegistry,
@@ -112,6 +121,25 @@ class _TransitionResult:
     failure_summary: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _EffectivePolicy:
+    risk_classes: tuple[RiskClass, ...]
+    hard_gates: tuple[HardGate, ...]
+    forbidden_actions: tuple[str, ...]
+    side_effects_known: bool
+    side_effects_ambiguous: bool
+    unknown_policy_refs: tuple[str, ...] = ()
+    layers: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _GuardDecision:
+    allowed: bool
+    guard: str | None
+    reason: str
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+
 class WorkflowKernel:
     """High-level facade for starting and stepping one workflow instance."""
 
@@ -126,10 +154,7 @@ class WorkflowKernel:
         self.config = config
         self._stage_by_id = {stage.id: stage for stage in workflow.stages}
         self._instance_inputs: dict[str, Mapping[str, Any]] = {}
-        self._transitions = {
-            (transition.from_stage, transition.on): transition
-            for transition in workflow.transitions
-        }
+        self._transitions = _index_transitions(workflow.transitions)
 
     def start(
         self,
@@ -199,15 +224,21 @@ class WorkflowKernel:
             return KernelStep(stage_run=None, decision="idle")
 
         stage = self._stage_by_id.get(step.stage_run.stage_id)
+        final_decision: KernelDecision = step.decision
+        final_failure_summary = state.get("failure_summary")
         if step.decision == "succeeded" and stage is not None:
             outcome = _outcome_for_stage_result(stage, state.get("adapter_result"))
             if self.workflow.transitions:
-                self._advance_after_outcome(
+                transition = self._advance_after_outcome(
                     step.stage_run,
                     stage,
                     outcome=outcome,
                     now=now,
+                    adapter_result=state.get("adapter_result"),
                 )
+                if transition.decision == "blocked":
+                    final_decision = "blocked"
+                    final_failure_summary = transition.failure_summary
             else:
                 self.ledger.update_workflow_instance(
                     instance_id=step.stage_run.instance_id,
@@ -275,10 +306,10 @@ class WorkflowKernel:
 
         return KernelStep(
             stage_run=step.stage_run,
-            decision=step.decision,
+            decision=final_decision,
             adapter_result=state.get("adapter_result"),
             receipt_id=state.get("receipt_id"),
-            failure_summary=state.get("failure_summary"),
+            failure_summary=final_failure_summary,
         )
 
     def ingest_human_decision(
@@ -387,6 +418,7 @@ class WorkflowKernel:
             stage,
             outcome=outcome,
             now=now,
+            adapter_result=None,
         )
         return KernelDecisionResult(
             stage_run=waiting_run,
@@ -784,27 +816,63 @@ class WorkflowKernel:
                     FailureClass.ADAPTER_UNAVAILABLE,
                 )
 
+            effective_policy = _effective_policy_for_stage(
+                self.workflow,
+                stage,
+                registration=registration,
+            )
             gate = self.config.policy_engine.evaluate(
-                ActionRequest(
-                    action=operation,
-                    target_ref=registration.adapter_id,
-                    arguments={"stage_id": stage.id, "stage_type": stage.type.value},
-                    risk_classes=registration.side_effects,
-                    workflow_id=self.workflow.id,
-                    instance_id=run.instance_id,
-                    stage_id=stage.id,
-                    actor_ref=run.actor_ref,
-                    adapter_ref=registration.adapter_id,
+                _stage_action_request(
+                    self.workflow,
+                    stage,
+                    run,
+                    registration=registration,
+                    operation=operation,
+                    effective_policy=effective_policy,
                 ),
                 now=now,
             )
             if gate.decision == GateDecision.DENY.value:
-                return self._blocked(state, gate.decision_reason or "Policy denied action.", FailureClass.POLICY_DENIAL)
+                summary = gate.decision_reason or "Policy denied action."
+                receipt = self._policy_preflight_receipt(
+                    stage=stage,
+                    run=run,
+                    registration=registration,
+                    operation=operation,
+                    created_at=created_at,
+                    gate=gate,
+                    effective_policy=effective_policy,
+                    summary=summary,
+                )
+                state["failure_summary"] = summary
+                state["receipt_id"] = receipt.receipt_id
+                return RunnerResult(
+                    decision="blocked",
+                    receipt=receipt,
+                    output_hash=digest_data(receipt),
+                    failure_class=FailureClass.POLICY_DENIAL,
+                    failure_summary=summary,
+                )
             if gate.decision == GateDecision.REQUIRE_HUMAN.value:
-                return self._blocked(
-                    state,
-                    gate.decision_reason or "Policy requires human approval.",
-                    FailureClass.POLICY_DENIAL,
+                summary = gate.decision_reason or "Policy requires human approval."
+                receipt = self._policy_preflight_receipt(
+                    stage=stage,
+                    run=run,
+                    registration=registration,
+                    operation=operation,
+                    created_at=created_at,
+                    gate=gate,
+                    effective_policy=effective_policy,
+                    summary=summary,
+                )
+                state["failure_summary"] = summary
+                state["receipt_id"] = receipt.receipt_id
+                return RunnerResult(
+                    decision="blocked",
+                    receipt=receipt,
+                    output_hash=digest_data(receipt),
+                    failure_class=FailureClass.POLICY_DENIAL,
+                    failure_summary=summary,
                     approval_required=True,
                 )
 
@@ -816,6 +884,7 @@ class WorkflowKernel:
                         run=run,
                         registration=registration,
                         gate=gate,
+                        effective_policy=effective_policy,
                     )
                 except PromptRegistryError as exc:
                     failure_class = (
@@ -868,6 +937,7 @@ class WorkflowKernel:
                     "invocation": invocation,
                     "runtime_input": runtime_input,
                     "policy_gate": gate,
+                    "effective_policy": effective_policy,
                 }
             )
             adapter_result = registration.adapter.invoke(invocation, runtime_input)
@@ -889,7 +959,7 @@ class WorkflowKernel:
                 artifact_refs=adapter_result.artifact_refs,
                 outputs=adapter_result.outputs,
                 checks_run=("adapter_registered", "policy_preflight"),
-                policy_snapshot=to_plain_data(gate),
+                policy_snapshot=_policy_snapshot(gate, effective_policy),
                 residual_risk=adapter_result.residual_risk,
                 next_action=adapter_result.next_hint,
                 rendered_context=rendered_context,
@@ -912,6 +982,44 @@ class WorkflowKernel:
 
         return handler
 
+    def _policy_preflight_receipt(
+        self,
+        *,
+        stage: StageDef,
+        run: StageRun,
+        registration: AdapterRegistration,
+        operation: str,
+        created_at: str,
+        gate: Any,
+        effective_policy: _EffectivePolicy,
+        summary: str,
+    ) -> Receipt:
+        return Receipt(
+            receipt_id=f"receipt:kernel:{run.stage_run_id}:policy_preflight_blocked",
+            kind="kernel.policy_preflight",
+            workflow_id=self.workflow.id,
+            instance_id=run.instance_id,
+            stage_id=stage.id,
+            stage_run_id=run.stage_run_id,
+            status="blocked",
+            summary=summary,
+            created_at=created_at,
+            runtime_provenance={
+                "actor": self.config.owner_id,
+                "adapter_id": registration.adapter_id,
+                "adapter_family": registration.family.value,
+                "operation": operation,
+                "checks_run": [
+                    "adapter_registered",
+                    "effective_policy_compiled",
+                    "policy_preflight",
+                ],
+            },
+            policy_snapshot=_policy_snapshot(gate, effective_policy),
+            residual_risk=summary,
+            next_action="Route through an explicit human approval gate or narrow the declared policy.",
+        )
+
     def _render_stage_context(
         self,
         *,
@@ -919,6 +1027,7 @@ class WorkflowKernel:
         run: StageRun,
         registration: AdapterRegistration,
         gate: Any,
+        effective_policy: _EffectivePolicy,
     ) -> RenderedContext:
         registry = self.config.prompt_registry
         if registry is None:
@@ -933,6 +1042,7 @@ class WorkflowKernel:
         permissions = {
             "policy_gate": to_plain_data(gate),
             "adapter_side_effects": [risk.value for risk in registration.side_effects],
+            "effective_policy": to_plain_data(effective_policy),
         }
         return render_context_packet(
             prompt_bundle=bundle,
@@ -1068,23 +1178,24 @@ class WorkflowKernel:
         operation: str,
         now: Any,
     ) -> None:
+        effective_policy = _effective_policy_for_stage(
+            self.workflow,
+            stage,
+            registration=registration,
+            include_stage_policy=False,
+        )
         surface_gate = self.config.policy_engine.evaluate(
-            ActionRequest(
-                action=f"human_gate_surface.{operation}",
-                target_ref=registration.adapter_id,
-                arguments={
-                    "stage_id": stage.id,
-                    "stage_run_id": run.stage_run_id,
-                    "stage_type": stage.type.value,
+            _stage_action_request(
+                self.workflow,
+                stage,
+                run,
+                registration=registration,
+                operation=f"human_gate_surface.{operation}",
+                effective_policy=effective_policy,
+                extra_arguments={
                     "operation": operation,
                     "waiting_gate_id": gate.gate_id,
                 },
-                risk_classes=registration.side_effects,
-                workflow_id=self.workflow.id,
-                instance_id=run.instance_id,
-                stage_id=stage.id,
-                actor_ref=run.actor_ref,
-                adapter_ref=registration.adapter_id,
                 evidence_refs=_human_gate_evidence_refs(stage, gate),
             ),
             now=now,
@@ -1194,22 +1305,17 @@ class WorkflowKernel:
         )
 
     def _human_gate(self, stage: StageDef, run: StageRun):
+        effective_policy = _effective_policy_for_stage(self.workflow, stage, registration=None)
         return self.config.policy_engine.evaluate(
-            ActionRequest(
-                action=_human_decision_action(stage),
+            _stage_action_request(
+                self.workflow,
+                stage,
+                run,
+                registration=None,
+                operation=_human_decision_action(stage),
+                effective_policy=effective_policy,
                 target_ref=stage.adapter,
-                arguments={
-                    "stage_id": stage.id,
-                    "stage_run_id": run.stage_run_id,
-                    "stage_type": stage.type.value,
-                    "outcomes": list(stage.outcomes),
-                },
-                risk_classes=(RiskClass.REVIEW_ONLY,),
-                workflow_id=self.workflow.id,
-                instance_id=run.instance_id,
-                stage_id=stage.id,
-                actor_ref=run.actor_ref,
-                adapter_ref=stage.adapter,
+                extra_arguments={"outcomes": list(stage.outcomes)},
                 evidence_refs=_human_gate_evidence_refs(stage, None),
             )
         )
@@ -1227,6 +1333,7 @@ class WorkflowKernel:
         *,
         outcome: str,
         now: Any,
+        adapter_result: AdapterResult | None = None,
     ) -> _TransitionResult:
         transition = self._transitions.get((stage.id, outcome))
         if transition is None:
@@ -1246,6 +1353,22 @@ class WorkflowKernel:
                 },
             )
             return _TransitionResult(decision="blocked", failure_summary=summary)
+
+        guard = self._evaluate_transition_guard(
+            run=run,
+            stage=stage,
+            transition=transition,
+            adapter_result=adapter_result,
+        )
+        if not guard.allowed:
+            return self._block_transition_guard(
+                run=run,
+                stage=stage,
+                transition=transition,
+                guard=guard,
+                outcome=outcome,
+                now=now,
+            )
 
         if transition.terminal is not None:
             status = _workflow_status_for_terminal(transition.terminal)
@@ -1313,6 +1436,154 @@ class WorkflowKernel:
             },
         )
         return _TransitionResult(decision="queued", queued_stage_id=next_stage.id)
+
+    def _evaluate_transition_guard(
+        self,
+        *,
+        run: StageRun,
+        stage: StageDef,
+        transition: Transition,
+        adapter_result: AdapterResult | None,
+    ) -> _GuardDecision:
+        guard = transition.guard
+        if guard is None:
+            return _GuardDecision(True, None, "no transition guard declared")
+        if guard not in ALLOWED_TRANSITION_GUARDS:
+            return _GuardDecision(
+                False,
+                guard,
+                f"Unknown transition guard {guard!r}; failing closed.",
+                {"allowed_guards": sorted(ALLOWED_TRANSITION_GUARDS)},
+            )
+        if guard == "policy_approved":
+            return self._guard_policy_approved(run=run, guard=guard)
+        if guard == "has_required_artifacts":
+            return _guard_has_required_artifacts(
+                stage=stage,
+                adapter_result=adapter_result,
+                guard=guard,
+            )
+        if guard in FAIL_CLOSED_TRANSITION_GUARDS:
+            return _GuardDecision(
+                False,
+                guard,
+                f"Transition guard {guard!r} is reserved for a runner-owned budget/recovery evaluator and fails closed until implemented.",
+                {"implemented": False, "stub": True},
+            )
+        return _GuardDecision(
+            False,
+            guard,
+            f"Transition guard {guard!r} has no evaluator; failing closed.",
+            {"allowed_guards": sorted(ALLOWED_TRANSITION_GUARDS)},
+        )
+
+    def _guard_policy_approved(self, *, run: StageRun, guard: str) -> _GuardDecision:
+        row = self.ledger.connection.execute(
+            """
+            SELECT decision_id, gate_id, decision, human_ref, canonical_surface
+            FROM human_decisions
+            WHERE instance_id = ? AND stage_run_id = ?
+            ORDER BY created_at DESC, decision_id DESC
+            LIMIT 1
+            """,
+            (run.instance_id, run.stage_run_id),
+        ).fetchone()
+        if row is None:
+            return _GuardDecision(
+                False,
+                guard,
+                "Transition guard 'policy_approved' requires a recorded human approval decision.",
+            )
+        decision = str(row["decision"])
+        if decision not in _APPROVING_HUMAN_DECISIONS:
+            return _GuardDecision(
+                False,
+                guard,
+                f"Transition guard 'policy_approved' found non-approving decision {decision!r}.",
+                {
+                    "decision_id": row["decision_id"],
+                    "gate_id": row["gate_id"],
+                    "decision": decision,
+                },
+            )
+        return _GuardDecision(
+            True,
+            guard,
+            "human approval decision is recorded",
+            {
+                "decision_id": row["decision_id"],
+                "gate_id": row["gate_id"],
+                "decision": decision,
+                "human_ref": row["human_ref"],
+                "canonical_surface": row["canonical_surface"],
+            },
+        )
+
+    def _block_transition_guard(
+        self,
+        *,
+        run: StageRun,
+        stage: StageDef,
+        transition: Transition,
+        guard: _GuardDecision,
+        outcome: str,
+        now: Any,
+    ) -> _TransitionResult:
+        created_at = iso_timestamp(now)
+        guard_name = guard.guard or ""
+        receipt = Receipt(
+            receipt_id=f"receipt:kernel:{run.stage_run_id}:transition_guard:{guard_name or 'none'}",
+            kind="kernel.transition_guard",
+            workflow_id=self.workflow.id,
+            instance_id=run.instance_id,
+            stage_id=stage.id,
+            stage_run_id=run.stage_run_id,
+            status="blocked",
+            summary=guard.reason,
+            created_at=created_at,
+            runtime_provenance={
+                "actor": self.config.owner_id,
+                "checks_run": ["transition_guard_evaluated"],
+                "guard": guard_name,
+                "guard_details": to_plain_data(guard.details),
+                "transition": to_plain_data(transition),
+            },
+            residual_risk=guard.reason,
+            next_action="Satisfy the named transition guard before retrying the transition.",
+        )
+        self.ledger.record_receipt(receipt)
+        self.ledger.append_event(
+            instance_id=run.instance_id,
+            stage_run_id=run.stage_run_id,
+            event_type="transition_guard_blocked",
+            actor=self.config.owner_id,
+            payload={
+                "from_stage": transition.from_stage,
+                "outcome": transition.on,
+                "guard": guard_name,
+                "reason": guard.reason,
+                "receipt_id": receipt.receipt_id,
+            },
+            created_at=created_at,
+        )
+        self.ledger.update_workflow_instance(
+            instance_id=run.instance_id,
+            status=WorkflowStatus.BLOCKED,
+            current_stage_id=stage.id,
+            updated_at=now,
+            actor=self.config.owner_id,
+            event_type="workflow_blocked",
+            payload={
+                "stage_id": stage.id,
+                "stage_run_id": run.stage_run_id,
+                "outcome": outcome,
+                "reason": "transition_guard_failed",
+                "guard": guard_name,
+                "guard_reason": guard.reason,
+                "receipt_id": receipt.receipt_id,
+            },
+        )
+        return _TransitionResult(decision="blocked", failure_summary=guard.reason)
 
     def _next_stage_for_transition(self, transition: Transition) -> StageDef | None:
         if transition.to_stage is None:
@@ -1382,6 +1653,451 @@ class WorkflowKernel:
             idempotency_key=f"{instance_id}:{stage.id}:{attempt}",
             created_at=created_at,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _PolicyComponents:
+    risk_classes: tuple[RiskClass, ...] = ()
+    hard_gates: tuple[HardGate, ...] = ()
+    forbidden_actions: tuple[str, ...] = ()
+    side_effects_known: bool = True
+    side_effects_ambiguous: bool = False
+    unknown_policy_refs: tuple[str, ...] = ()
+
+
+def _index_transitions(transitions: tuple[Transition, ...]) -> dict[tuple[str, str], Transition]:
+    indexed: dict[tuple[str, str], Transition] = {}
+    for transition in transitions:
+        key = (transition.from_stage, transition.on)
+        if key in indexed:
+            raise ValueError(
+                f"duplicate transition for stage {transition.from_stage!r} outcome {transition.on!r}"
+            )
+        indexed[key] = transition
+    return indexed
+
+
+def _effective_policy_for_stage(
+    workflow: WorkflowDef,
+    stage: StageDef,
+    *,
+    registration: AdapterRegistration | None,
+    include_stage_policy: bool = True,
+) -> _EffectivePolicy:
+    risk_classes: list[RiskClass] = []
+    hard_gates: list[HardGate] = []
+    forbidden_actions: list[str] = []
+    unknown_policy_refs: list[str] = []
+    side_effects_known = True
+    side_effects_ambiguous = False
+
+    layers: dict[str, Any] = {
+        "workflow_defaults": to_plain_data(workflow.defaults),
+        "workflow_policies": to_plain_data(workflow.policies),
+        "stage_policy": to_plain_data(stage.policy) if include_stage_policy else {},
+        "adapter_policy": None,
+    }
+
+    def merge(components: _PolicyComponents) -> None:
+        nonlocal side_effects_known, side_effects_ambiguous
+        risk_classes.extend(components.risk_classes)
+        hard_gates.extend(components.hard_gates)
+        forbidden_actions.extend(components.forbidden_actions)
+        unknown_policy_refs.extend(components.unknown_policy_refs)
+        side_effects_known = side_effects_known and components.side_effects_known
+        side_effects_ambiguous = side_effects_ambiguous or components.side_effects_ambiguous
+
+    merge(_policy_components(workflow.defaults.get("policy_class")))
+    merge(_policy_components(workflow.defaults.get("capability_policy")))
+    merge(_policy_components(workflow.policies))
+    if include_stage_policy:
+        merge(_policy_components(stage.policy))
+
+    if registration is not None:
+        risk_classes.extend(registration.side_effects)
+        adapter_layer = {
+            "adapter_id": registration.adapter_id,
+            "family": registration.family.value,
+            "side_effects": [risk.value for risk in registration.side_effects],
+            "replay_safe": registration.replay_safe,
+            "requires_idempotency_key": registration.requires_idempotency_key,
+            "metadata": to_plain_data(registration.metadata),
+        }
+        layers["adapter_policy"] = adapter_layer
+        merge(_policy_components(registration.metadata.get("policy")))
+        merge(_policy_components(registration.metadata.get("side_effects")))
+        merge(_policy_components(registration.metadata.get("risk_classes")))
+        merge(_policy_components(registration.metadata.get("hard_gates")))
+        merge(_surface_contract_policy_components(registration.metadata.get("surface_contract")))
+    elif stage.type == StageType.HUMAN_GATE:
+        risk_classes.append(RiskClass.REVIEW_ONLY)
+
+    if unknown_policy_refs:
+        side_effects_known = False
+        side_effects_ambiguous = True
+
+    deduped_risks = _dedupe_risk_classes(risk_classes) or (RiskClass.READ_ONLY,)
+    return _EffectivePolicy(
+        risk_classes=deduped_risks,
+        hard_gates=_dedupe_hard_gates(hard_gates),
+        forbidden_actions=_dedupe_strings(forbidden_actions),
+        side_effects_known=side_effects_known,
+        side_effects_ambiguous=side_effects_ambiguous,
+        unknown_policy_refs=_dedupe_strings(unknown_policy_refs),
+        layers=layers,
+    )
+
+
+def _stage_action_request(
+    workflow: WorkflowDef,
+    stage: StageDef,
+    run: StageRun,
+    *,
+    registration: AdapterRegistration | None,
+    operation: str,
+    effective_policy: _EffectivePolicy,
+    target_ref: str | None = None,
+    extra_arguments: Mapping[str, Any] | None = None,
+    evidence_refs: tuple[str, ...] = (),
+) -> ActionRequest:
+    arguments: dict[str, Any] = {
+        "stage_id": stage.id,
+        "stage_run_id": run.stage_run_id,
+        "stage_type": stage.type.value,
+        "effective_policy": to_plain_data(effective_policy),
+    }
+    if extra_arguments:
+        arguments.update(dict(extra_arguments))
+    adapter_ref = registration.adapter_id if registration is not None else stage.adapter
+    return ActionRequest(
+        action=operation,
+        target_ref=target_ref or adapter_ref,
+        arguments=arguments,
+        risk_classes=effective_policy.risk_classes,
+        hard_gates=effective_policy.hard_gates,
+        workflow_id=workflow.id,
+        instance_id=run.instance_id,
+        stage_id=stage.id,
+        actor_ref=run.actor_ref,
+        adapter_ref=adapter_ref,
+        evidence_refs=evidence_refs,
+        forbidden_actions=effective_policy.forbidden_actions,
+        side_effects_known=effective_policy.side_effects_known,
+        side_effects_ambiguous=effective_policy.side_effects_ambiguous,
+    )
+
+
+def _policy_components(value: Any) -> _PolicyComponents:
+    if value in (None, ""):
+        return _PolicyComponents()
+    if isinstance(value, RiskClass):
+        return _PolicyComponents(risk_classes=(value,))
+    if isinstance(value, HardGate):
+        return _PolicyComponents(hard_gates=(value,))
+    if isinstance(value, str):
+        return _policy_class_components(value)
+    if isinstance(value, Mapping):
+        risk_classes: list[RiskClass] = []
+        hard_gates: list[HardGate] = []
+        forbidden_actions: list[str] = []
+        unknown_policy_refs: list[str] = []
+        side_effects_known = True
+        side_effects_ambiguous = False
+
+        for key in ("class", "policy_class", "risk_class", "policy_ref"):
+            components = _policy_components(value.get(key))
+            risk_classes.extend(components.risk_classes)
+            hard_gates.extend(components.hard_gates)
+            unknown_policy_refs.extend(components.unknown_policy_refs)
+            side_effects_known = side_effects_known and components.side_effects_known
+            side_effects_ambiguous = side_effects_ambiguous or components.side_effects_ambiguous
+
+        for key in ("classes", "risk_classes", "side_effects"):
+            components = _policy_components(value.get(key))
+            risk_classes.extend(components.risk_classes)
+            hard_gates.extend(components.hard_gates)
+            unknown_policy_refs.extend(components.unknown_policy_refs)
+            side_effects_known = side_effects_known and components.side_effects_known
+            side_effects_ambiguous = side_effects_ambiguous or components.side_effects_ambiguous
+
+        hard_components = _hard_gate_components(value.get("hard_gates"))
+        risk_classes.extend(hard_components.risk_classes)
+        hard_gates.extend(hard_components.hard_gates)
+        unknown_policy_refs.extend(hard_components.unknown_policy_refs)
+
+        forbidden_actions.extend(_string_tuple(value.get("forbidden_actions")))
+        forbidden_actions.extend(_string_tuple(value.get("forbidden")))
+        if value.get("external_publish_allowed") is False:
+            forbidden_actions.extend(("public_publish", "publish", "external_send"))
+
+        requires_approval = (
+            value.get("requires_explicit_approval") is True
+            or value.get("requires_prior_approval") is True
+        )
+        has_hard_policy = bool(hard_gates) or any(
+            risk
+            in {
+                RiskClass.EXTERNAL_EFFECT,
+                RiskClass.PRODUCTION_EFFECT,
+                RiskClass.FINANCIAL_EFFECT,
+                RiskClass.AUTH_EFFECT,
+                RiskClass.DESTRUCTIVE_EFFECT,
+                RiskClass.FORBIDDEN,
+            }
+            for risk in risk_classes
+        )
+        if requires_approval and not has_hard_policy:
+            side_effects_ambiguous = True
+        if value.get("side_effects_known") is False:
+            side_effects_known = False
+        if value.get("side_effects_ambiguous") is True:
+            side_effects_ambiguous = True
+
+        return _PolicyComponents(
+            risk_classes=_dedupe_risk_classes(risk_classes),
+            hard_gates=_dedupe_hard_gates(hard_gates),
+            forbidden_actions=_dedupe_strings(forbidden_actions),
+            side_effects_known=side_effects_known,
+            side_effects_ambiguous=side_effects_ambiguous,
+            unknown_policy_refs=_dedupe_strings(unknown_policy_refs),
+        )
+    if isinstance(value, tuple | list | set | frozenset):
+        risk_classes: list[RiskClass] = []
+        hard_gates: list[HardGate] = []
+        forbidden_actions: list[str] = []
+        unknown_policy_refs: list[str] = []
+        side_effects_known = True
+        side_effects_ambiguous = False
+        for item in value:
+            components = _policy_components(item)
+            risk_classes.extend(components.risk_classes)
+            hard_gates.extend(components.hard_gates)
+            forbidden_actions.extend(components.forbidden_actions)
+            unknown_policy_refs.extend(components.unknown_policy_refs)
+            side_effects_known = side_effects_known and components.side_effects_known
+            side_effects_ambiguous = side_effects_ambiguous or components.side_effects_ambiguous
+        return _PolicyComponents(
+            risk_classes=_dedupe_risk_classes(risk_classes),
+            hard_gates=_dedupe_hard_gates(hard_gates),
+            forbidden_actions=_dedupe_strings(forbidden_actions),
+            side_effects_known=side_effects_known,
+            side_effects_ambiguous=side_effects_ambiguous,
+            unknown_policy_refs=_dedupe_strings(unknown_policy_refs),
+        )
+    return _PolicyComponents(unknown_policy_refs=(str(value),), side_effects_known=False, side_effects_ambiguous=True)
+
+
+def _policy_class_components(name: str) -> _PolicyComponents:
+    normalized = _normalize_policy_name(name)
+    if not normalized:
+        return _PolicyComponents()
+    if normalized in _POLICY_CLASS_MAP:
+        risks, gates = _POLICY_CLASS_MAP[normalized]
+        return _PolicyComponents(risk_classes=risks, hard_gates=gates)
+    try:
+        return _PolicyComponents(risk_classes=(RiskClass(normalized),))
+    except ValueError:
+        pass
+    try:
+        gate = HardGate(normalized)
+        return _PolicyComponents(hard_gates=(gate,), risk_classes=_risk_classes_for_hard_gate(gate))
+    except ValueError:
+        return _PolicyComponents(
+            unknown_policy_refs=(name,),
+            side_effects_known=False,
+            side_effects_ambiguous=True,
+        )
+
+
+def _hard_gate_components(value: Any) -> _PolicyComponents:
+    if value in (None, ""):
+        return _PolicyComponents()
+    if isinstance(value, tuple | list | set | frozenset):
+        risks: list[RiskClass] = []
+        gates: list[HardGate] = []
+        unknown: list[str] = []
+        for item in value:
+            component = _hard_gate_components(item)
+            risks.extend(component.risk_classes)
+            gates.extend(component.hard_gates)
+            unknown.extend(component.unknown_policy_refs)
+        return _PolicyComponents(
+            risk_classes=_dedupe_risk_classes(risks),
+            hard_gates=_dedupe_hard_gates(gates),
+            unknown_policy_refs=_dedupe_strings(unknown),
+            side_effects_known=not bool(unknown),
+            side_effects_ambiguous=bool(unknown),
+        )
+    text = _normalize_policy_name(str(value))
+    try:
+        gate = HardGate(text)
+    except ValueError:
+        return _PolicyComponents(
+            unknown_policy_refs=(str(value),),
+            side_effects_known=False,
+            side_effects_ambiguous=True,
+        )
+    return _PolicyComponents(hard_gates=(gate,), risk_classes=_risk_classes_for_hard_gate(gate))
+
+
+def _surface_contract_policy_components(value: Any) -> _PolicyComponents:
+    if not isinstance(value, Mapping):
+        return _PolicyComponents()
+    dry_run_only = bool(value.get("dry_run_only", False))
+    live_mutation_allowed = bool(value.get("live_mutation_allowed", False))
+    external_effects = _string_tuple(value.get("external_effects"))
+    if dry_run_only and not live_mutation_allowed:
+        return _PolicyComponents()
+    if live_mutation_allowed or external_effects:
+        return _PolicyComponents(
+            risk_classes=(RiskClass.EXTERNAL_EFFECT,),
+            hard_gates=(HardGate.EXTERNAL_SEND,),
+            side_effects_ambiguous=not bool(external_effects),
+        )
+    return _PolicyComponents()
+
+
+def _guard_has_required_artifacts(
+    *,
+    stage: StageDef,
+    adapter_result: AdapterResult | None,
+    guard: str,
+) -> _GuardDecision:
+    required_roles = _required_artifact_roles(stage)
+    if not required_roles:
+        return _GuardDecision(True, guard, "stage declares no required artifact roles")
+    if adapter_result is None:
+        return _GuardDecision(
+            False,
+            guard,
+            "Transition guard 'has_required_artifacts' cannot inspect artifacts for this stage result.",
+            {"required_roles": list(required_roles)},
+        )
+    present_roles = tuple(artifact.role for artifact in adapter_result.artifact_refs)
+    missing = tuple(role for role in required_roles if role not in present_roles)
+    if missing:
+        return _GuardDecision(
+            False,
+            guard,
+            "Transition guard 'has_required_artifacts' blocked missing required artifact roles: "
+            + ", ".join(missing),
+            {"required_roles": list(required_roles), "present_roles": list(present_roles)},
+        )
+    return _GuardDecision(
+        True,
+        guard,
+        "all required artifact roles are present",
+        {"required_roles": list(required_roles), "present_roles": list(present_roles)},
+    )
+
+
+def _required_artifact_roles(stage: StageDef) -> tuple[str, ...]:
+    artifacts = stage.outputs.get("artifacts")
+    roles: list[str] = []
+    if isinstance(artifacts, Mapping):
+        for role, spec in artifacts.items():
+            required = bool(spec.get("required", False)) if isinstance(spec, Mapping) else bool(spec)
+            if required:
+                roles.append(str(role))
+    elif isinstance(artifacts, tuple | list):
+        for item in artifacts:
+            if isinstance(item, Mapping):
+                role = item.get("role")
+                if role and bool(item.get("required", False)):
+                    roles.append(str(role))
+    return _dedupe_strings(roles)
+
+
+def _policy_snapshot(gate: Any, effective_policy: _EffectivePolicy | None = None) -> dict[str, Any]:
+    snapshot = to_plain_data(gate)
+    if effective_policy is not None:
+        snapshot["effective_policy"] = to_plain_data(effective_policy)
+    return snapshot
+
+
+def _normalize_policy_name(value: str) -> str:
+    return value.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _dedupe_risk_classes(values: list[RiskClass] | tuple[RiskClass, ...]) -> tuple[RiskClass, ...]:
+    seen: set[RiskClass] = set()
+    result: list[RiskClass] = []
+    for risk in values:
+        if risk in seen:
+            continue
+        seen.add(risk)
+        result.append(risk)
+    return tuple(result)
+
+
+def _dedupe_hard_gates(values: list[HardGate] | tuple[HardGate, ...]) -> tuple[HardGate, ...]:
+    seen: set[HardGate] = set()
+    result: list[HardGate] = []
+    for gate in values:
+        if gate in seen:
+            continue
+        seen.add(gate)
+        result.append(gate)
+    return tuple(result)
+
+
+def _dedupe_strings(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return tuple(result)
+
+
+def _risk_classes_for_hard_gate(gate: HardGate) -> tuple[RiskClass, ...]:
+    return _HARD_GATE_RISK_MAP.get(gate, (RiskClass.EXTERNAL_EFFECT,))
+
+
+_POLICY_CLASS_MAP: dict[str, tuple[tuple[RiskClass, ...], tuple[HardGate, ...]]] = {
+    "read_only": ((RiskClass.READ_ONLY,), ()),
+    "read_only_review": ((RiskClass.READ_ONLY,), ()),
+    "local_draft": ((RiskClass.LOCAL_DRAFT,), ()),
+    "internal_generation": ((RiskClass.LOCAL_DRAFT,), ()),
+    "review_only": ((RiskClass.REVIEW_ONLY,), ()),
+    "internal_state": ((RiskClass.INTERNAL_STATE,), ()),
+    "external_effect": ((RiskClass.EXTERNAL_EFFECT,), (HardGate.EXTERNAL_SEND,)),
+    "external_send": ((RiskClass.EXTERNAL_EFFECT,), (HardGate.EXTERNAL_SEND,)),
+    "external_effect_or_uncertain_review": (
+        (RiskClass.EXTERNAL_EFFECT,),
+        (HardGate.EXTERNAL_SEND,),
+    ),
+    "public_publish": ((RiskClass.EXTERNAL_EFFECT,), (HardGate.PUBLIC_PUBLISH,)),
+    "deploy": ((RiskClass.PRODUCTION_EFFECT,), (HardGate.DEPLOY,)),
+    "deploy_or_prod_mutation": ((RiskClass.PRODUCTION_EFFECT,), (HardGate.DEPLOY,)),
+    "production_effect": ((RiskClass.PRODUCTION_EFFECT,), (HardGate.DEPLOY,)),
+    "auth": ((RiskClass.AUTH_EFFECT,), (HardGate.AUTH,)),
+    "auth_effect": ((RiskClass.AUTH_EFFECT,), (HardGate.AUTH,)),
+    "auth_or_secret_change": ((RiskClass.AUTH_EFFECT,), (HardGate.AUTH,)),
+    "money": ((RiskClass.FINANCIAL_EFFECT,), (HardGate.MONEY,)),
+    "financial_effect": ((RiskClass.FINANCIAL_EFFECT,), (HardGate.MONEY,)),
+    "money_or_broker_action": (
+        (RiskClass.FINANCIAL_EFFECT,),
+        (HardGate.MONEY, HardGate.LIVE_TRADE),
+    ),
+    "high_cost_compute": ((RiskClass.FINANCIAL_EFFECT,), (HardGate.MONEY,)),
+    "destructive_change": ((RiskClass.DESTRUCTIVE_EFFECT,), (HardGate.DESTRUCTIVE_CHANGE,)),
+    "destructive_effect": ((RiskClass.DESTRUCTIVE_EFFECT,), (HardGate.DESTRUCTIVE_CHANGE,)),
+    "forbidden": ((RiskClass.FORBIDDEN,), ()),
+}
+
+_HARD_GATE_RISK_MAP: dict[HardGate, tuple[RiskClass, ...]] = {
+    HardGate.PUBLIC_PUBLISH: (RiskClass.EXTERNAL_EFFECT,),
+    HardGate.DEPLOY: (RiskClass.PRODUCTION_EFFECT,),
+    HardGate.LIVE_TRADE: (RiskClass.FINANCIAL_EFFECT,),
+    HardGate.AUTH: (RiskClass.AUTH_EFFECT,),
+    HardGate.MONEY: (RiskClass.FINANCIAL_EFFECT,),
+    HardGate.EXTERNAL_SEND: (RiskClass.EXTERNAL_EFFECT,),
+    HardGate.DESTRUCTIVE_CHANGE: (RiskClass.DESTRUCTIVE_EFFECT,),
+}
 
 
 def _operation_for_stage(stage: StageDef) -> str:
@@ -1547,6 +2263,18 @@ _KNOWN_HUMAN_DECISIONS = frozenset(
         "parked",
         "defer",
         "blocked",
+    }
+)
+
+_APPROVING_HUMAN_DECISIONS = frozenset(
+    {
+        ApprovalDecision.APPROVED.value,
+        "approve",
+        "approval_granted",
+        "read_clear",
+        "clear",
+        "done",
+        "succeeded",
     }
 )
 

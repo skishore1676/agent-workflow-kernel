@@ -55,6 +55,27 @@ DEFAULT_ALLOW_WITH_RECEIPT_RISK_CLASSES: frozenset[RiskClass] = frozenset(
     }
 )
 
+IMPLEMENTED_TRANSITION_GUARDS: frozenset[str] = frozenset(
+    {
+        "policy_approved",
+        "has_required_artifacts",
+    }
+)
+
+FAIL_CLOSED_TRANSITION_GUARDS: frozenset[str] = frozenset(
+    {
+        "within_retry_budget",
+        "within_revision_budget",
+        "within_research_iteration_budget",
+        "within_resume_budget",
+        "lease_not_expired",
+    }
+)
+
+ALLOWED_TRANSITION_GUARDS: frozenset[str] = (
+    IMPLEMENTED_TRANSITION_GUARDS | FAIL_CLOSED_TRANSITION_GUARDS
+)
+
 
 @dataclass(slots=True, frozen=True)
 class ActionRequest:

@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .contracts import StageType, WorkflowDef, WorkflowStatus
+from .policy import ALLOWED_TRANSITION_GUARDS
 
 
 class WorkflowValidationError(ValueError):
@@ -84,10 +85,18 @@ def validate_workflow_mapping(data: Mapping[str, Any]) -> None:
             outcome_names.add(outcome_name)
         outcomes_by_stage[stage_id] = outcome_names
 
+    transition_keys: set[tuple[str, str]] = set()
+
     for index, raw_transition in enumerate(transitions):
         transition = require_mapping(raw_transition, label=f"transitions[{index}]")
         from_stage = _require_str(transition.get("from"), f"transitions[{index}].from")
         outcome = _require_str(transition.get("on"), f"transitions[{index}].on")
+        transition_key = (from_stage, outcome)
+        if transition_key in transition_keys:
+            raise WorkflowValidationError(
+                f"duplicate transition for stage {from_stage!r} outcome {outcome!r}"
+            )
+        transition_keys.add(transition_key)
 
         if from_stage not in stage_ids:
             raise WorkflowValidationError(
@@ -104,6 +113,15 @@ def validate_workflow_mapping(data: Mapping[str, Any]) -> None:
             raise WorkflowValidationError(
                 f"transitions[{index}] must define exactly one of 'to' or 'terminal'"
             )
+
+        guard = transition.get("guard")
+        if guard not in (None, ""):
+            guard_name = _require_str(guard, f"transitions[{index}].guard")
+            if guard_name not in ALLOWED_TRANSITION_GUARDS:
+                allowed = ", ".join(sorted(ALLOWED_TRANSITION_GUARDS))
+                raise WorkflowValidationError(
+                    f"unknown transition guard {guard_name!r}; expected one of: {allowed}"
+                )
 
         if has_to:
             to_stage = _require_str(transition["to"], f"transitions[{index}].to")
@@ -149,6 +167,7 @@ def validate_workflow_def(workflow: WorkflowDef) -> None:
                 "on": transition.on,
                 **({"to": transition.to_stage} if transition.to_stage else {}),
                 **({"terminal": transition.terminal} if transition.terminal else {}),
+                **({"guard": transition.guard} if transition.guard else {}),
             }
             for transition in workflow.transitions
         ],

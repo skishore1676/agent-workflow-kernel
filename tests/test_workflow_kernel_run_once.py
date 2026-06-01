@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from agent_workflow_kernel import (  # noqa: E402
     AdapterRegistration,
     AdapterRegistry,
     AdapterRegistryError,
+    ArtifactRef,
     ApprovalDecision,
     HumanApprovalReceipt,
     KernelRuntimeConfig,
@@ -502,6 +504,186 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         ).fetchone()["count"]
         self.assertEqual(invocation_count, 0)
 
+    def test_stage_policy_is_enforced_before_adapter_invocation(self) -> None:
+        adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        workflow = self.workflow_with_runtime_stage(
+            stage_policy={
+                "class": "public_publish",
+                "requires_explicit_approval": True,
+            }
+        )
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-policy", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("approval", step.failure_summary or "")
+        self.assertEqual(adapter.receipts, [])
+        self.assertEqual(
+            self.ledger.connection.execute(
+                "SELECT COUNT(*) AS count FROM adapter_invocations"
+            ).fetchone()["count"],
+            0,
+        )
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE stage_run_id = ?",
+            ("instance-policy:draft:1",),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        self.assertEqual(receipt["kind"], "kernel.policy_preflight")
+        self.assertEqual(receipt["policy_snapshot"]["decision"], "require_human")
+        self.assertIn(
+            "external_effect",
+            receipt["policy_snapshot"]["effective_policy"]["risk_classes"],
+        )
+
+    def test_workflow_policy_is_stricter_than_adapter_policy(self) -> None:
+        adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        workflow = self.workflow_with_runtime_stage(defaults={"policy_class": "destructive_change"})
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-workflow-policy", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertEqual(adapter.receipts, [])
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE stage_run_id = ?",
+            ("instance-workflow-policy:draft:1",),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        self.assertIn(
+            "destructive_effect",
+            receipt["policy_snapshot"]["effective_policy"]["risk_classes"],
+        )
+
+    def test_unknown_adapter_policy_metadata_fails_closed(self) -> None:
+        adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registration = AdapterRegistration(
+            adapter_id=adapter.adapter_id,
+            family=adapter.family,
+            adapter=adapter,
+            operations=adapter.operations,
+            side_effects=(RiskClass.READ_ONLY,),
+            metadata={"side_effects": ["unclassified_remote_mutation"]},
+        )
+        registry = AdapterRegistry((registration,))
+        kernel = WorkflowKernel(
+            self.ledger,
+            self.workflow_with_runtime_stage(),
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-unknown-policy", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("unknown", step.failure_summary or "")
+        self.assertEqual(adapter.receipts, [])
+
+    def test_policy_approved_guard_blocks_without_human_decision(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_policy_approved_runtime_transition())
+        kernel.start(instance_id="instance-guard", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("policy_approved", step.failure_summary or "")
+        self.assertIsNone(self.ledger.get_stage_run("instance-guard:apply:1"))
+        stored = self.ledger.get_workflow_instance("instance-guard")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.BLOCKED)
+        events = [event["event_type"] for event in self.ledger.list_events()]
+        self.assertIn("transition_guard_blocked", events)
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE receipt_kind = ?",
+            ("kernel.transition_guard",),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        self.assertEqual(receipt["runtime_provenance"]["guard"], "policy_approved")
+
+    def test_policy_approved_guard_allows_recorded_human_approval(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_policy_approved_human_gate())
+        self._run_to_waiting_gate(kernel, instance_id="instance-approved-guard")
+        decision = self._decision_from_waiting_gate(
+            approval_id="approval-guard",
+            decision=ApprovalDecision.APPROVED,
+        )
+
+        result = kernel.ingest_human_decision(
+            instance_id="instance-approved-guard",
+            decision=decision,
+            now=self.now,
+        )
+
+        self.assertEqual(result.decision, "queued")
+        self.assertEqual(result.queued_stage_id, "apply")
+        self.assertIsNotNone(self.ledger.get_stage_run("instance-approved-guard:apply:1"))
+
+    def test_has_required_artifacts_guard_blocks_missing_artifact_roles(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_required_artifact_guard())
+        kernel.start(instance_id="instance-artifact-missing", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("missing required artifact roles", step.failure_summary or "")
+        self.assertIsNone(self.ledger.get_stage_run("instance-artifact-missing:apply:1"))
+
+    def test_has_required_artifacts_guard_allows_present_artifact_roles(self) -> None:
+        class ArtifactRuntimeAdapter(LocalFakeRuntimeAdapter):
+            def invoke(self, invocation, runtime_input):
+                result = super().invoke(invocation, runtime_input)
+                artifact = ArtifactRef(
+                    artifact_id="artifact-review-packet",
+                    role="review_packet",
+                    uri="artifact://review-packet",
+                    content_hash="sha256:" + "1" * 64,
+                )
+                return replace(result, artifact_refs=(artifact,))
+
+        adapter = ArtifactRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        kernel = WorkflowKernel(
+            self.ledger,
+            self.workflow_with_required_artifact_guard(),
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-artifact-present", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "succeeded")
+        apply = self.ledger.get_stage_run("instance-artifact-present:apply:1")
+        self.assertIsNotNone(apply)
+        assert apply is not None
+        self.assertEqual(apply.status, StageRunStatus.QUEUED)
+
+    def test_within_retry_budget_guard_is_typed_fail_closed_stub(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_retry_guard_stub())
+        kernel.start(instance_id="instance-retry-guard", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("fails closed until implemented", step.failure_summary or "")
+        self.assertIsNone(self.ledger.get_stage_run("instance-retry-guard:apply:1"))
+
     def test_human_gate_surface_lifecycle_publishes_reads_back_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as notes_dir:
             surface = LocalMarkdownHumanReviewSurfaceAdapter(
@@ -795,6 +977,8 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         *,
         adapter: str = "runtime.local_fake",
         prompt_refs: tuple[PromptRef, ...] = (),
+        stage_policy: dict | None = None,
+        defaults: dict | None = None,
     ) -> WorkflowDef:
         return WorkflowDef(
             id="toy-kernel",
@@ -809,9 +993,129 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
                     inputs={"operation": "invoke"},
                     actors={"worker": "kernel-test"},
                     prompt_refs=prompt_refs,
+                    policy=stage_policy or {},
                 ),
             ),
             transitions=(),
+            defaults=defaults or {},
+        )
+
+    def workflow_with_policy_approved_runtime_transition(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-policy-guard-runtime",
+            version="0.1.0",
+            name="Toy policy guard runtime workflow",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="apply",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("applied",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="apply", guard="policy_approved"),
+                Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def workflow_with_policy_approved_human_gate(self) -> WorkflowDef:
+        workflow = self.workflow_with_human_gate()
+        return WorkflowDef(
+            id="toy-policy-approved-human",
+            version=workflow.version,
+            name="Toy policy approved human workflow",
+            stages=workflow.stages,
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="approve"),
+                Transition(
+                    from_stage="approve",
+                    on="approval_granted",
+                    to_stage="apply",
+                    guard="policy_approved",
+                ),
+                Transition(from_stage="approve", on="reject", terminal="policy_denied"),
+                Transition(from_stage="approve", on="revise_plan", to_stage="draft"),
+                Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def workflow_with_required_artifact_guard(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-artifact-guard",
+            version="0.1.0",
+            name="Toy artifact guard workflow",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    outputs={
+                        "artifacts": (
+                            {"role": "review_packet", "required": True},
+                        )
+                    },
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="apply",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("applied",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(
+                    from_stage="draft",
+                    on="done",
+                    to_stage="apply",
+                    guard="has_required_artifacts",
+                ),
+                Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def workflow_with_retry_guard_stub(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-retry-guard",
+            version="0.1.0",
+            name="Toy retry guard workflow",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="apply",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("applied",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="apply", guard="within_retry_budget"),
+                Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
         )
 
     def workflow_with_human_gate(self) -> WorkflowDef:

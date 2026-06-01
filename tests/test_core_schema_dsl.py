@@ -135,6 +135,22 @@ class CoreSchemaDslTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowValidationError, "not declared"):
             load_workflow_yaml(invalid)
 
+    def test_rejects_duplicate_transition_keys(self) -> None:
+        invalid = VALID_WORKFLOW_YAML.replace(
+            "on: blocked\n    terminal: blocked",
+            "on: ready\n    terminal: blocked",
+            1,
+        )
+
+        with self.assertRaisesRegex(WorkflowValidationError, "duplicate transition"):
+            load_workflow_yaml(invalid)
+
+    def test_rejects_unknown_transition_guard(self) -> None:
+        invalid = VALID_WORKFLOW_YAML.replace("guard: within_revision_budget", "guard: typo_guard")
+
+        with self.assertRaisesRegex(WorkflowValidationError, "unknown transition guard"):
+            load_workflow_yaml(invalid)
+
     def test_rejects_unknown_terminal_status(self) -> None:
         invalid = VALID_WORKFLOW_YAML.replace("terminal: done", "terminal: shipped", 1)
 
