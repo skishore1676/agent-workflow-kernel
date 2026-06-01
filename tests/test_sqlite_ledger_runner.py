@@ -170,6 +170,60 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         events = [event["event_type"] for event in self.ledger.list_events(stage_run_id="run-1")]
         self.assertEqual(events, ["stage_claimed", "recovery"])
 
+    def test_recovery_sweep_blocks_claims_with_start_evidence(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=1, now=self.created_at
+        )
+        assert claimed is not None
+        self.ledger.append_event(
+            instance_id="instance-1",
+            stage_run_id="run-1",
+            event_type="adapter_invocation_preflight",
+            actor="runner-a",
+            payload={
+                "idempotency_key": "instance-1:stage-1:1",
+                "side_effect_scope": {"adapter_id": "runtime.fake"},
+            },
+            created_at=self.created_at,
+        )
+
+        actions = self.ledger.sweep_stale_leases(
+            now=self.created_at + timedelta(seconds=2), actor="recovery"
+        )
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action, "blocked")
+        self.assertEqual(actions[0].failure_class, FailureClass.UNKNOWN_SIDE_EFFECT_STATE)
+        recovered = self.ledger.get_stage_run("run-1")
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual(recovered.status, StageRunStatus.BLOCKED)
+        self.assertEqual(recovered.failure_class, FailureClass.UNKNOWN_SIDE_EFFECT_STATE)
+
+    def test_recovery_sweep_blocks_started_runs(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=1, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.mark_stage_run_started(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            actor="runner-a",
+            idempotency_key="instance-1:stage-1:1",
+            side_effect_scope={"adapter_id": "runtime.fake"},
+            now=self.created_at,
+        )
+
+        actions = self.ledger.sweep_stale_leases(
+            now=self.created_at + timedelta(seconds=2), actor="recovery"
+        )
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action, "blocked")
+        self.assertEqual(actions[0].failure_class, FailureClass.UNKNOWN_SIDE_EFFECT_STATE)
+
     def test_runner_skeleton_completes_through_injected_handler(self) -> None:
         self.insert_run()
 
@@ -200,7 +254,10 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         assert run is not None
         self.assertEqual(run.status, StageRunStatus.SUCCEEDED)
         events = [event["event_type"] for event in self.ledger.list_events(stage_run_id="run-1")]
-        self.assertEqual(events, ["stage_claimed", "receipt_recorded", "stage_completed"])
+        self.assertEqual(
+            events,
+            ["stage_claimed", "stage_started", "receipt_recorded", "stage_completed"],
+        )
 
     def test_runner_blocks_handler_exceptions_as_runtime_failures(self) -> None:
         self.insert_run()
@@ -217,6 +274,36 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         assert run is not None
         self.assertEqual(run.status, StageRunStatus.FAILED)
         self.assertEqual(run.failure_class, FailureClass.RUNTIME_FAILURE)
+
+    def test_runner_retry_creates_append_only_attempt(self) -> None:
+        self.insert_run()
+
+        def handler(_: StageRun) -> RunnerResult:
+            return RunnerResult(
+                decision="retry",
+                failure_class=FailureClass.RUNTIME_FAILURE,
+                failure_summary="temporary transport failure",
+                retry_after_at=self.created_at,
+            )
+
+        runner = WorkflowRunner(self.ledger, owner_id="runner-a")
+        step = runner.run_once(handler, now=self.created_at)
+
+        self.assertEqual(step.decision, "retry")
+        first = self.ledger.get_stage_run("run-1")
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(retry)
+        assert first is not None
+        assert retry is not None
+        self.assertEqual(first.status, StageRunStatus.FAILED)
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        parent = self.ledger.connection.execute(
+            "SELECT parent_stage_run_id, retry_count FROM stage_runs WHERE stage_run_id = ?",
+            ("instance-1:stage-1:2",),
+        ).fetchone()
+        self.assertEqual(parent["parent_stage_run_id"], "run-1")
+        self.assertEqual(parent["retry_count"], 1)
 
     def test_foreign_keys_are_enabled(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):

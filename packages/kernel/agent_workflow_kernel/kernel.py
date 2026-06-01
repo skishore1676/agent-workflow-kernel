@@ -6,7 +6,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -32,6 +32,7 @@ from .contracts import (
     WorkflowStatus,
     to_plain_data,
 )
+from .dsl import workflow_to_canonical_json
 from .policy import ActionRequest, ApprovalDecision, GateDecision, HumanApprovalReceipt, PolicyEngine
 from .prompts import (
     PromptHashMismatchError,
@@ -46,7 +47,7 @@ from .runner import RunnerResult, WorkflowRunner
 from .storage import WorkflowLedger, iso_timestamp
 
 
-KernelDecision = Literal["idle", "succeeded", "failed", "blocked", "waiting_on_human"]
+KernelDecision = Literal["idle", "succeeded", "failed", "retry", "blocked", "waiting_on_human"]
 KernelTransitionDecision = Literal["queued", "terminal", "blocked"]
 
 
@@ -151,6 +152,8 @@ class WorkflowKernel:
                 "inputs": inputs,
             }
         )
+        workflow_definition_json = workflow_to_canonical_json(self.workflow)
+        workflow_definition_hash = digest_data(json.loads(workflow_definition_json))
         instance = WorkflowInstance(
             instance_id=instance_id,
             workflow_def_id=self.workflow.id,
@@ -161,7 +164,13 @@ class WorkflowKernel:
             input_hash=input_hash,
         )
         try:
-            self.ledger.insert_workflow_instance(instance, created_at=created_at)
+            self.ledger.insert_workflow_instance(
+                instance,
+                created_at=created_at,
+                input_snapshot=dict(inputs),
+                workflow_definition_json=workflow_definition_json,
+                workflow_definition_hash=workflow_definition_hash,
+            )
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"workflow instance already exists: {instance_id}") from exc
         self._queue_stage(
@@ -182,6 +191,7 @@ class WorkflowKernel:
                 "workflow_version": self.workflow.version,
                 "first_stage_id": first_stage.id,
                 "input_hash": input_hash,
+                "workflow_definition_hash": workflow_definition_hash,
             },
             created_at=created_at,
         )
@@ -272,6 +282,34 @@ class WorkflowKernel:
                     "reason": state.get("failure_summary", step.decision),
                 },
             )
+        elif step.decision == "failed" and stage is not None:
+            self.ledger.update_workflow_instance(
+                instance_id=step.stage_run.instance_id,
+                status=WorkflowStatus.BLOCKED,
+                current_stage_id=stage.id,
+                updated_at=now,
+                actor=self.config.owner_id,
+                event_type="workflow_blocked",
+                payload={
+                    "stage_id": stage.id,
+                    "stage_run_id": step.stage_run.stage_run_id,
+                    "reason": state.get("failure_summary", step.decision),
+                },
+            )
+        elif step.decision == "retry" and stage is not None:
+            self.ledger.update_workflow_instance(
+                instance_id=step.stage_run.instance_id,
+                status=WorkflowStatus.RETRYING,
+                current_stage_id=stage.id,
+                updated_at=now,
+                actor=self.config.owner_id,
+                event_type="workflow_retrying",
+                payload={
+                    "stage_id": stage.id,
+                    "stage_run_id": step.stage_run.stage_run_id,
+                    "reason": state.get("failure_summary", step.decision),
+                },
+            )
 
         return KernelStep(
             stage_run=step.stage_run,
@@ -294,6 +332,14 @@ class WorkflowKernel:
                 stage_run=None,
                 decision="blocked",
                 failure_summary=f"No human gate is waiting for instance {instance_id!r}.",
+            )
+        mismatch = self._definition_mismatch_summary(instance_id)
+        if mismatch is not None:
+            self._block_waiting_human_run(waiting_run, mismatch, now=now)
+            return KernelDecisionResult(
+                stage_run=waiting_run,
+                decision="blocked",
+                failure_summary=mismatch,
             )
 
         stage = self._stage_by_id.get(waiting_run.stage_id)
@@ -448,15 +494,21 @@ class WorkflowKernel:
             idempotency_key=f"{run.stage_run_id}:human_gate_surface:publish",
         )
         request_hash = digest_data({"invocation": invocation, "surface_packet": packet})
+        self.ledger.record_adapter_invocation_started(
+            invocation,
+            request_hash=request_hash,
+            actor=self.config.owner_id,
+            side_effect_scope=_side_effect_scope(registration, stage, "publish", gate),
+            started_at=created_at,
+        )
         adapter_result = registration.adapter.publish(invocation, packet)
         response_hash = digest_data(adapter_result)
-        self.ledger.record_adapter_invocation(
-            invocation,
+        self.ledger.complete_adapter_invocation(
+            invocation_id=invocation.invocation_id,
             status=adapter_result.status,
-            request_hash=request_hash,
+            actor=self.config.owner_id,
             response_hash=response_hash,
             external_ref=_surface_external_ref(adapter_result.outputs),
-            started_at=created_at,
             completed_at=created_at,
         )
         receipt = _make_kernel_adapter_receipt(
@@ -534,6 +586,13 @@ class WorkflowKernel:
             idempotency_key=f"{run.stage_run_id}:human_gate_surface:readback:{uuid.uuid4().hex[:8]}",
         )
         request_hash = digest_data({"invocation": invocation, "surface_ref": resolved_surface_ref})
+        self.ledger.record_adapter_invocation_started(
+            invocation,
+            request_hash=request_hash,
+            actor=self.config.owner_id,
+            side_effect_scope=_side_effect_scope(registration, stage, "readback", gate),
+            started_at=created_at,
+        )
         adapter_receipt = registration.adapter.readback(resolved_surface_ref)
         outputs = {
             "surface_ref": resolved_surface_ref,
@@ -541,13 +600,12 @@ class WorkflowKernel:
             "readback": _receipt_outputs(adapter_receipt),
         }
         response_hash = digest_data(outputs)
-        self.ledger.record_adapter_invocation(
-            invocation,
+        self.ledger.complete_adapter_invocation(
+            invocation_id=invocation.invocation_id,
             status=adapter_receipt.status,
-            request_hash=request_hash,
+            actor=self.config.owner_id,
             response_hash=response_hash,
             external_ref=_surface_external_ref({"surface_ref": resolved_surface_ref}),
-            started_at=created_at,
             completed_at=created_at,
         )
         receipt = _make_kernel_adapter_receipt(
@@ -636,6 +694,13 @@ class WorkflowKernel:
             idempotency_key=f"{run.stage_run_id}:human_gate_surface:ingest:{uuid.uuid4().hex[:8]}",
         )
         request_hash = digest_data({"invocation": invocation, "surface_query": query})
+        self.ledger.record_adapter_invocation_started(
+            invocation,
+            request_hash=request_hash,
+            actor=self.config.owner_id,
+            side_effect_scope=_side_effect_scope(registration, stage, "ingest_decisions", gate),
+            started_at=created_at,
+        )
         decision_receipts = tuple(registration.adapter.ingest_decisions(query))
         candidate_receipts = tuple(
             receipt for receipt in decision_receipts if _is_surface_decision_receipt(receipt)
@@ -668,15 +733,14 @@ class WorkflowKernel:
             decision_receipts,
             candidate_receipts,
         )
-        self.ledger.record_adapter_invocation(
-            invocation,
+        self.ledger.complete_adapter_invocation(
+            invocation_id=invocation.invocation_id,
             status=ingest_status,
-            request_hash=request_hash,
+            actor=self.config.owner_id,
             response_hash=response_hash,
             external_ref=_surface_external_ref({"surface_ref": resolved_surface_ref}),
             error_class=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else "human_decision_ingest_blocked",
             error_summary=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else failure_summary,
-            started_at=created_at,
             completed_at=created_at,
         )
         receipt = _make_kernel_adapter_receipt(
@@ -753,6 +817,9 @@ class WorkflowKernel:
             created_at = iso_timestamp(now)
             if stage is None:
                 return self._blocked(state, "Unknown workflow stage.", FailureClass.DOMAIN_BLOCKED)
+            mismatch = self._definition_mismatch_summary(run.instance_id)
+            if mismatch is not None:
+                return self._blocked(state, mismatch, FailureClass.DOMAIN_BLOCKED)
             if stage.type == StageType.HUMAN_GATE:
                 summary = "Human gate reached; waiting for explicit decision ingestion."
                 state["failure_summary"] = summary
@@ -860,7 +927,7 @@ class WorkflowKernel:
                 context_packet_ref=(
                     rendered_context.packet.context_id if rendered_context is not None else None
                 ),
-                idempotency_key=f"{run.instance_id}:{stage.id}:{run.attempt}",
+                idempotency_key=run.idempotency_key or f"{run.instance_id}:{stage.id}:{run.attempt}",
             )
             runtime_input = _runtime_input(self.workflow, stage, run, rendered_context)
             request_hash = digest_data(
@@ -870,14 +937,36 @@ class WorkflowKernel:
                     "policy_gate": gate,
                 }
             )
-            adapter_result = registration.adapter.invoke(invocation, runtime_input)
-            response_hash = digest_data(adapter_result)
-            self.ledger.record_adapter_invocation(
+            self.ledger.record_adapter_invocation_started(
                 invocation,
-                status=adapter_result.status,
                 request_hash=request_hash,
-                response_hash=response_hash,
+                actor=self.config.owner_id,
+                side_effect_scope=_side_effect_scope(registration, stage, operation, gate),
                 started_at=created_at,
+            )
+            try:
+                adapter_result = registration.adapter.invoke(invocation, runtime_input)
+            except Exception as exc:
+                self.ledger.complete_adapter_invocation(
+                    invocation_id=invocation.invocation_id,
+                    status="failed",
+                    actor=self.config.owner_id,
+                    response_hash=digest_data({"adapter_exception": str(exc)}),
+                    error_class="adapter_exception",
+                    error_summary=str(exc),
+                    completed_at=created_at,
+                )
+                raise
+            response_hash = digest_data(adapter_result)
+            self.ledger.complete_adapter_invocation(
+                invocation_id=invocation.invocation_id,
+                status=adapter_result.status,
+                actor=self.config.owner_id,
+                response_hash=response_hash,
+                error_class=None if adapter_result.status == ADAPTER_STATUS_SUCCEEDED else "adapter_result",
+                error_summary=None
+                if adapter_result.status == ADAPTER_STATUS_SUCCEEDED
+                else f"Adapter returned {adapter_result.status}.",
                 completed_at=created_at,
             )
             receipt = _make_kernel_adapter_receipt(
@@ -897,11 +986,58 @@ class WorkflowKernel:
             state["adapter_result"] = adapter_result
             state["receipt_id"] = receipt.receipt_id
             if adapter_result.status == ADAPTER_STATUS_SUCCEEDED:
+                validation_errors = _stage_output_contract_errors(stage, adapter_result)
+                if validation_errors:
+                    summary = (
+                        "Adapter output failed stage contract validation: "
+                        + "; ".join(validation_errors)
+                    )
+                    invalid_receipt = _make_kernel_adapter_receipt(
+                        invocation,
+                        status=StageRunStatus.INVALID_OUTPUT.value,
+                        summary=summary,
+                        created_at=created_at,
+                        stage_id=stage.id,
+                        artifact_refs=adapter_result.artifact_refs,
+                        outputs={
+                            **to_plain_data(adapter_result.outputs),
+                            "output_contract_errors": validation_errors,
+                        },
+                        checks_run=(
+                            "adapter_registered",
+                            "policy_preflight",
+                            "output_contract_validation",
+                        ),
+                        policy_snapshot=to_plain_data(gate),
+                        residual_risk=summary,
+                        next_action="Fix adapter output or stage contract before retrying.",
+                        rendered_context=rendered_context,
+                    )
+                    state["receipt_id"] = invalid_receipt.receipt_id
+                    state["failure_summary"] = summary
+                    return RunnerResult(
+                        decision="failed",
+                        receipt=invalid_receipt,
+                        output_hash=response_hash,
+                        failure_class=FailureClass.INVALID_OUTPUT,
+                        failure_summary=summary,
+                    )
                 return RunnerResult(
                     decision="succeeded",
                     receipt=receipt,
                     output_hash=response_hash,
                 )
+            retry = _retry_result_for_adapter_failure(
+                stage=stage,
+                run=run,
+                registration=registration,
+                adapter_result=adapter_result,
+                created_at=created_at,
+            )
+            if retry is not None:
+                state["failure_summary"] = retry.failure_summary
+                return replace(retry, receipt=receipt, output_hash=response_hash)
+            state["failure_summary"] = f"Adapter returned {adapter_result.status}."
             return RunnerResult(
                 decision="blocked",
                 receipt=receipt,
@@ -950,7 +1086,8 @@ class WorkflowKernel:
                 "adapter_family": registration.family.value,
             },
             inputs={
-                "workflow": self._instance_inputs.get(run.instance_id, {}),
+                "workflow": self.ledger.get_workflow_input_snapshot(run.instance_id)
+                or self._instance_inputs.get(run.instance_id, {}),
                 "stage": stage.inputs,
             },
             prior_receipts=_prior_receipts(self.ledger, run.instance_id),
@@ -1003,11 +1140,29 @@ class WorkflowKernel:
             next_action="Fix prompt registry configuration before retrying the stage.",
         )
 
+    def _definition_mismatch_summary(self, instance_id: str) -> str | None:
+        provenance = self.ledger.get_workflow_instance_provenance(instance_id)
+        if provenance is None:
+            return f"Workflow instance {instance_id!r} is missing from the ledger."
+        stored_hash = provenance.get("workflow_definition_hash")
+        if not stored_hash:
+            return None
+        current_hash = digest_data(json.loads(workflow_to_canonical_json(self.workflow)))
+        if stored_hash == current_hash:
+            return None
+        return (
+            "Workflow definition hash mismatch for in-flight instance "
+            f"{instance_id!r}: ledger has {stored_hash}, current kernel has {current_hash}."
+        )
+
     def _waiting_human_gate_context(
         self,
         *,
         instance_id: str,
     ) -> tuple[StageRun, StageDef, Any]:
+        mismatch = self._definition_mismatch_summary(instance_id)
+        if mismatch is not None:
+            raise ValueError(mismatch)
         waiting_run = self.ledger.find_waiting_human_stage_run(instance_id=instance_id)
         if waiting_run is None:
             raise ValueError(f"No human gate is waiting for instance {instance_id!r}.")
@@ -1452,6 +1607,162 @@ def _workflow_status_for_terminal(terminal: str) -> WorkflowStatus:
         "cancelled": WorkflowStatus.CANCELLED,
     }
     return mapping.get(terminal, WorkflowStatus.BLOCKED)
+
+
+def _side_effect_scope(
+    registration: AdapterRegistration,
+    stage: StageDef,
+    operation: str,
+    gate: Any,
+) -> dict[str, Any]:
+    return {
+        "workflow_adapter_ref": stage.adapter,
+        "adapter_id": registration.adapter_id,
+        "adapter_family": registration.family.value,
+        "operation": operation,
+        "stage_id": stage.id,
+        "stage_type": stage.type.value,
+        "side_effects": [risk.value for risk in registration.side_effects],
+        "replay_safe": registration.replay_safe,
+        "requires_idempotency_key": registration.requires_idempotency_key,
+        "policy_decision": getattr(gate, "decision", None),
+        "policy_reason": getattr(gate, "decision_reason", None),
+    }
+
+
+def _stage_output_contract_errors(stage: StageDef, adapter_result: AdapterResult) -> list[str]:
+    errors: list[str] = []
+    required_artifact_roles = _required_artifact_roles(stage.outputs)
+    produced_roles = {artifact.role for artifact in adapter_result.artifact_refs}
+    for role in required_artifact_roles:
+        if role not in produced_roles:
+            errors.append(f"missing required artifact role {role!r}")
+    for artifact in adapter_result.artifact_refs:
+        if artifact.role in required_artifact_roles:
+            if not artifact.uri:
+                errors.append(f"required artifact role {artifact.role!r} is missing a uri")
+            if not artifact.content_hash:
+                errors.append(f"required artifact role {artifact.role!r} is missing a content_hash")
+
+    for field_path in _required_output_fields(stage.outputs):
+        if not _output_path_exists(adapter_result.outputs, field_path):
+            errors.append(f"missing required output field {field_path!r}")
+    return errors
+
+
+def _required_artifact_roles(outputs: Mapping[str, Any]) -> tuple[str, ...]:
+    artifacts = outputs.get("artifacts") or ()
+    roles: list[str] = []
+    if isinstance(artifacts, Mapping):
+        artifacts = artifacts.values()
+    for index, artifact in enumerate(artifacts, start=1):
+        if not isinstance(artifact, Mapping):
+            continue
+        if bool(artifact.get("required", False)):
+            roles.append(str(artifact.get("role") or f"artifact_{index}"))
+    return tuple(roles)
+
+
+def _required_output_fields(outputs: Mapping[str, Any]) -> tuple[str, ...]:
+    fields: list[str] = []
+    for key in ("required_fields", "required_outputs"):
+        configured = outputs.get(key)
+        if configured is not None:
+            fields.extend(_string_tuple(configured))
+
+    field_specs = outputs.get("fields")
+    if isinstance(field_specs, Mapping):
+        field_specs = [
+            {"name": name, **(spec if isinstance(spec, Mapping) else {})}
+            for name, spec in field_specs.items()
+        ]
+    if isinstance(field_specs, (list, tuple)):
+        for spec in field_specs:
+            if isinstance(spec, Mapping) and bool(spec.get("required", False)):
+                name = spec.get("name") or spec.get("field")
+                if name:
+                    fields.append(str(name))
+
+    schema = outputs.get("outcome_schema")
+    if isinstance(schema, Mapping):
+        fields.extend(_string_tuple(schema.get("required")))
+    return tuple(dict.fromkeys(fields))
+
+
+def _output_path_exists(outputs: Mapping[str, Any], field_path: str) -> bool:
+    current: Any = outputs
+    for part in field_path.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return False
+        current = current[part]
+    return current not in (None, "")
+
+
+def _retry_result_for_adapter_failure(
+    *,
+    stage: StageDef,
+    run: StageRun,
+    registration: AdapterRegistration,
+    adapter_result: AdapterResult,
+    created_at: str,
+) -> RunnerResult | None:
+    if not _retry_enabled(stage.retry):
+        return None
+    max_attempts = _retry_max_attempts(stage.retry)
+    if run.attempt >= max_attempts:
+        return None
+    if not _retry_is_safe(registration, run):
+        return RunnerResult(
+            decision="blocked",
+            failure_class=FailureClass.UNKNOWN_SIDE_EFFECT_STATE,
+            failure_summary=(
+                f"Adapter returned {adapter_result.status}; retry policy is configured, "
+                "but replay is not proven safe for this adapter side-effect scope."
+            ),
+            approval_required=True,
+        )
+    return RunnerResult(
+        decision="retry",
+        failure_class=FailureClass.RUNTIME_FAILURE,
+        failure_summary=f"Adapter returned {adapter_result.status}; queued append-only retry.",
+        retry_after_at=_retry_after_at(created_at, stage.retry),
+    )
+
+
+def _retry_enabled(retry: Mapping[str, Any]) -> bool:
+    if bool(retry.get("enabled", False)):
+        return True
+    return _retry_max_attempts(retry) > 1
+
+
+def _retry_max_attempts(retry: Mapping[str, Any]) -> int:
+    try:
+        return max(1, int(retry.get("max_attempts", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _retry_is_safe(registration: AdapterRegistration, run: StageRun) -> bool:
+    safe_side_effects = {
+        RiskClass.READ_ONLY,
+        RiskClass.LOCAL_DRAFT,
+        RiskClass.REVIEW_ONLY,
+        RiskClass.INTERNAL_STATE,
+    }
+    if registration.replay_safe:
+        return True
+    if all(effect in safe_side_effects for effect in registration.side_effects):
+        return True
+    return bool(run.idempotency_key) and not registration.requires_idempotency_key
+
+
+def _retry_after_at(created_at: str, retry: Mapping[str, Any]) -> str:
+    try:
+        backoff_seconds = int(retry.get("backoff_seconds", 0))
+    except (TypeError, ValueError):
+        backoff_seconds = 0
+    base = _coerce_datetime(created_at) or datetime.now(UTC)
+    return iso_timestamp(base + timedelta(seconds=max(0, backoff_seconds)))
 
 
 def _human_decision_validation_error(

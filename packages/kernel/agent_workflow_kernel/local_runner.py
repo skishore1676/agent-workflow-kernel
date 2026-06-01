@@ -114,6 +114,10 @@ class LocalWorkflowExecutor:
                 input_hash=input_hash,
             ),
             created_at=self.created_at,
+            input_snapshot={},
+            workflow_definition_json=workflow_to_canonical_json(self.workflow),
+            workflow_definition_hash=_digest_json(json.loads(workflow_to_canonical_json(self.workflow))),
+            workflow_source_uri="local-runner",
         )
         self._append_workflow_event(
             "workflow_started",
@@ -235,6 +239,20 @@ class LocalWorkflowExecutor:
             "requested_adapter": stage.adapter,
             "local_outcome": outcome,
         }
+        request_hash = _digest_json(request)
+        self.ledger.record_adapter_invocation_started(
+            invocation,
+            request_hash=request_hash,
+            actor=LOCAL_RUNNER_ACTOR,
+            side_effect_scope={
+                "adapter_family": family.value,
+                "adapter_id": invocation.adapter_id,
+                "operation": invocation.operation,
+                "local_only": True,
+                "stage_id": stage.id,
+            },
+            started_at=self.created_at,
+        )
         adapter_outputs = self._invoke_local_adapter(invocation, stage, run, request)
         artifact_refs = _artifact_refs_for_stage(
             workflow_id=self.workflow.id,
@@ -248,12 +266,11 @@ class LocalWorkflowExecutor:
             "outcome": outcome,
         }
         response_hash = _digest_json(response)
-        self.ledger.record_adapter_invocation(
-            invocation,
+        self.ledger.complete_adapter_invocation(
+            invocation_id=invocation.invocation_id,
             status=ADAPTER_STATUS_SUCCEEDED,
-            request_hash=_digest_json(request),
+            actor=LOCAL_RUNNER_ACTOR,
             response_hash=response_hash,
-            started_at=self.created_at,
             completed_at=self.created_at,
         )
 

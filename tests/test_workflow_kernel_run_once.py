@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 
 from agent_workflow_kernel import (  # noqa: E402
+    AdapterResult,
     AdapterRegistration,
     AdapterRegistry,
     AdapterRegistryError,
@@ -123,6 +124,9 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             [
                 "workflow_started",
                 "stage_claimed",
+                "stage_started",
+                "adapter_invocation_preflight",
+                "adapter_invocation_completed",
                 "receipt_recorded",
                 "stage_completed",
                 "workflow_stage_succeeded",
@@ -194,6 +198,74 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertEqual(audit["provenance"]["context_packet_ref"], context_ref)
         self.assertEqual(audit["receipts"][0]["prompt_hash"], run_row["prompt_hash"])
         self.assertEqual(audit["adapter_invocations"][0]["context_packet_ref"], context_ref)
+        self.assertEqual(audit["workflow_provenance"]["definition_hash"][:7], "sha256:")
+
+    def test_fresh_kernel_uses_persisted_input_snapshot_for_prompt_context(self) -> None:
+        workflow = self.workflow_with_runtime_stage(prompt_refs=PROMPT_REFS)
+        kernel = self.kernel_for(workflow, prompt_registry_path=ROOT / "prompts")
+        kernel.start(
+            instance_id="instance-resume",
+            inputs={"objective": "persist me across process restart"},
+            now=self.now,
+        )
+        fresh_kernel = self.kernel_for(workflow, prompt_registry_path=ROOT / "prompts")
+
+        step = fresh_kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "succeeded")
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE receipt_id = ?",
+            (step.receipt_id,),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        runtime_input = receipt["runtime_provenance"]["outputs"]["runtime_input"]
+        self.assertEqual(
+            runtime_input["context_packet"]["inputs"]["facts"]["workflow"]["objective"],
+            "persist me across process restart",
+        )
+
+    def test_definition_hash_mismatch_blocks_before_adapter_invocation(self) -> None:
+        adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        original = self.workflow_with_runtime_stage()
+        kernel = WorkflowKernel(
+            self.ledger,
+            original,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-mismatch", inputs={}, now=self.now)
+        changed = WorkflowDef(
+            id=original.id,
+            version=original.version,
+            name=original.name,
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "execute"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(),
+        )
+        fresh_kernel = WorkflowKernel(
+            self.ledger,
+            changed,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+
+        step = fresh_kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("definition hash mismatch", step.failure_summary or "")
+        self.assertEqual(adapter.receipts, [])
+        invocation_count = self.ledger.connection.execute(
+            "SELECT COUNT(*) AS count FROM adapter_invocations"
+        ).fetchone()["count"]
+        self.assertEqual(invocation_count, 0)
 
     def test_prompt_hash_mismatch_blocks_before_adapter_invocation(self) -> None:
         bad_ref = PromptRef(
@@ -291,6 +363,163 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             "SELECT COUNT(*) AS count FROM adapter_invocations"
         ).fetchone()["count"]
         self.assertEqual(invocation_count, 0)
+
+    def test_missing_required_artifact_blocks_transition_as_invalid_output(self) -> None:
+        workflow = WorkflowDef(
+            id="toy-required-artifact",
+            version="0.1.0",
+            name="Toy required artifact",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    outputs={"artifacts": ({"role": "packet", "required": True},)},
+                ),
+                StageDef(
+                    id="next",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                ),
+            ),
+            transitions=(Transition(from_stage="draft", on="done", to_stage="next"),),
+        )
+        kernel = self.kernel_for(workflow)
+        kernel.start(instance_id="instance-artifact", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "failed")
+        self.assertIn("missing required artifact role", step.failure_summary or "")
+        draft = self.ledger.get_stage_run("instance-artifact:draft:1")
+        self.assertIsNotNone(draft)
+        assert draft is not None
+        self.assertEqual(draft.status, StageRunStatus.INVALID_OUTPUT)
+        self.assertIsNone(self.ledger.get_stage_run("instance-artifact:next:1"))
+        stored = self.ledger.get_workflow_instance("instance-artifact")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.BLOCKED)
+
+    def test_required_output_field_blocks_transition_as_invalid_output(self) -> None:
+        class FieldlessRuntimeAdapter(LocalFakeRuntimeAdapter):
+            adapter_id = "runtime.fieldless"
+
+            def invoke(self, invocation, runtime_input):
+                return AdapterResult(
+                    invocation_id=invocation.invocation_id,
+                    status="succeeded",
+                    outputs={"outcome": "done"},
+                )
+
+        adapter = FieldlessRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        workflow = WorkflowDef(
+            id="toy-required-field",
+            version="0.1.0",
+            name="Toy required field",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter=adapter.adapter_id,
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    outputs={"required_fields": ("verdict",)},
+                ),
+            ),
+            transitions=(Transition(from_stage="draft", on="done", terminal="done"),),
+        )
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-field", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "failed")
+        self.assertIn("missing required output field", step.failure_summary or "")
+        run = self.ledger.get_stage_run("instance-field:draft:1")
+        self.assertIsNotNone(run)
+        assert run is not None
+        self.assertEqual(run.status, StageRunStatus.INVALID_OUTPUT)
+
+    def test_retry_policy_queues_append_only_attempt_and_preserves_idempotency(self) -> None:
+        class FailsOnceRuntimeAdapter(LocalFakeRuntimeAdapter):
+            adapter_id = "runtime.fails_once"
+
+            def __init__(self, *, created_at: str) -> None:
+                super().__init__(created_at=created_at)
+                self.calls = 0
+
+            def invoke(self, invocation, runtime_input):
+                self.calls += 1
+                if self.calls == 1:
+                    return AdapterResult(
+                        invocation_id=invocation.invocation_id,
+                        status="failed",
+                        outputs={"error": "temporary"},
+                    )
+                return super().invoke(invocation, runtime_input)
+
+        adapter = FailsOnceRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry(
+            (AdapterRegistration.from_runtime_adapter(adapter, replay_safe=True),)
+        )
+        workflow = WorkflowDef(
+            id="toy-retry",
+            version="0.1.0",
+            name="Toy retry",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter=adapter.adapter_id,
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    retry={"enabled": True, "max_attempts": 2, "backoff_seconds": 0},
+                ),
+            ),
+            transitions=(Transition(from_stage="draft", on="done", terminal="done"),),
+        )
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-retry", inputs={}, now=self.now)
+
+        first = kernel.run_once(now=self.now)
+        second = kernel.run_once(now=self.now)
+
+        self.assertEqual(first.decision, "retry")
+        self.assertEqual(second.decision, "succeeded")
+        first_run = self.ledger.get_stage_run("instance-retry:draft:1")
+        retry_run = self.ledger.get_stage_run("instance-retry:draft:2")
+        self.assertIsNotNone(first_run)
+        self.assertIsNotNone(retry_run)
+        assert first_run is not None
+        assert retry_run is not None
+        self.assertEqual(first_run.status, StageRunStatus.FAILED)
+        self.assertEqual(retry_run.status, StageRunStatus.SUCCEEDED)
+        rows = self.ledger.connection.execute(
+            """
+            SELECT stage_run_id, idempotency_key, parent_stage_run_id
+            FROM stage_runs
+            WHERE instance_id = ?
+            ORDER BY attempt
+            """,
+            ("instance-retry",),
+        ).fetchall()
+        self.assertEqual([row["stage_run_id"] for row in rows], ["instance-retry:draft:1", "instance-retry:draft:2"])
+        self.assertEqual(rows[0]["idempotency_key"], rows[1]["idempotency_key"])
+        self.assertEqual(rows[1]["parent_stage_run_id"], "instance-retry:draft:1")
 
     def test_human_gate_waits_without_adapter_invocation(self) -> None:
         workflow = WorkflowDef(
