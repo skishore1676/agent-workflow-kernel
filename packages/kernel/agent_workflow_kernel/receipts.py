@@ -13,6 +13,7 @@ def build_prompt_provenance(rendered_context: RenderedContext) -> dict[str, Any]
 
     return {
         "registry_snapshot_digest": rendered_context.prompt_bundle.registry_snapshot_digest,
+        "prompt_bundle_digest": rendered_context.prompt_bundle.prompt_bundle_digest,
         "refs": rendered_context.prompt_bundle.provenance_refs(),
         "context": {
             "packet_id": rendered_context.packet.context_id,

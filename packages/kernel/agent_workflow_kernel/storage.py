@@ -121,6 +121,10 @@ class WorkflowLedger:
               idempotency_key TEXT,
               input_hash TEXT NOT NULL,
               output_hash TEXT,
+              prompt_hash TEXT,
+              context_packet_ref TEXT,
+              context_packet_hash TEXT,
+              rendered_context_hash TEXT,
               retry_count INTEGER NOT NULL DEFAULT 0,
               retry_after_at TEXT,
               lease_owner TEXT,
@@ -232,6 +236,13 @@ class WorkflowLedger:
             );
             """
         )
+        for column_name, column_sql in (
+            ("prompt_hash", "prompt_hash TEXT"),
+            ("context_packet_ref", "context_packet_ref TEXT"),
+            ("context_packet_hash", "context_packet_hash TEXT"),
+            ("rendered_context_hash", "rendered_context_hash TEXT"),
+        ):
+            self._ensure_stage_run_column(column_name, column_sql)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -535,6 +546,34 @@ class WorkflowLedger:
                     started,
                     completed,
                     _json(invocation),
+                ),
+            )
+
+    def record_stage_run_prompt_context(
+        self,
+        *,
+        stage_run_id: str,
+        prompt_hash: str,
+        context_packet_ref: str,
+        context_packet_hash: str,
+        rendered_context_hash: str,
+    ) -> None:
+        """Pin resolved prompt and rendered-context hashes onto a stage run."""
+
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                UPDATE stage_runs
+                SET prompt_hash = ?, context_packet_ref = ?,
+                    context_packet_hash = ?, rendered_context_hash = ?
+                WHERE stage_run_id = ?
+                """,
+                (
+                    prompt_hash,
+                    context_packet_ref,
+                    context_packet_hash,
+                    rendered_context_hash,
+                    stage_run_id,
                 ),
             )
 
@@ -1005,6 +1044,105 @@ class WorkflowLedger:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def export_stage_run_audit(self, *, stage_run_id: str) -> dict[str, Any] | None:
+        """Export enough ledger state to audit or resume one stage run."""
+
+        row = self.connection.execute(
+            """
+            SELECT
+              sr.*,
+              wi.workflow_def_id,
+              wi.workflow_version,
+              wi.status AS instance_status,
+              wi.current_stage_id,
+              wi.input_hash AS instance_input_hash,
+              wi.recovery_epoch
+            FROM stage_runs sr
+            JOIN workflow_instances wi ON wi.instance_id = sr.instance_id
+            WHERE sr.stage_run_id = ?
+            """,
+            (stage_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        receipt_rows = self.connection.execute(
+            """
+            SELECT * FROM receipts
+            WHERE stage_run_id = ?
+            ORDER BY created_at, receipt_id
+            """,
+            (stage_run_id,),
+        ).fetchall()
+        invocation_rows = self.connection.execute(
+            """
+            SELECT * FROM adapter_invocations
+            WHERE stage_run_id = ?
+            ORDER BY started_at, invocation_id
+            """,
+            (stage_run_id,),
+        ).fetchall()
+        artifact_rows = self.connection.execute(
+            """
+            SELECT * FROM artifact_refs
+            WHERE stage_run_id = ?
+            ORDER BY created_at, artifact_id
+            """,
+            (stage_run_id,),
+        ).fetchall()
+
+        receipts = [_receipt_export(receipt_row) for receipt_row in receipt_rows]
+        prompt_provenance = _latest_prompt_provenance(receipts)
+        return {
+            "schema_version": "stage-run-audit.v1",
+            "workflow": {
+                "id": row["workflow_def_id"],
+                "version": row["workflow_version"],
+            },
+            "instance": {
+                "instance_id": row["instance_id"],
+                "status": row["instance_status"],
+                "current_stage_id": row["current_stage_id"],
+                "input_hash": row["instance_input_hash"],
+                "recovery_epoch": row["recovery_epoch"],
+            },
+            "stage_run": {
+                "stage_run_id": row["stage_run_id"],
+                "stage_id": row["stage_id"],
+                "attempt": row["attempt"],
+                "status": row["status"],
+                "adapter_id": row["adapter_id"],
+                "actor_ref": row["actor_ref"],
+                "failure_class": row["failure_class"],
+                "failure_summary": row["failure_summary"],
+                "approval_required": bool(row["approval_required"]),
+                "idempotency_key": row["idempotency_key"],
+                "input_hash": row["input_hash"],
+                "output_hash": row["output_hash"],
+                "prompt_hash": row["prompt_hash"],
+                "context_packet_ref": row["context_packet_ref"],
+                "context_packet_hash": row["context_packet_hash"],
+                "rendered_context_hash": row["rendered_context_hash"],
+                "receipt_id": row["receipt_id"],
+                "created_at": row["created_at"],
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "updated_at": row["updated_at"],
+            },
+            "provenance": {
+                "prompt_hash": row["prompt_hash"]
+                or (prompt_provenance or {}).get("prompt_bundle_digest"),
+                "context_packet_ref": row["context_packet_ref"],
+                "context_packet_hash": row["context_packet_hash"],
+                "rendered_context_hash": row["rendered_context_hash"],
+                "prompt_provenance": prompt_provenance,
+            },
+            "adapter_invocations": [_invocation_export(invocation_row) for invocation_row in invocation_rows],
+            "receipts": receipts,
+            "artifacts": [_artifact_export(artifact_row) for artifact_row in artifact_rows],
+            "events": self.list_events(stage_run_id=stage_run_id),
+        }
+
     def _record_receipt(self, conn: sqlite3.Connection, receipt: Receipt) -> None:
         conn.execute(
             """
@@ -1063,7 +1201,15 @@ class WorkflowLedger:
                 artifact.visibility,
                 receipt.created_at,
             ),
-        )
+            )
+
+    def _ensure_stage_run_column(self, column_name: str, column_sql: str) -> None:
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(stage_runs)").fetchall()
+        }
+        if column_name not in columns:
+            self.connection.execute(f"ALTER TABLE stage_runs ADD COLUMN {column_sql}")
 
     def _require_leased_run(
         self, conn: sqlite3.Connection, stage_run_id: str, lease_token: str
@@ -1138,6 +1284,89 @@ def _coerce_datetime(value: datetime | str) -> datetime:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
     return datetime.fromisoformat(value).astimezone(UTC)
+
+
+def _receipt_export(row: sqlite3.Row) -> dict[str, Any]:
+    receipt_json = _loads_json(row["receipt_json"])
+    prompt_provenance = (
+        receipt_json.get("prompt_provenance", {})
+        if isinstance(receipt_json, dict)
+        else {}
+    )
+    context = prompt_provenance.get("context", {}) if isinstance(prompt_provenance, dict) else {}
+    return {
+        "receipt_id": row["receipt_id"],
+        "receipt_kind": row["receipt_kind"],
+        "actor": row["actor"],
+        "status": row["status"],
+        "failure_class": row["failure_class"],
+        "summary": row["summary"],
+        "created_at": row["created_at"],
+        "context_packet_ref": receipt_json.get("context_packet_ref") if isinstance(receipt_json, dict) else None,
+        "prompt_hash": prompt_provenance.get("prompt_bundle_digest") if isinstance(prompt_provenance, dict) else None,
+        "context_packet_hash": context.get("packet_digest") if isinstance(context, dict) else None,
+        "rendered_context_hash": context.get("rendered_input_digest") if isinstance(context, dict) else None,
+        "receipt": receipt_json,
+    }
+
+
+def _invocation_export(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "invocation_id": row["invocation_id"],
+        "workflow_id": row["workflow_id"],
+        "instance_id": row["instance_id"],
+        "stage_run_id": row["stage_run_id"],
+        "adapter_family": row["adapter_family"],
+        "adapter_id": row["adapter_id"],
+        "operation": row["operation"],
+        "input_ref": row["input_ref"],
+        "context_packet_ref": row["context_packet_ref"],
+        "idempotency_key": row["idempotency_key"],
+        "status": row["status"],
+        "request_hash": row["request_hash"],
+        "response_hash": row["response_hash"],
+        "external_ref": row["external_ref"],
+        "error_class": row["error_class"],
+        "error_summary": row["error_summary"],
+        "started_at": row["started_at"],
+        "completed_at": row["completed_at"],
+        "invocation": _loads_json(row["invocation_json"]),
+    }
+
+
+def _artifact_export(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "artifact_id": row["artifact_id"],
+        "instance_id": row["instance_id"],
+        "stage_run_id": row["stage_run_id"],
+        "receipt_id": row["receipt_id"],
+        "role": row["role"],
+        "uri": row["uri"],
+        "content_hash": row["content_hash"],
+        "mime_type": row["mime_type"],
+        "size_bytes": row["size_bytes"],
+        "created_by": row["created_by"],
+        "visibility": row["visibility"],
+        "created_at": row["created_at"],
+    }
+
+
+def _latest_prompt_provenance(receipts: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    for receipt in reversed(list(receipts)):
+        payload = receipt.get("receipt")
+        if not isinstance(payload, dict):
+            continue
+        prompt_provenance = payload.get("prompt_provenance")
+        if isinstance(prompt_provenance, dict) and prompt_provenance:
+            return prompt_provenance
+    return None
+
+
+def _loads_json(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {"unparseable_json": True}
 
 
 __all__ = [
