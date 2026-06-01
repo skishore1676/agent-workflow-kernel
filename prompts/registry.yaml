@@ -6,6 +6,16 @@ prompts:
     version: 1.0.0
     path: identities/portable-worker/v1.0.0.md
     status: active
+  - id: identity.ivy_or_research
+    kind: identity
+    version: 1.0.0
+    path: identities/ivy-or-research/v1.0.0.md
+    status: active
+  - id: identity.jonah_editor
+    kind: identity
+    version: 1.0.0
+    path: identities/jonah-editor/v1.0.0.md
+    status: active
   - id: policy.no_external_effects
     kind: policy
     version: 1.0.0
@@ -16,8 +26,28 @@ prompts:
     version: 1.0.0
     path: lanes/quality-review/v1.0.0.md
     status: active
+  - id: lane.ivy_jonah_editorial
+    kind: lane
+    version: 1.0.0
+    path: lanes/ivy-jonah-editorial/v1.0.0.md
+    status: active
   - id: stage.review
     kind: stage
     version: 1.0.0
     path: stages/review/v1.0.0.md
+    status: active
+  - id: stage.ivy_jonah.build_draft_package
+    kind: stage
+    version: 1.0.0
+    path: stages/ivy-jonah/build-draft-package/v1.0.0.md
+    status: active
+  - id: stage.ivy_jonah.editor_review
+    kind: stage
+    version: 1.0.0
+    path: stages/ivy-jonah/editor-review/v1.0.0.md
+    status: active
+  - id: stage.ivy_jonah.revise_draft
+    kind: stage
+    version: 1.0.0
+    path: stages/ivy-jonah/revise-draft/v1.0.0.md
     status: active

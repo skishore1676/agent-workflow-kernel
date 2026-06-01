@@ -58,6 +58,31 @@ stages:
     adapter: runtime.agent
     actors:
       writer: actors.writer
+    prompt_refs:
+      - id: identity.ivy_or_research
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.no_external_effects
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.ivy_jonah_editorial
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.ivy_jonah.build_draft_package
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       source_packet: input.approved_source_packet
       editorial_brief: input.editorial_brief
@@ -80,6 +105,37 @@ stages:
     actors:
       producer: actors.writer
       reviewer: actors.editor
+    prompt_refs:
+      - id: identity.ivy_or_research
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: identity.jonah_editor
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.no_external_effects
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.ivy_jonah_editorial
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.ivy_jonah.editor_review
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       draft_package: artifacts.build_draft_package.draft_package
       source_trail: artifacts.build_draft_package.source_trail
@@ -105,6 +161,31 @@ stages:
     adapter: runtime.agent
     actors:
       writer: actors.writer
+    prompt_refs:
+      - id: identity.ivy_or_research
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.no_external_effects
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.ivy_jonah_editorial
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.ivy_jonah.revise_draft
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       draft_package: artifacts.build_draft_package.draft_package
       editor_verdict: artifacts.editor_review.editor_verdict

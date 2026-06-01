@@ -11,7 +11,15 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 
-from agent_workflow_kernel import StageDef, StageType, Transition, WorkflowDef, to_plain_data  # noqa: E402
+from agent_workflow_kernel import (  # noqa: E402
+    PromptRegistry,
+    StageDef,
+    StageType,
+    Transition,
+    WorkflowDef,
+    load_workflow_file,
+    to_plain_data,
+)
 
 
 WORKFLOW_DIR = ROOT / "workflows"
@@ -47,6 +55,20 @@ FORBIDDEN_PORTABILITY_TOKENS = (
 )
 
 ADAPTER_REF = re.compile(r"^(runtime|surface|host|lane|human)\.[a-z0-9_.-]+$")
+IVY_JONAH_EXECUTABLE_PROMPT_STAGES = {
+    "build_draft_package": {
+        "identities": {"identity.ivy_or_research"},
+        "stage": "stage.ivy_jonah.build_draft_package",
+    },
+    "editor_review": {
+        "identities": {"identity.ivy_or_research", "identity.jonah_editor"},
+        "stage": "stage.ivy_jonah.editor_review",
+    },
+    "revise_draft": {
+        "identities": {"identity.ivy_or_research"},
+        "stage": "stage.ivy_jonah.revise_draft",
+    },
+}
 
 
 def load_workflows() -> dict[str, dict[str, Any]]:
@@ -222,6 +244,34 @@ class ExampleWorkflowFixtureTest(unittest.TestCase):
         final_gate = stage_by_id(workflow)["p5_final_approval"]
         self.assertEqual(final_gate["type"], StageType.HUMAN_GATE.value)
         self.assertFalse(final_gate["policy"]["external_publish_allowed"])
+
+    def test_ivy_jonah_executable_agent_stages_resolve_prompt_refs(self) -> None:
+        workflow = load_workflow_file(WORKFLOW_DIR / "ivy_jonah_editorial.yaml")
+        registry = PromptRegistry.load(ROOT / "prompts")
+
+        executable_stages = {
+            stage.id: stage
+            for stage in workflow.stages
+            if stage.type in (StageType.AGENT_WORK, StageType.A2A_REVIEW_LOOP)
+        }
+        self.assertEqual(
+            set(executable_stages),
+            set(IVY_JONAH_EXECUTABLE_PROMPT_STAGES),
+        )
+
+        for stage_id, stage in executable_stages.items():
+            with self.subTest(stage_id=stage_id):
+                self.assertTrue(stage.prompt_refs, f"{stage_id} must declare prompt_refs")
+                bundle = registry.resolve(stage.prompt_refs)
+                prompt_ids = {prompt.ref.id for prompt in bundle.prompts}
+                prompt_kinds = {prompt.ref.kind for prompt in bundle.prompts}
+
+                expected = IVY_JONAH_EXECUTABLE_PROMPT_STAGES[stage_id]
+                self.assertTrue(expected["identities"].issubset(prompt_ids))
+                self.assertIn("policy.no_external_effects", prompt_ids)
+                self.assertIn("lane.ivy_jonah_editorial", prompt_ids)
+                self.assertIn(expected["stage"], prompt_ids)
+                self.assertTrue({"identity", "policy", "lane", "stage"}.issubset(prompt_kinds))
 
     def test_radhe_pipeline_represents_long_running_resume_states(self) -> None:
         workflow = self.workflows["radhe_review_pipeline"]
