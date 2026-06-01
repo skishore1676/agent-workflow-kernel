@@ -49,6 +49,17 @@ def validate_workflow_mapping(data: Mapping[str, Any]) -> None:
             raise WorkflowValidationError(f"workflow.{field} is required")
 
     require_mapping(data["inputs"], label="inputs")
+    defaults = data.get("defaults")
+    if defaults is not None:
+        require_mapping(defaults, label="defaults")
+        _validate_optional_lease(defaults.get("lease"), "defaults.lease")
+    actors = data.get("actors")
+    if actors is not None:
+        actor_map = require_mapping(actors, label="actors")
+        for actor_name, actor in actor_map.items():
+            if not isinstance(actor, Mapping):
+                continue
+            _validate_optional_lease(actor.get("lease"), f"actors.{actor_name}.lease")
     stages = require_sequence(data["stages"], label="stages")
     transitions = require_sequence(data["transitions"], label="transitions")
 
@@ -68,6 +79,7 @@ def validate_workflow_mapping(data: Mapping[str, Any]) -> None:
 
         _coerce_stage_type(stage["type"], f"stages[{index}].type")
         _require_str(stage["adapter"], f"stages[{index}].adapter")
+        _validate_optional_lease(stage.get("lease"), f"stages[{index}].lease")
 
         outcomes = require_sequence(stage["outcomes"], label=f"stages[{index}].outcomes")
         if not outcomes:
@@ -158,6 +170,7 @@ def validate_workflow_def(workflow: WorkflowDef) -> None:
                 "type": stage.type.value,
                 "adapter": stage.adapter,
                 "outcomes": list(stage.outcomes),
+                **({"lease": stage.lease} if stage.lease else {}),
             }
             for stage in workflow.stages
         ],
@@ -189,3 +202,18 @@ def _coerce_stage_type(value: Any, label: str) -> StageType:
         raise WorkflowValidationError(
             f"unknown stage type {value!r} at {label}; expected one of: {allowed}"
         ) from exc
+
+
+def _validate_optional_lease(value: Any, label: str) -> None:
+    if value in (None, ""):
+        return
+    lease = require_mapping(value, label=label)
+    unknown_keys = set(lease) - {"seconds"}
+    if unknown_keys:
+        unknown = ", ".join(sorted(str(key) for key in unknown_keys))
+        raise WorkflowValidationError(f"{label} has unknown field(s): {unknown}")
+    if "seconds" not in lease:
+        raise WorkflowValidationError(f"{label}.seconds is required")
+    seconds = lease["seconds"]
+    if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds <= 0:
+        raise WorkflowValidationError(f"{label}.seconds must be a positive integer")

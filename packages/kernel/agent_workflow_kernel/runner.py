@@ -6,7 +6,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Literal, Mapping, Protocol
 
-from .contracts import FailureClass, Receipt, StageRun, StageRunStatus, WorkflowStatus
+from .contracts import (
+    FailureClass,
+    Receipt,
+    ResolvedLeasePolicy,
+    StageRun,
+    StageRunStatus,
+    WorkflowStatus,
+)
 from .storage import WorkflowLedger
 
 
@@ -59,6 +66,7 @@ class KernelExecutionFacade(Protocol):
         self,
         *,
         instance_id: str | None = None,
+        lease_seconds: int | None = None,
         now: datetime | str | None = None,
     ) -> Any: ...
 
@@ -115,7 +123,8 @@ class WorkflowRunner:
         handler: StageHandler,
         *,
         instance_id: str | None = None,
-        lease_seconds: int = 300,
+        lease_seconds: int | None = 300,
+        lease_resolver: Callable[[StageRun], ResolvedLeasePolicy] | None = None,
         now: datetime | str | None = None,
     ) -> RunnerStep:
         self.ledger.sweep_stale_leases(now=now, actor=self.owner_id)
@@ -123,6 +132,7 @@ class WorkflowRunner:
             owner_id=self.owner_id,
             instance_id=instance_id,
             lease_seconds=lease_seconds,
+            lease_resolver=lease_resolver,
             now=now,
         )
         if run is None:

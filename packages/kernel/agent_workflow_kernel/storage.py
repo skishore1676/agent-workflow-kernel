@@ -9,13 +9,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from .contracts import (
     AdapterInvocation,
     ArtifactRef,
     FailureClass,
     Receipt,
+    ResolvedLeasePolicy,
     StageRun,
     StageRunStatus,
     WorkflowInstance,
@@ -245,6 +246,9 @@ class WorkflowLedger:
             ("context_packet_ref", "context_packet_ref TEXT"),
             ("context_packet_hash", "context_packet_hash TEXT"),
             ("rendered_context_hash", "rendered_context_hash TEXT"),
+            ("lease_seconds", "lease_seconds INTEGER"),
+            ("lease_source", "lease_source TEXT"),
+            ("lease_source_ref", "lease_source_ref TEXT"),
         ):
             self._ensure_stage_run_column(column_name, column_sql)
         for column_name, column_sql in (
@@ -520,11 +524,11 @@ class WorkflowLedger:
         *,
         owner_id: str,
         instance_id: str | None = None,
-        lease_seconds: int = 300,
+        lease_seconds: int | None = 300,
+        lease_resolver: Callable[[StageRun], ResolvedLeasePolicy] | None = None,
         now: datetime | str | None = None,
     ) -> StageRun | None:
         claimed_at = iso_timestamp(now)
-        expires_at = iso_timestamp(_coerce_datetime(claimed_at) + timedelta(seconds=lease_seconds))
         lease_token = uuid.uuid4().hex
         instance_filter = "AND instance_id = ?" if instance_id is not None else ""
         params: tuple[Any, ...] = (
@@ -546,11 +550,25 @@ class WorkflowLedger:
             ).fetchone()
             if row is None:
                 return None
+            lease = (
+                lease_resolver(self._stage_run_from_row(row))
+                if lease_resolver is not None
+                else ResolvedLeasePolicy(
+                    lease_seconds=_positive_int(lease_seconds, "lease_seconds"),
+                    source="runner_default",
+                    source_ref="WorkflowRunner.run_once.lease_seconds",
+                    actor_ref=row["actor_ref"],
+                )
+            )
+            expires_at = iso_timestamp(
+                _coerce_datetime(claimed_at) + timedelta(seconds=lease.lease_seconds)
+            )
             cursor = conn.execute(
                 """
                 UPDATE stage_runs
                 SET status = ?, lease_owner = ?, lease_token = ?,
-                    lease_expires_at = ?, updated_at = ?
+                    lease_expires_at = ?, lease_seconds = ?, lease_source = ?,
+                    lease_source_ref = ?, updated_at = ?
                 WHERE stage_run_id = ? AND status = ?
                 """,
                 (
@@ -558,6 +576,9 @@ class WorkflowLedger:
                     owner_id,
                     lease_token,
                     expires_at,
+                    lease.lease_seconds,
+                    lease.source,
+                    lease.source_ref,
                     claimed_at,
                     row["stage_run_id"],
                     StageRunStatus.QUEUED.value,
@@ -573,7 +594,11 @@ class WorkflowLedger:
                 actor=owner_id,
                 payload={
                     "lease_token": lease_token,
+                    "lease_seconds": lease.lease_seconds,
+                    "lease_source": lease.source,
+                    "lease_source_ref": lease.source_ref,
                     "lease_expires_at": expires_at,
+                    "lease": to_plain_data(lease),
                     "previous_status": row["status"],
                 },
                 created_at=claimed_at,
@@ -1491,6 +1516,9 @@ class WorkflowLedger:
                 "context_packet_ref": row["context_packet_ref"],
                 "context_packet_hash": row["context_packet_hash"],
                 "rendered_context_hash": row["rendered_context_hash"],
+                "lease_seconds": row["lease_seconds"],
+                "lease_source": row["lease_source"],
+                "lease_source_ref": row["lease_source_ref"],
                 "receipt_id": row["receipt_id"],
                 "created_at": row["created_at"],
                 "started_at": row["started_at"],
@@ -1640,6 +1668,9 @@ class WorkflowLedger:
             adapter_id=row["adapter_id"],
             actor_ref=row["actor_ref"],
             lease_token=row["lease_token"],
+            lease_seconds=row["lease_seconds"],
+            lease_source=row["lease_source"],
+            lease_source_ref=row["lease_source_ref"],
             receipt_id=row["receipt_id"],
             failure_class=FailureClass(row["failure_class"]) if row["failure_class"] else None,
             retry_after_at=row["retry_after_at"],
@@ -1676,6 +1707,16 @@ def _coerce_datetime(value: datetime | str) -> datetime:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
     return datetime.fromisoformat(value).astimezone(UTC)
+
+
+def _positive_int(value: Any, label: str) -> int:
+    try:
+        integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a positive integer") from exc
+    if integer <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return integer
 
 
 def _stage_status_for_failure(failure_class: FailureClass | str) -> StageRunStatus:

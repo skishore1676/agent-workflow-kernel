@@ -30,12 +30,16 @@ inputs:
     - acceptance_criteria
 defaults:
   policy_class: read_only_review
+  lease:
+    seconds: 300
   retry:
     max_attempts: 1
 actors:
   producer:
     adapter: runtime.fake
     role: producer
+    lease:
+      seconds: 600
   reviewer:
     adapter: runtime.fake
     role: reviewer
@@ -49,6 +53,8 @@ stages:
       artifacts:
         - role: review_packet
           required: true
+    lease:
+      seconds: 120
     outcomes: [ready, blocked]
   - id: review_loop
     type: a2a_review_loop
@@ -107,6 +113,9 @@ class CoreSchemaDslTest(unittest.TestCase):
         self.assertEqual(workflow.id, "portable_review")
         self.assertEqual(workflow.schema, "workflow.kernel.v1")
         self.assertEqual(workflow.stages[0].type, StageType.SYSTEM_ACTION)
+        self.assertEqual(workflow.defaults["lease"]["seconds"], 300)
+        self.assertEqual(workflow.actors["producer"]["lease"]["seconds"], 600)
+        self.assertEqual(workflow.stages[0].lease["seconds"], 120)
         self.assertEqual(workflow.stages[1].adapter, "runtime.a2a")
         self.assertEqual(workflow.transitions[3].guard, "within_revision_budget")
         self.assertEqual(workflow.transitions[-1].terminal, "policy_denied")
@@ -149,6 +158,12 @@ class CoreSchemaDslTest(unittest.TestCase):
         invalid = VALID_WORKFLOW_YAML.replace("guard: within_revision_budget", "guard: typo_guard")
 
         with self.assertRaisesRegex(WorkflowValidationError, "unknown transition guard"):
+            load_workflow_yaml(invalid)
+
+    def test_rejects_invalid_lease_shape(self) -> None:
+        invalid = VALID_WORKFLOW_YAML.replace("seconds: 120", "seconds: 0", 1)
+
+        with self.assertRaisesRegex(WorkflowValidationError, "lease.seconds"):
             load_workflow_yaml(invalid)
 
     def test_rejects_unknown_terminal_status(self) -> None:

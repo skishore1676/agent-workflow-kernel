@@ -159,6 +159,93 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             ],
         )
 
+    def test_stage_actor_lease_precedence_and_receipt_visibility(self) -> None:
+        cases = (
+            (
+                "explicit",
+                self.workflow_with_lease_policy(
+                    default_seconds=60,
+                    actor_seconds=90,
+                    stage_seconds=120,
+                ),
+                15,
+                15,
+                "runner_override",
+                "WorkflowKernel.run_once.lease_seconds",
+            ),
+            (
+                "stage",
+                self.workflow_with_lease_policy(
+                    default_seconds=60,
+                    actor_seconds=90,
+                    stage_seconds=120,
+                ),
+                None,
+                120,
+                "stage",
+                "stages.draft.lease",
+            ),
+            (
+                "actor",
+                self.workflow_with_lease_policy(default_seconds=60, actor_seconds=90),
+                None,
+                90,
+                "actor",
+                "actors.worker.lease",
+            ),
+            (
+                "workflow-default",
+                self.workflow_with_lease_policy(default_seconds=60),
+                None,
+                60,
+                "workflow_default",
+                "defaults.lease",
+            ),
+        )
+
+        for instance_suffix, workflow, override, seconds, source, source_ref in cases:
+            instance_id = f"lease-{instance_suffix}"
+            kernel = self.kernel_for(workflow)
+            kernel.start(instance_id=instance_id, inputs={}, now=self.now)
+
+            step = kernel.run_once(
+                instance_id=instance_id,
+                lease_seconds=override,
+                now=self.now,
+            )
+
+            self.assertEqual(step.decision, "succeeded")
+            self.assertIsNotNone(step.stage_run)
+            assert step.stage_run is not None
+            self.assertEqual(step.stage_run.lease_seconds, seconds)
+            self.assertEqual(step.stage_run.lease_source, source)
+            run = self.ledger.get_stage_run(f"{instance_id}:draft:1")
+            self.assertIsNotNone(run)
+            assert run is not None
+            self.assertEqual(run.lease_seconds, seconds)
+            self.assertEqual(run.lease_source, source)
+            self.assertEqual(run.lease_source_ref, source_ref)
+            receipt_row = self.ledger.connection.execute(
+                "SELECT receipt_json FROM receipts WHERE receipt_id = ?",
+                (step.receipt_id,),
+            ).fetchone()
+            self.assertIsNotNone(receipt_row)
+            receipt = json.loads(receipt_row["receipt_json"])
+            self.assertEqual(receipt["runtime_provenance"]["lease"]["lease_seconds"], seconds)
+            self.assertEqual(receipt["runtime_provenance"]["lease"]["source"], source)
+            self.assertEqual(receipt["runtime_provenance"]["lease"]["source_ref"], source_ref)
+            claim_event = next(
+                event for event in self.ledger.list_events(stage_run_id=run.stage_run_id)
+                if event["event_type"] == "stage_claimed"
+            )
+            self.assertEqual(claim_event["payload"]["lease_seconds"], seconds)
+            self.assertEqual(claim_event["payload"]["lease_source"], source)
+            audit = self.ledger.export_stage_run_audit(stage_run_id=run.stage_run_id)
+            self.assertIsNotNone(audit)
+            assert audit is not None
+            self.assertEqual(audit["stage_run"]["lease_seconds"], seconds)
+            self.assertEqual(audit["stage_run"]["lease_source"], source)
+
     def test_prompt_refs_render_context_and_record_prompt_provenance(self) -> None:
         kernel = self.kernel_for(
             self.workflow_with_runtime_stage(prompt_refs=PROMPT_REFS),
@@ -1426,6 +1513,39 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             ),
             transitions=(),
             defaults=defaults or {},
+        )
+
+    def workflow_with_lease_policy(
+        self,
+        *,
+        default_seconds: int | None = None,
+        actor_seconds: int | None = None,
+        stage_seconds: int | None = None,
+    ) -> WorkflowDef:
+        actor_config = {
+            "adapter": "runtime.local_fake",
+            "role": "worker",
+        }
+        if actor_seconds is not None:
+            actor_config["lease"] = {"seconds": actor_seconds}
+        return WorkflowDef(
+            id="toy-lease-policy",
+            version="0.1.0",
+            name="Toy lease policy workflow",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "actors.worker"},
+                    lease={"seconds": stage_seconds} if stage_seconds is not None else {},
+                ),
+            ),
+            transitions=(),
+            defaults={"lease": {"seconds": default_seconds}} if default_seconds is not None else {},
+            actors={"worker": actor_config},
         )
 
     def workflow_with_policy_approved_runtime_transition(self) -> WorkflowDef:

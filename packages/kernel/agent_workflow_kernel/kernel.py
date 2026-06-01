@@ -33,6 +33,7 @@ from .contracts import (
     to_plain_data,
 )
 from .dsl import workflow_to_canonical_json
+from .lease import resolved_lease_policy_from_stage_run, resolve_stage_lease_policy
 from .policy import (
     ALLOWED_TRANSITION_GUARDS,
     FAIL_CLOSED_TRANSITION_GUARDS,
@@ -266,13 +267,23 @@ class WorkflowKernel:
         )
         return instance
 
-    def run_once(self, *, instance_id: str | None = None, now: Any = None) -> KernelStep:
+    def run_once(
+        self,
+        *,
+        instance_id: str | None = None,
+        lease_seconds: int | None = None,
+        now: Any = None,
+    ) -> KernelStep:
         runner = WorkflowRunner(self.ledger, owner_id=self.config.owner_id)
         state: dict[str, Any] = {}
         step = runner.run_once(
             self._handle_stage(state, now=now),
             instance_id=instance_id,
-            lease_seconds=self.config.default_lease_seconds,
+            lease_seconds=None,
+            lease_resolver=lambda run: self._resolve_lease_for_run(
+                run,
+                explicit_lease_seconds=lease_seconds,
+            ),
             now=now,
         )
         if step.stage_run is None:
@@ -601,6 +612,7 @@ class WorkflowKernel:
             residual_risk=adapter_result.residual_risk,
             next_action=adapter_result.next_hint,
             rendered_context=None,
+            lease_policy=resolved_lease_policy_from_stage_run(run),
         )
         self.ledger.record_receipt(receipt)
         surface_ref = _surface_ref_from_outputs(adapter_result.outputs)
@@ -698,6 +710,7 @@ class WorkflowKernel:
             residual_risk=adapter_receipt.residual_risk,
             next_action=adapter_receipt.next_action,
             rendered_context=None,
+            lease_policy=resolved_lease_policy_from_stage_run(run),
         )
         self.ledger.record_receipt(receipt)
         self.ledger.append_event(
@@ -836,6 +849,7 @@ class WorkflowKernel:
             residual_risk=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else failure_summary,
             next_action=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else "Fix the surface decision and retry from a fresh waiting gate.",
             rendered_context=None,
+            lease_policy=resolved_lease_policy_from_stage_run(run),
         )
         self.ledger.record_receipt(receipt)
         self.ledger.append_event(
@@ -1096,6 +1110,7 @@ class WorkflowKernel:
                     residual_risk=adapter_result.residual_risk,
                     next_action=adapter_result.next_hint,
                     rendered_context=rendered_context,
+                    lease_policy=resolved_lease_policy_from_stage_run(run),
                 )
                 state["adapter_result"] = adapter_result
                 state["receipt_id"] = receipt.receipt_id
@@ -1142,6 +1157,7 @@ class WorkflowKernel:
                 residual_risk=adapter_result.residual_risk,
                 next_action=adapter_result.next_hint,
                 rendered_context=rendered_context,
+                lease_policy=resolved_lease_policy_from_stage_run(run),
             )
             state["adapter_result"] = adapter_result
             state["receipt_id"] = receipt.receipt_id
@@ -1172,6 +1188,7 @@ class WorkflowKernel:
                         residual_risk=summary,
                         next_action="Fix adapter output or stage contract before retrying.",
                         rendered_context=rendered_context,
+                        lease_policy=resolved_lease_policy_from_stage_run(run),
                     )
                     state["receipt_id"] = invalid_receipt.receipt_id
                     state["failure_summary"] = summary
@@ -1220,6 +1237,7 @@ class WorkflowKernel:
         effective_policy: _EffectivePolicy,
         summary: str,
     ) -> Receipt:
+        lease_policy = resolved_lease_policy_from_stage_run(run)
         return Receipt(
             receipt_id=f"receipt:kernel:{run.stage_run_id}:policy_preflight_blocked",
             kind="kernel.policy_preflight",
@@ -1240,6 +1258,7 @@ class WorkflowKernel:
                     "effective_policy_compiled",
                     "policy_preflight",
                 ],
+                **({"lease": to_plain_data(lease_policy)} if lease_policy else {}),
             },
             policy_snapshot=_policy_snapshot(gate, effective_policy),
             residual_risk=summary,
@@ -1315,6 +1334,7 @@ class WorkflowKernel:
         gate: Any,
         failure_class: FailureClass,
     ):
+        lease_policy = resolved_lease_policy_from_stage_run(run)
         return Receipt(
             receipt_id=f"receipt:kernel:{run.stage_run_id}:prompt_context_blocked",
             kind="kernel.prompt_context",
@@ -1335,6 +1355,7 @@ class WorkflowKernel:
             runtime_provenance={
                 "actor": self.config.owner_id,
                 "checks_run": ["prompt_registry_resolution_failed"],
+                **({"lease": to_plain_data(lease_policy)} if lease_policy else {}),
             },
             policy_snapshot=to_plain_data(gate),
             next_action="Fix prompt registry configuration before retrying the stage.",
@@ -2039,6 +2060,33 @@ class WorkflowKernel:
             input_hash=digest_data({"stage": stage, "inputs": inputs, "attempt": attempt}),
             idempotency_key=f"{instance_id}:{stage.id}:{attempt}",
             created_at=created_at,
+        )
+
+    def _resolve_lease_for_run(
+        self,
+        run: StageRun,
+        *,
+        explicit_lease_seconds: int | None,
+    ):
+        stage = self._stage_by_id.get(run.stage_id)
+        if stage is None:
+            return resolve_stage_lease_policy(
+                self.workflow,
+                StageDef(
+                    id=run.stage_id,
+                    type=StageType.BLOCKED,
+                    adapter=run.adapter_id or "unknown",
+                    outcomes=("blocked",),
+                    actors={"actor": run.actor_ref} if run.actor_ref else {},
+                ),
+                runtime_default_seconds=self.config.default_lease_seconds,
+                explicit_lease_seconds=explicit_lease_seconds,
+            )
+        return resolve_stage_lease_policy(
+            self.workflow,
+            stage,
+            runtime_default_seconds=self.config.default_lease_seconds,
+            explicit_lease_seconds=explicit_lease_seconds,
         )
 
 
@@ -3068,9 +3116,18 @@ def _make_kernel_adapter_receipt(
     invocation: AdapterInvocation,
     *,
     rendered_context: RenderedContext | None,
+    lease_policy: Any | None = None,
     **kwargs: Any,
 ):
     receipt = make_adapter_receipt(invocation, **kwargs)
+    if lease_policy is not None:
+        receipt = replace(
+            receipt,
+            runtime_provenance={
+                **receipt.runtime_provenance,
+                "lease": to_plain_data(lease_policy),
+            },
+        )
     if rendered_context is None:
         return receipt
     return replace(

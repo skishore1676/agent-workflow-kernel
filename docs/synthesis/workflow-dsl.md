@@ -45,6 +45,8 @@ inputs:
 
 defaults:
   policy_class: read_only_review
+  lease:
+    seconds: 300
   timeout_seconds: 900
   retry:
     max_attempts: 1
@@ -59,6 +61,8 @@ actors:
   reviewer:
     adapter: runtime.openclaw_agent
     role: quality_reviewer
+    lease:
+      seconds: 900
   operator:
     adapter: human.default
     role: owner
@@ -90,6 +94,8 @@ stages:
       max_questions: 3
       max_revision_turns: 2
       max_ping_pong_turns: 7
+    lease:
+      seconds: 1200
     outputs:
       receipt_kind: probing_review_verdict
       outcome_schema: review_verdict.v1
@@ -166,6 +172,7 @@ adapter id, not a kernel import path.
 | `outputs` | no | Artifact roles, receipt kind, and output schema refs. |
 | `policy` | no | Required risk class or explicit approval rule. |
 | `budget` | no | Question, revision, tool, cost, or turn limits. |
+| `lease` | no | Declarative claim lease, shaped as `seconds: <positive-int>`. Stage lease overrides actor lease, which overrides `defaults.lease`; runners may pass one explicit override for a claim. |
 | `timeout_seconds` | no | Runner hint, not a hard policy substitute. |
 | `retry` | no | Retry hints by failure class or outcome. |
 | `outcomes` | yes | Allowed named outcomes emitted by the stage. |

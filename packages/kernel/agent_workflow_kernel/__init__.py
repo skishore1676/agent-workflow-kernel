@@ -33,6 +33,7 @@ from .contracts import (
     PolicyGate,
     PromptRef,
     Receipt,
+    ResolvedLeasePolicy,
     RiskClass,
     StageDef,
     StageRun,
@@ -134,6 +135,7 @@ from .kernel import (
     KernelStep,
     WorkflowKernel,
 )
+from .lease import resolved_lease_policy_from_stage_run, resolve_stage_lease_policy
 from .storage import LedgerConflict, RecoveryAction, WorkflowLedger
 from .validation import WorkflowValidationError, validate_workflow_def, validate_workflow_mapping
 
@@ -205,6 +207,7 @@ __all__ = [
     "RecoveryAction",
     "RenderedContext",
     "ResolvedPrompt",
+    "ResolvedLeasePolicy",
     "RiskClass",
     "RunnerResult",
     "RunnerStep",
@@ -249,6 +252,8 @@ __all__ = [
     "report_from_fixture",
     "result_from_receipt",
     "run_local_workflow",
+    "resolved_lease_policy_from_stage_run",
+    "resolve_stage_lease_policy",
     "to_plain_data",
     "unsupported_operation_result",
     "validate_approval",

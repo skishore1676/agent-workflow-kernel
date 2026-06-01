@@ -148,6 +148,14 @@ class Receipt:
 
 
 @dataclass(slots=True, frozen=True)
+class ResolvedLeasePolicy:
+    lease_seconds: int
+    source: str
+    source_ref: str
+    actor_ref: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class Transition:
     from_stage: str
     on: str
@@ -170,6 +178,7 @@ class StageDef:
     policy: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
     retry: dict[str, Any] = field(default_factory=dict)
+    lease: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: int | None = None
     surface: dict[str, Any] = field(default_factory=dict)
 
@@ -214,6 +223,9 @@ class StageRun:
     adapter_id: str | None = None
     actor_ref: str | None = None
     lease_token: str | None = None
+    lease_seconds: int | None = None
+    lease_source: str | None = None
+    lease_source_ref: str | None = None
     receipt_id: str | None = None
     failure_class: FailureClass | None = None
     retry_after_at: str | None = None
