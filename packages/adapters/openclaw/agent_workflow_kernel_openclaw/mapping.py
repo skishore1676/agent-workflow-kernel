@@ -12,6 +12,10 @@ from typing import Any, Mapping
 
 from agent_workflow_kernel.adapters import RuntimeRef, SurfaceRef
 from agent_workflow_kernel.contracts import to_plain_data
+from agent_workflow_kernel.prompts import digest_data
+
+
+OPENCLAW_IDENTITY_CROSSWALK_SCHEMA = "openclaw.awk_identity_crosswalk.v1"
 
 
 @dataclass(slots=True, frozen=True)
@@ -49,6 +53,99 @@ class OpenClawReferenceMapping:
                 "host_ref": self.host_ref,
             }
         )
+
+
+@dataclass(slots=True, frozen=True)
+class OpenClawIdentityCrosswalk:
+    """Durable adapter-side identity bridge between AWK and OpenClaw state."""
+
+    crosswalk_id: str
+    awk_instance_id: str
+    workflow_id: str
+    workflow_version: str
+    openclaw_artifact_id: str
+    current_stage_id: str | None = None
+    terminal_stage_id: str | None = None
+    lane_id: str | None = None
+    openclaw_artifact_record_path: str | None = None
+    handoff_path: str | None = None
+    runner_receipt_path: str | None = None
+    work_ledger_id: str | None = None
+    work_id: str | None = None
+    work_item_id: str | None = None
+    work_ledger_handoff_id: str | None = None
+    work_ledger_receipt_id: str | None = None
+    source_hashes: Mapping[str, str | None] = field(default_factory=dict)
+    terminal_event_id: str | None = None
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Return JSON-compatible crosswalk metadata for receipts and events."""
+
+        return to_plain_data(
+            {
+                "schema": OPENCLAW_IDENTITY_CROSSWALK_SCHEMA,
+                "crosswalk_id": self.crosswalk_id,
+                "awk_instance_id": self.awk_instance_id,
+                "workflow_id": self.workflow_id,
+                "workflow_version": self.workflow_version,
+                "openclaw_artifact_id": self.openclaw_artifact_id,
+                "current_stage_id": self.current_stage_id,
+                "terminal_stage_id": self.terminal_stage_id,
+                "lane_id": self.lane_id,
+                "openclaw_artifact_record_path": self.openclaw_artifact_record_path,
+                "handoff_path": self.handoff_path,
+                "runner_receipt_path": self.runner_receipt_path,
+                "work_ledger_id": self.work_ledger_id,
+                "work_id": self.work_id,
+                "work_item_id": self.work_item_id,
+                "work_ledger_handoff_id": self.work_ledger_handoff_id,
+                "work_ledger_receipt_id": self.work_ledger_receipt_id,
+                "source_hashes": dict(self.source_hashes),
+                "terminal_event_id": self.terminal_event_id,
+            }
+        )
+
+    def fingerprint(self) -> str:
+        return digest_data(self.to_metadata())
+
+
+IMMUTABLE_CROSSWALK_IDENTITY_FIELDS = (
+    "awk_instance_id",
+    "workflow_id",
+    "workflow_version",
+    "openclaw_artifact_id",
+    "lane_id",
+    "handoff_path",
+    "runner_receipt_path",
+    "work_ledger_id",
+    "work_id",
+    "work_item_id",
+    "work_ledger_handoff_id",
+    "work_ledger_receipt_id",
+)
+
+
+def openclaw_identity_crosswalk_conflicts(
+    existing: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Return immutable identity fields that conflict between two crosswalks."""
+
+    conflicts: list[dict[str, Any]] = []
+    for field_name in IMMUTABLE_CROSSWALK_IDENTITY_FIELDS:
+        existing_value = existing.get(field_name)
+        candidate_value = candidate.get(field_name)
+        if existing_value in (None, "") or candidate_value in (None, ""):
+            continue
+        if str(existing_value) != str(candidate_value):
+            conflicts.append(
+                {
+                    "field": field_name,
+                    "existing": existing_value,
+                    "candidate": candidate_value,
+                }
+            )
+    return tuple(conflicts)
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:

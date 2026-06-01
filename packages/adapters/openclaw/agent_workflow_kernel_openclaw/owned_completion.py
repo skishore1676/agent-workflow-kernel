@@ -33,11 +33,15 @@ from agent_workflow_kernel import (
     digest_data,
 )
 
+from .mapping import OpenClawIdentityCrosswalk, openclaw_identity_crosswalk_conflicts
+
 
 OWNED_COMPLETION_WORKFLOW_ID = "openclaw_migrated_lane_completion"
 OWNED_COMPLETION_WORKFLOW_VERSION = "0.1.0"
 OWNED_COMPLETION_SCHEMA = "openclaw.awk_owned_completion.v1"
 DEFAULT_OWNER_ID = "openclaw-owned-completion-bridge"
+CROSSWALK_RECORDED_EVENT = "openclaw_identity_crosswalk_recorded"
+CROSSWALK_REJECTED_EVENT = "openclaw_identity_crosswalk_rejected"
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +282,18 @@ def _run_one_artifact(
             created_at=now,
         )
 
+    identity_mismatches = _source_identity_mismatches(evidence)
+    if identity_mismatches:
+        return _result(
+            evidence=evidence,
+            instance_id=instance_id,
+            status="identity_mismatch",
+            stop_reason="openclaw_identity_crosswalk_mismatch",
+            ledger=ledger,
+            now=now,
+            crosswalk_errors=identity_mismatches,
+        )
+
     instance = ledger.get_workflow_instance(instance_id)
     if instance is not None and instance.status == WorkflowStatus.DONE:
         return _result(
@@ -286,6 +302,7 @@ def _run_one_artifact(
             status="done",
             stop_reason="already_terminal",
             ledger=ledger,
+            now=now,
         )
 
     runner.run_kernel_until_idle(kernel, instance_id=instance_id, now=now)
@@ -298,6 +315,7 @@ def _run_one_artifact(
                 status="waiting_on_human",
                 stop_reason="openclaw_acknowledgement_missing",
                 ledger=ledger,
+                now=now,
             )
         decision = _approval_from_openclaw_handoff(
             ledger=ledger,
@@ -313,6 +331,7 @@ def _run_one_artifact(
                 status="blocked",
                 stop_reason=ingest.failure_summary or "human_decision_blocked",
                 ledger=ledger,
+                now=now,
             )
         ledger.append_event(
             instance_id=instance_id,
@@ -335,6 +354,7 @@ def _run_one_artifact(
             status="waiting_on_openclaw_runner",
             stop_reason="openclaw_runner_done_receipt_missing",
             ledger=ledger,
+            now=now,
         )
 
     ledger.append_event(
@@ -357,6 +377,7 @@ def _run_one_artifact(
         status=final.status,
         stop_reason=final.stop_reason,
         ledger=ledger,
+        now=now,
     )
 
 
@@ -452,6 +473,8 @@ def _result(
     status: str,
     stop_reason: str | None,
     ledger: WorkflowLedger,
+    now: str,
+    crosswalk_errors: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     instance = ledger.get_workflow_instance(instance_id)
     stage_rows = ledger.connection.execute(
@@ -462,13 +485,32 @@ def _result(
         "SELECT COUNT(*) AS count FROM events WHERE instance_id = ? AND event_type = ?",
         (instance_id, "workflow_terminal"),
     ).fetchone()["count"]
+    terminal_event = _terminal_event(ledger, instance_id)
+    crosswalk = _identity_crosswalk_for_result(
+        evidence=evidence,
+        instance_id=instance_id,
+        instance=instance,
+        terminal_event=terminal_event,
+    )
+    crosswalk_persistence = _record_identity_crosswalk(
+        ledger=ledger,
+        instance_id=instance_id,
+        crosswalk=crosswalk,
+        created_at=now,
+        errors=crosswalk_errors,
+    )
+    result_status = status
+    result_stop_reason = stop_reason
+    if crosswalk_persistence["status"] == "rejected":
+        result_status = "identity_mismatch"
+        result_stop_reason = "openclaw_identity_crosswalk_mismatch"
     return {
         "artifact_id": evidence.artifact_id,
         "lane_id": evidence.lane_id,
         "title": evidence.title,
         "instance_id": instance_id,
-        "status": status,
-        "stop_reason": stop_reason,
+        "status": result_status,
+        "stop_reason": result_stop_reason,
         "workflow_status": instance.status.value if instance else None,
         "current_stage_id": instance.current_stage_id if instance else None,
         "terminal_event_count": int(terminal_count),
@@ -477,6 +519,10 @@ def _result(
         "runner_receipt_path": _path_or_none(evidence.runner_receipt_path),
         "acknowledged": evidence.acknowledged,
         "runner_done": evidence.runner_done,
+        "identity_crosswalk": crosswalk.to_metadata(),
+        "identity_crosswalk_hash": crosswalk.fingerprint(),
+        "identity_crosswalk_status": crosswalk_persistence["status"],
+        "identity_crosswalk_errors": crosswalk_persistence["errors"],
         "stage_runs": [dict(row) for row in stage_rows],
     }
 
@@ -498,6 +544,204 @@ def _evidence_payload(evidence: OpenClawArtifactEvidence) -> dict[str, Any]:
         "handoff_hash": _hash_file(evidence.handoff_path),
         "runner_receipt_hash": _hash_file(evidence.runner_receipt_path),
     }
+
+
+def _identity_crosswalk_for_result(
+    *,
+    evidence: OpenClawArtifactEvidence,
+    instance_id: str,
+    instance: Any,
+    terminal_event: Mapping[str, Any] | None,
+) -> OpenClawIdentityCrosswalk:
+    terminal_payload = terminal_event.get("payload") if isinstance(terminal_event, Mapping) else None
+    return OpenClawIdentityCrosswalk(
+        crosswalk_id=_crosswalk_id(instance_id, evidence.artifact_id),
+        awk_instance_id=instance_id,
+        workflow_id=OWNED_COMPLETION_WORKFLOW_ID,
+        workflow_version=OWNED_COMPLETION_WORKFLOW_VERSION,
+        openclaw_artifact_id=evidence.artifact_id,
+        current_stage_id=instance.current_stage_id if instance else None,
+        terminal_stage_id=terminal_payload.get("from_stage") if isinstance(terminal_payload, Mapping) else None,
+        lane_id=evidence.lane_id,
+        openclaw_artifact_record_path=_path_or_none(evidence.record_path),
+        handoff_path=_path_or_none(evidence.handoff_path),
+        runner_receipt_path=_path_or_none(evidence.runner_receipt_path),
+        work_ledger_id=_first_source_string(evidence, "work_ledger_id"),
+        work_id=_first_source_string(evidence, "work_id"),
+        work_item_id=_first_source_string(evidence, "work_item_id"),
+        work_ledger_handoff_id=_first_source_string(evidence, "handoff_id"),
+        work_ledger_receipt_id=_first_source_string(evidence, "receipt_id"),
+        source_hashes={
+            "openclaw_artifact_record": _hash_file(evidence.record_path),
+            "openclaw_handoff": _hash_file(evidence.handoff_path),
+            "openclaw_runner_receipt": _hash_file(evidence.runner_receipt_path),
+        },
+        terminal_event_id=terminal_event.get("event_id") if isinstance(terminal_event, Mapping) else None,
+    )
+
+
+def _record_identity_crosswalk(
+    *,
+    ledger: WorkflowLedger,
+    instance_id: str,
+    crosswalk: OpenClawIdentityCrosswalk,
+    created_at: str,
+    errors: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    candidate = crosswalk.to_metadata()
+    crosswalk_hash = crosswalk.fingerprint()
+    if errors:
+        payload = {
+            "crosswalk_id": crosswalk.crosswalk_id,
+            "crosswalk_hash": crosswalk_hash,
+            "errors": [dict(error) for error in errors],
+            "candidate": candidate,
+        }
+        rejection_hash = digest_data(payload)
+        if not _event_payload_hash_exists(ledger, instance_id, CROSSWALK_REJECTED_EVENT, rejection_hash):
+            ledger.append_event(
+                instance_id=instance_id,
+                stage_run_id=None,
+                event_type=CROSSWALK_REJECTED_EVENT,
+                actor=DEFAULT_OWNER_ID,
+                payload={**payload, "rejection_hash": rejection_hash},
+                created_at=created_at,
+            )
+        return {"status": "rejected", "errors": [dict(error) for error in errors]}
+
+    recorded_events = _crosswalk_recorded_events(ledger, instance_id)
+    for event in recorded_events:
+        payload = event["payload"]
+        if payload.get("crosswalk_hash") == crosswalk_hash:
+            return {"status": "already_recorded", "errors": []}
+
+    if recorded_events:
+        existing = recorded_events[-1]["payload"].get("crosswalk")
+        if isinstance(existing, Mapping):
+            conflicts = openclaw_identity_crosswalk_conflicts(existing, candidate)
+            if conflicts:
+                payload = {
+                    "crosswalk_id": crosswalk.crosswalk_id,
+                    "crosswalk_hash": crosswalk_hash,
+                    "errors": list(conflicts),
+                    "candidate": candidate,
+                    "existing": existing,
+                }
+                rejection_hash = digest_data(payload)
+                if not _event_payload_hash_exists(ledger, instance_id, CROSSWALK_REJECTED_EVENT, rejection_hash):
+                    ledger.append_event(
+                        instance_id=instance_id,
+                        stage_run_id=None,
+                        event_type=CROSSWALK_REJECTED_EVENT,
+                        actor=DEFAULT_OWNER_ID,
+                        payload={**payload, "rejection_hash": rejection_hash},
+                        created_at=created_at,
+                    )
+                return {"status": "rejected", "errors": list(conflicts)}
+
+    ledger.append_event(
+        instance_id=instance_id,
+        stage_run_id=None,
+        event_type=CROSSWALK_RECORDED_EVENT,
+        actor=DEFAULT_OWNER_ID,
+        payload={
+            "crosswalk_id": crosswalk.crosswalk_id,
+            "crosswalk_hash": crosswalk_hash,
+            "crosswalk": candidate,
+        },
+        created_at=created_at,
+    )
+    return {"status": "recorded", "errors": []}
+
+
+def _source_identity_mismatches(evidence: OpenClawArtifactEvidence) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for source_name, source in (
+        ("openclaw_artifact_record", evidence.record),
+        ("openclaw_handoff", evidence.handoff),
+        ("openclaw_runner_receipt", evidence.runner_receipt),
+    ):
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("artifact_id", "openclaw_artifact_id"):
+            actual = source.get(key)
+            if actual is not None and str(actual) != evidence.artifact_id:
+                mismatches.append(
+                    {
+                        "source": source_name,
+                        "field": key,
+                        "expected": evidence.artifact_id,
+                        "actual": actual,
+                    }
+                )
+        actual_lane = source.get("lane_id")
+        if evidence.lane_id is not None and actual_lane is not None and str(actual_lane) != evidence.lane_id:
+            mismatches.append(
+                {
+                    "source": source_name,
+                    "field": "lane_id",
+                    "expected": evidence.lane_id,
+                    "actual": actual_lane,
+                }
+            )
+    return mismatches
+
+
+def _terminal_event(ledger: WorkflowLedger, instance_id: str) -> Mapping[str, Any] | None:
+    for event in reversed(ledger.list_events()):
+        if event["instance_id"] == instance_id and event["event_type"] == "workflow_terminal":
+            return event
+    return None
+
+
+def _crosswalk_recorded_events(ledger: WorkflowLedger, instance_id: str) -> list[dict[str, Any]]:
+    return [
+        event
+        for event in ledger.list_events()
+        if event["instance_id"] == instance_id and event["event_type"] == CROSSWALK_RECORDED_EVENT
+    ]
+
+
+def _event_payload_hash_exists(
+    ledger: WorkflowLedger,
+    instance_id: str,
+    event_type: str,
+    payload_hash: str,
+) -> bool:
+    for event in ledger.list_events():
+        if event["instance_id"] != instance_id or event["event_type"] != event_type:
+            continue
+        payload = event["payload"]
+        if payload.get("rejection_hash") == payload_hash or payload.get("crosswalk_hash") == payload_hash:
+            return True
+    return False
+
+
+def _crosswalk_id(instance_id: str, artifact_id: str) -> str:
+    return f"openclaw-awk-crosswalk:{digest_data({'instance_id': instance_id, 'artifact_id': artifact_id})[7:19]}"
+
+
+def _first_source_string(evidence: OpenClawArtifactEvidence, key: str) -> str | None:
+    for source in (evidence.record, evidence.handoff, evidence.runner_receipt):
+        value = _nested_source_value(source, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _nested_source_value(source: Mapping[str, Any] | None, key: str) -> str | None:
+    if not isinstance(source, Mapping):
+        return None
+    direct = _string_or_none(source.get(key))
+    if direct is not None:
+        return direct
+    for nested_key in ("work_ledger", "work_ledger_ids"):
+        nested = source.get(nested_key)
+        if isinstance(nested, Mapping):
+            value = _string_or_none(nested.get(key))
+            if value is not None:
+                return value
+    return None
 
 
 def _load_json(path: Path) -> Mapping[str, Any]:

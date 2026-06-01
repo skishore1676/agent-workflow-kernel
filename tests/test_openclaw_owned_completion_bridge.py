@@ -38,6 +38,23 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             self.assertEqual({result["status"] for result in summary["results"]}, {"done"})
             self.assertEqual({result["workflow_status"] for result in summary["results"]}, {"done"})
             self.assertEqual({result["terminal_event_count"] for result in summary["results"]}, {1})
+            for result in summary["results"]:
+                crosswalk = result["identity_crosswalk"]
+                self.assertEqual(crosswalk["schema"], "openclaw.awk_identity_crosswalk.v1")
+                self.assertEqual(crosswalk["awk_instance_id"], result["instance_id"])
+                self.assertEqual(crosswalk["workflow_id"], "openclaw_migrated_lane_completion")
+                self.assertEqual(crosswalk["workflow_version"], "0.1.0")
+                self.assertEqual(crosswalk["openclaw_artifact_id"], result["artifact_id"])
+                self.assertEqual(crosswalk["terminal_stage_id"], "verify_openclaw_review_runner")
+                self.assertIsNotNone(crosswalk["terminal_event_id"])
+                self.assertTrue(crosswalk["handoff_path"].endswith(f"{result['artifact_id']}.json"))
+                self.assertTrue(crosswalk["runner_receipt_path"].endswith("20260601T160000Z.json"))
+                self.assertEqual(crosswalk["work_id"], f"work-{result['artifact_id']}")
+                self.assertEqual(crosswalk["work_item_id"], f"item-{result['artifact_id']}")
+                self.assertEqual(crosswalk["work_ledger_handoff_id"], f"handoff-{result['artifact_id']}")
+                self.assertEqual(crosswalk["work_ledger_receipt_id"], f"receipt-{result['artifact_id']}")
+                self.assertTrue(crosswalk["source_hashes"]["openclaw_handoff"].startswith("sha256:"))
+                self.assertEqual(result["identity_crosswalk_status"], "recorded")
 
             ledger = WorkflowLedger(root / "awk-ledger.sqlite3")
             try:
@@ -52,6 +69,12 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
                 self.assertEqual([row["decision"] for row in decisions], ["acknowledged", "acknowledged"])
                 self.assertEqual({row["human_ref"] for row in decisions}, {"Suman"})
                 self.assertEqual({row["canonical_surface"] for row in decisions}, {"openclaw_blackboard"})
+                crosswalk_events = [
+                    event
+                    for event in ledger.list_events()
+                    if event["event_type"] == "openclaw_identity_crosswalk_recorded"
+                ]
+                self.assertEqual(len(crosswalk_events), 2)
             finally:
                 ledger.close()
 
@@ -106,6 +129,70 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             self.assertTrue(third["ok"])
             self.assertEqual(third["results"][0]["stop_reason"], "already_terminal")
             self.assertEqual(third["results"][0]["terminal_event_count"], 1)
+            self.assertEqual(third["results"][0]["identity_crosswalk_status"], "already_recorded")
+            ledger = WorkflowLedger(root / "awk-ledger.sqlite3")
+            try:
+                event_counts = ledger.connection.execute(
+                    """
+                    SELECT event_type, COUNT(*) AS count
+                    FROM events
+                    WHERE event_type IN (?, ?)
+                    GROUP BY event_type
+                    """,
+                    ("workflow_terminal", "openclaw_identity_crosswalk_recorded"),
+                ).fetchall()
+                self.assertEqual(
+                    {row["event_type"]: row["count"] for row in event_counts},
+                    {"workflow_terminal": 1, "openclaw_identity_crosswalk_recorded": 2},
+                )
+            finally:
+                ledger.close()
+
+    def test_terminal_rerun_rejects_changed_crosswalk_receipt_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("weekly",))
+            artifact_id = "awk-cutover-weekly-test"
+            self.write_openclaw_done_state(openclaw, artifact_id, "Weekly")
+
+            first = run_owned_completion_bridge(
+                ledger_path=root / "awk-ledger.sqlite3",
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                now=NOW,
+            )
+            self.assertTrue(first["ok"])
+            self.assertEqual(first["results"][0]["terminal_event_count"], 1)
+
+            runner = (
+                openclaw
+                / "workspace-main"
+                / "state"
+                / "agent_review_runner"
+                / "receipts"
+                / "awk_openclaw"
+                / f"{artifact_id}-20260601T160000Z.json"
+            )
+            runner_data = json.loads(runner.read_text(encoding="utf-8"))
+            runner_data["work_ledger"]["receipt_id"] = "receipt-for-a-different-work-item"
+            runner.write_text(json.dumps(runner_data), encoding="utf-8")
+
+            second = run_owned_completion_bridge(
+                ledger_path=root / "awk-ledger.sqlite3",
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                now=NOW,
+            )
+
+            self.assertFalse(second["ok"])
+            result = second["results"][0]
+            self.assertEqual(result["status"], "identity_mismatch")
+            self.assertEqual(result["stop_reason"], "openclaw_identity_crosswalk_mismatch")
+            self.assertEqual(result["workflow_status"], "done")
+            self.assertEqual(result["terminal_event_count"], 1)
+            self.assertEqual(result["identity_crosswalk_status"], "rejected")
+            self.assertEqual(result["identity_crosswalk_errors"][0]["field"], "work_ledger_receipt_id")
 
     def test_unacknowledged_artifact_waits_at_human_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -131,6 +218,39 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
                 if run["stage_id"] == "blackboard_acknowledgement"
             ][0]
             self.assertEqual(waiting["status"], "waiting_on_human")
+
+    def test_mismatched_artifact_record_id_rejects_crosswalk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("ivy",))
+            self.write_openclaw_done_state(openclaw, "awk-cutover-ivy-test", "Ivy/Jonah")
+            record = (
+                openclaw
+                / "workspace-main"
+                / "state"
+                / "artifact_outbox"
+                / "records"
+                / "awk-cutover-ivy-test.json"
+            )
+            record_data = json.loads(record.read_text(encoding="utf-8"))
+            record_data["artifact_id"] = "different-artifact"
+            record.write_text(json.dumps(record_data), encoding="utf-8")
+
+            summary = run_owned_completion_bridge(
+                ledger_path=root / "awk-ledger.sqlite3",
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                now=NOW,
+            )
+
+            self.assertFalse(summary["ok"])
+            result = summary["results"][0]
+            self.assertEqual(result["status"], "identity_mismatch")
+            self.assertEqual(result["stop_reason"], "openclaw_identity_crosswalk_mismatch")
+            self.assertEqual(result["identity_crosswalk_status"], "rejected")
+            self.assertEqual(result["identity_crosswalk_errors"][0]["source"], "openclaw_artifact_record")
+            self.assertEqual(result["terminal_event_count"], 0)
 
     def test_mismatched_handoff_artifact_id_does_not_import_acknowledgement(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -159,9 +279,13 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             )
 
             self.assertFalse(summary["ok"])
-            self.assertEqual(summary["results"][0]["status"], "waiting_on_human")
-            self.assertFalse(summary["results"][0]["acknowledged"])
-            self.assertEqual(summary["results"][0]["terminal_event_count"], 0)
+            result = summary["results"][0]
+            self.assertEqual(result["status"], "identity_mismatch")
+            self.assertEqual(result["stop_reason"], "openclaw_identity_crosswalk_mismatch")
+            self.assertEqual(result["identity_crosswalk_status"], "rejected")
+            self.assertEqual(result["identity_crosswalk_errors"][0]["source"], "openclaw_handoff")
+            self.assertFalse(result["acknowledged"])
+            self.assertEqual(result["terminal_event_count"], 0)
 
     def test_mismatched_runner_receipt_artifact_id_keeps_verify_stage_queued(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -193,7 +317,10 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             result = summary["results"][0]
             self.assertTrue(result["acknowledged"])
             self.assertFalse(result["runner_done"])
-            self.assertEqual(result["status"], "waiting_on_openclaw_runner")
+            self.assertEqual(result["status"], "identity_mismatch")
+            self.assertEqual(result["stop_reason"], "openclaw_identity_crosswalk_mismatch")
+            self.assertEqual(result["identity_crosswalk_status"], "rejected")
+            self.assertEqual(result["identity_crosswalk_errors"][0]["source"], "openclaw_runner_receipt")
             self.assertEqual(result["terminal_event_count"], 0)
 
     def write_cutover_receipt(self, root: Path, lanes: tuple[str, ...]) -> Path:
@@ -235,6 +362,11 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
                     "action": "continue_awk_workflow",
                     "owner": "main",
                     "title": title,
+                    "work_ledger": {
+                        "handoff_id": f"handoff-{artifact_id}",
+                        "work_id": f"work-{artifact_id}",
+                        "work_item_id": f"item-{artifact_id}",
+                    },
                 },
                 indent=2,
                 sort_keys=True,
@@ -254,6 +386,10 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
                     "status": "approved",
                     "owner": "awk_openclaw",
                     "title": title,
+                    "work_ledger": {
+                        "work_id": f"work-{artifact_id}",
+                        "work_item_id": f"item-{artifact_id}",
+                    },
                 },
                 indent=2,
                 sort_keys=True,
@@ -278,6 +414,11 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
                     "status": status,
                     "owner": "main",
                     "summary": "Verified migrated AWK lane handoff.",
+                    "work_ledger": {
+                        "receipt_id": f"receipt-{artifact_id}",
+                        "work_id": f"work-{artifact_id}",
+                        "work_item_id": f"item-{artifact_id}",
+                    },
                 },
                 indent=2,
                 sort_keys=True,
