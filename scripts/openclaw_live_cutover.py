@@ -925,7 +925,13 @@ def _render_receipt_md(receipt: Mapping[str, Any]) -> str:
             "",
             f"- Outbox: `{telegram.get('outbox_message_path')}`",
             f"- Send status: `{send_result.get('status')}`",
-            f"- Send ref: `{send_result.get('stdout_ref') or send_result.get('reason') or send_result.get('error')}`",
+            "- Send ref: `{}`".format(
+                send_result.get("publish_receipt_ref")
+                or send_result.get("message_id")
+                or send_result.get("stdout_ref")
+                or send_result.get("reason")
+                or send_result.get("error")
+            ),
             "",
             "## Blocked Actions",
             "",

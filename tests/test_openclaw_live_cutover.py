@@ -117,6 +117,8 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
             self.assertEqual(receipt["telegram"]["send_result"]["status"], "sent")
             self.assertEqual(receipt["telegram"]["send_result"]["message_id"], "message/ref/123")
             self.assertTrue(receipt["telegram"]["upstream_obsidian_trusted"])
+            receipt_md = (output_dir / "cutover_receipt.md").read_text(encoding="utf-8")
+            self.assertIn("Send ref: `receipt:cutover:telegram:live-pointer:succeeded`", receipt_md)
             for note in receipt["obsidian"]["notes"]:
                 note_path = Path(note["note_path"])
                 self.assertTrue(note_path.exists())
