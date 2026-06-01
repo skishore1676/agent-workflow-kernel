@@ -114,6 +114,14 @@ from .receipts import (
     build_runtime_provenance,
     receipt_digest,
 )
+from .reviewers import (
+    AUTOMATED_SUMAN_REVIEWER_HUMAN_REF,
+    AUTOMATED_SUMAN_REVIEWER_ID,
+    AUTOMATED_SUMAN_REVIEWER_SCHEMA,
+    AUTOMATED_SUMAN_REVIEWER_SURFACE,
+    AutomatedSumanReviewResult,
+    AutomatedSumanReviewer,
+)
 from .runner import OwnedRunSummary, RunnerResult, RunnerStep, WorkflowRunner
 from .kernel import (
     HumanGateSurfaceResult,
@@ -135,9 +143,15 @@ __all__ = [
     "AdapterResult",
     "AdapterRegistry",
     "AdapterRegistryError",
+    "AUTOMATED_SUMAN_REVIEWER_HUMAN_REF",
+    "AUTOMATED_SUMAN_REVIEWER_ID",
+    "AUTOMATED_SUMAN_REVIEWER_SCHEMA",
+    "AUTOMATED_SUMAN_REVIEWER_SURFACE",
     "ApprovalDecision",
     "ApprovalValidation",
     "ArtifactRef",
+    "AutomatedSumanReviewResult",
+    "AutomatedSumanReviewer",
     "CapabilitySet",
     "ContextPacket",
     "DryRunObsidianSurfaceAdapter",

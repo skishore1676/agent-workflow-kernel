@@ -222,6 +222,8 @@ class WorkflowRunner:
         title: str | None = None,
         human_ask: str | None = None,
         human_ref: str | None = None,
+        automated_reviewer: Any | None = None,
+        reviewer_context: Mapping[str, Any] | None = None,
         test_only: bool = True,
         non_live: bool = True,
         now: datetime | str | None = None,
@@ -248,6 +250,7 @@ class WorkflowRunner:
 
         kernel_steps: list[Any] = []
         surface_results: list[Any] = []
+        reviewer_human_ref = human_ref
 
         for _ in range(max_steps):
             waiting_run = self.ledger.find_waiting_human_stage_run(
@@ -299,6 +302,29 @@ class WorkflowRunner:
                             surface_results=tuple(surface_results),
                         )
 
+                    if automated_reviewer is not None:
+                        reviewer_surface_ref = dict(surface_ref)
+                        readback_outputs = getattr(readback, "outputs", {})
+                        if isinstance(readback_outputs, Mapping):
+                            readback_payload = readback_outputs.get("readback")
+                            if isinstance(readback_payload, Mapping) and readback_payload.get("note_path"):
+                                reviewer_surface_ref["note_path"] = readback_payload["note_path"]
+                        review = automated_reviewer.review_human_gate_surface(
+                            surface_ref=reviewer_surface_ref,
+                            readback_result=readback,
+                            context=reviewer_context or {},
+                        )
+                        surface_results.append(review)
+                        if getattr(review, "status", None) != "succeeded":
+                            return OwnedRunSummary(
+                                status="blocked",
+                                instance_id=resolved_instance_id,
+                                stop_reason="human_gate_automated_review_blocked",
+                                kernel_steps=tuple(kernel_steps),
+                                surface_results=tuple(surface_results),
+                            )
+                        reviewer_human_ref = getattr(review, "human_ref", None) or reviewer_human_ref
+
                 if ingest_human_decision:
                     if surface_ref is None:
                         return OwnedRunSummary(
@@ -314,7 +340,7 @@ class WorkflowRunner:
                         surface_adapter_ref=surface_adapter_ref,
                         allowed_decisions=allowed_decisions,
                         evidence_refs=evidence_refs,
-                        human_ref=human_ref,
+                        human_ref=reviewer_human_ref,
                         now=now,
                     )
                     surface_results.append(ingest)
