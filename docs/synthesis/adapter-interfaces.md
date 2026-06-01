@@ -376,9 +376,10 @@ Current live write adapters:
 - `LiveObsidianMarkdownSurfaceAdapter` writes Markdown beneath a configured
   vault root and allowed relative prefix, verifies the written path and content
   hash by readback, and can ingest one checked Markdown decision.
-- `OpenClawTelegramSurfaceAdapter` sends through
+- `agent_workflow_kernel_openclaw.OpenClawTelegramSurfaceAdapter` sends through
   `openclaw message send --channel telegram ... --json` only when live sending
-  is enabled and the packet authorizes the operator-surface send.
+  is enabled and the packet authorizes the operator-surface send. This adapter
+  is packaged with the OpenClaw adapter, not exported from the portable kernel.
 
 Both adapters fail closed for public publish, trading or money movement, auth or
 secrets, deploy or production mutation, destructive actions, and unscoped live

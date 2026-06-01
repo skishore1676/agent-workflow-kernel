@@ -17,24 +17,49 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_PATH = ROOT / "packages" / "kernel"
 OPENCLAW_ADAPTER_PATH = ROOT / "packages" / "adapters" / "openclaw"
-for package_path in (str(KERNEL_PATH), str(OPENCLAW_ADAPTER_PATH), str(ROOT / "scripts")):
-    if package_path not in sys.path:
-        sys.path.insert(0, package_path)
 
-from agent_workflow_kernel import (  # noqa: E402
-    AUTOMATED_SUMAN_REVIEWER_HUMAN_REF,
-    AdapterFamily,
-    AdapterInvocation,
-    LiveObsidianMarkdownSurfaceAdapter,
-    SandboxObsidianMarkdownSurfaceAdapter,
-    SandboxTelegramOutboxSurfaceAdapter,
-    digest_data,
-    to_plain_data,
-)
-from agent_workflow_kernel_openclaw import OpenClawBlackboardReviewAdapter  # noqa: E402
-from agent_workflow_kernel.local_adapters import OpenClawTelegramSurfaceAdapter  # noqa: E402
-from openclaw_auto_review_packet import auto_review_packet  # noqa: E402
-from openclaw_two_lane_onboarding import build_onboarding_packet  # noqa: E402
+
+def _ensure_source_checkout_imports() -> None:
+    for package_path in (str(KERNEL_PATH), str(OPENCLAW_ADAPTER_PATH), str(ROOT / "scripts")):
+        if package_path not in sys.path:
+            sys.path.insert(0, package_path)
+
+
+try:
+    from agent_workflow_kernel import (  # noqa: E402
+        AUTOMATED_SUMAN_REVIEWER_HUMAN_REF,
+        AdapterFamily,
+        AdapterInvocation,
+        LiveObsidianMarkdownSurfaceAdapter,
+        SandboxObsidianMarkdownSurfaceAdapter,
+        SandboxTelegramOutboxSurfaceAdapter,
+        digest_data,
+        to_plain_data,
+    )
+    from agent_workflow_kernel_openclaw import (  # noqa: E402
+        OpenClawBlackboardReviewAdapter,
+        OpenClawTelegramSurfaceAdapter,
+    )
+    from openclaw_auto_review_packet import auto_review_packet  # noqa: E402
+    from openclaw_two_lane_onboarding import build_onboarding_packet  # noqa: E402
+except ModuleNotFoundError:
+    _ensure_source_checkout_imports()
+    from agent_workflow_kernel import (  # noqa: E402
+        AUTOMATED_SUMAN_REVIEWER_HUMAN_REF,
+        AdapterFamily,
+        AdapterInvocation,
+        LiveObsidianMarkdownSurfaceAdapter,
+        SandboxObsidianMarkdownSurfaceAdapter,
+        SandboxTelegramOutboxSurfaceAdapter,
+        digest_data,
+        to_plain_data,
+    )
+    from agent_workflow_kernel_openclaw import (  # noqa: E402
+        OpenClawBlackboardReviewAdapter,
+        OpenClawTelegramSurfaceAdapter,
+    )
+    from openclaw_auto_review_packet import auto_review_packet  # noqa: E402
+    from openclaw_two_lane_onboarding import build_onboarding_packet  # noqa: E402
 
 
 CUTOVER_SCHEMA = "workflow.kernel.openclaw-live-cutover-receipt.v1"

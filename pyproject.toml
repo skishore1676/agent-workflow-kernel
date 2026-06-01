@@ -17,7 +17,16 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["packages/kernel"]
+where = [
+  "packages/kernel",
+  "packages/adapters/openclaw",
+]
+include = [
+  "agent_workflow_kernel",
+  "agent_workflow_kernel.*",
+  "agent_workflow_kernel_openclaw",
+  "agent_workflow_kernel_openclaw.*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
