@@ -24,11 +24,13 @@ from agent_workflow_kernel import (  # noqa: E402
     AUTOMATED_SUMAN_REVIEWER_HUMAN_REF,
     AdapterFamily,
     AdapterInvocation,
+    LiveObsidianMarkdownSurfaceAdapter,
     SandboxObsidianMarkdownSurfaceAdapter,
     SandboxTelegramOutboxSurfaceAdapter,
     digest_data,
     to_plain_data,
 )
+from agent_workflow_kernel.local_adapters import OpenClawTelegramSurfaceAdapter  # noqa: E402
 from openclaw_auto_review_packet import auto_review_packet  # noqa: E402
 from openclaw_two_lane_onboarding import build_onboarding_packet  # noqa: E402
 
@@ -61,6 +63,9 @@ GENERATED_NAMES = (
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    telegram_target = args.telegram_target
+    if args.telegram_target_env:
+        telegram_target = os.environ.get(args.telegram_target_env)
     try:
         receipt = build_live_cutover(
             packet_dir=args.packet_dir,
@@ -68,12 +73,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             weekly_fixture=args.weekly_fixture,
             vault_root=args.vault_root,
             obsidian_prefix=args.obsidian_prefix,
-            telegram_target=args.telegram_target,
+            telegram_target=telegram_target,
             telegram_account=args.telegram_account,
             allow_live_obsidian=args.allow_live_obsidian,
             allow_live_telegram=args.allow_live_telegram,
             output_dir=args.output_dir,
             telegram_send_cmd=args.telegram_send_cmd,
+            telegram_delivery=args.telegram_delivery,
         )
     except Exception as exc:
         print(_canonical_json({"ok": False, "error": str(exc)}), file=sys.stderr, end="")
@@ -87,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "receipt_json": receipt["artifacts"]["receipt_json"],
                 "receipt_md": receipt["artifacts"]["receipt_md"],
                 "telegram_status": receipt["telegram"]["send_result"]["status"],
+                "obsidian_notes": [note.get("note_path") for note in receipt["obsidian"].get("notes", [])],
             }
         ),
         end="",
@@ -107,6 +114,7 @@ def build_live_cutover(
     allow_live_telegram: bool = False,
     output_dir: str | Path,
     telegram_send_cmd: str | None = None,
+    telegram_delivery: str = "subprocess",
 ) -> dict[str, Any]:
     """Build cutover review artifacts and a receipt without implicit live effects."""
 
@@ -164,6 +172,7 @@ def build_live_cutover(
         telegram_account=telegram_account,
         allow_live_telegram=allow_live_telegram,
         telegram_send_cmd=telegram_send_cmd,
+        telegram_delivery=telegram_delivery,
     )
 
     status = _overall_status(obsidian=obsidian, telegram=telegram, decisions=decisions)
@@ -218,12 +227,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weekly-fixture", type=Path, help="Weekly update live-readonly fixture JSON")
     parser.add_argument("--vault-root", type=Path, help="Obsidian/Northstar vault root for explicitly allowed writes")
     parser.add_argument("--obsidian-prefix", default="OpenClaw/Cutover", help="Relative note prefix")
+    parser.add_argument("--review-prefix", dest="obsidian_prefix", help="Alias for --obsidian-prefix")
     parser.add_argument("--telegram-target", help="Telegram target/chat for explicitly allowed sends")
+    parser.add_argument("--telegram-target-env", help="Environment variable containing Telegram target")
     parser.add_argument("--telegram-account", help="Telegram account/profile for explicitly allowed sends")
     parser.add_argument("--allow-live-obsidian", action="store_true")
+    parser.add_argument("--allow-obsidian-write", dest="allow_live_obsidian", action="store_true")
     parser.add_argument("--allow-live-telegram", action="store_true")
+    parser.add_argument("--allow-telegram-send", dest="allow_live_telegram", action="store_true")
+    parser.add_argument("--telegram-delivery", default="subprocess", choices=("subprocess", "openclaw-message-send"))
     parser.add_argument("--telegram-send-cmd", help="Telegram send command; defaults to AWK_TELEGRAM_SEND_CMD or telegram-send")
-    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--output-dir", "--artifact-dir", required=True, type=Path)
+    parser.add_argument("--openclaw-root", type=Path, help="Accepted for OpenClaw bridge compatibility; recorded by bridge.")
+    parser.add_argument("--no-public-publish", action="store_true")
+    parser.add_argument("--no-trading", action="store_true")
+    parser.add_argument("--no-auth", action="store_true")
+    parser.add_argument("--no-deploy", action="store_true")
+    parser.add_argument("--no-destructive", action="store_true")
     return parser
 
 
@@ -375,13 +395,24 @@ def _publish_obsidian_notes(
     allow_live_obsidian: bool,
     blocked_actions: Sequence[str],
 ) -> dict[str, Any]:
-    adapter_root = vault_root if allow_live_obsidian else output_root / "obsidian-sandbox"
-    assert adapter_root is not None
-    adapter = SandboxObsidianMarkdownSurfaceAdapter(
-        adapter_root,
-        created_at=DETERMINISTIC_CREATED_AT,
-        canonical_surface="openclaw_cutover_obsidian",
-    )
+    if allow_live_obsidian:
+        if vault_root is None:
+            raise ValueError("vault_root is required for live Obsidian writes")
+        adapter_root = vault_root
+        adapter = LiveObsidianMarkdownSurfaceAdapter(
+            adapter_root,
+            allowed_relative_prefix=obsidian_prefix,
+            allow_live_write=True,
+            created_at=DETERMINISTIC_CREATED_AT,
+            canonical_surface="openclaw_cutover_obsidian",
+        )
+    else:
+        adapter_root = output_root / "obsidian-sandbox"
+        adapter = SandboxObsidianMarkdownSurfaceAdapter(
+            adapter_root,
+            created_at=DETERMINISTIC_CREATED_AT,
+            canonical_surface="openclaw_cutover_obsidian",
+        )
     notes: list[dict[str, Any]] = []
     lanes = _mapping(packet_summary.get("lanes"))
     for lane_id in sorted(lanes):
@@ -422,16 +453,14 @@ def _publish_obsidian_notes(
                 "human_ref": "operator-visible-cutover-review",
                 "human_ask": _obsidian_human_ask(lane_id, lane, lane_decisions),
                 "allowed_decisions": ("acknowledged", "needs_follow_up", "blocked"),
-                "requested_action": "Review this cutover artifact as evidence only; do not authorize mutation.",
-                "exact_action": (
-                    "Surface the local/test OpenClaw AWK review state for operator readback only; "
-                    "do not mutate OpenClaw, oldmac, Northstar beyond this configured note path, "
-                    "Telegram except the explicit pointer gate, public publishing, auth, deploy, or trading."
-                ),
+                "requested_action": "Review this cutover artifact as evidence only.",
+                "exact_action": "Surface the OpenClaw AWK review state for operator readback only within this configured note path.",
                 "action_fingerprint": action_fingerprint,
                 "evidence_refs": _lane_evidence_refs(lane, auto_summary, lane_decisions),
-                "test_only": True,
-                "non_live": True,
+                "test_only": not allow_live_obsidian,
+                "non_live": not allow_live_obsidian,
+                "live_operator_surface_allowed": allow_live_obsidian,
+                "public_publish_blocked": True,
             },
         )
         surface_ref = dict(publish.outputs.get("surface_ref", {}))
@@ -473,6 +502,7 @@ def _publish_telegram_pointer(
     telegram_account: str | None,
     allow_live_telegram: bool,
     telegram_send_cmd: str | None,
+    telegram_delivery: str,
 ) -> dict[str, Any]:
     adapter = SandboxTelegramOutboxSurfaceAdapter(
         output_root / "telegram-outbox",
@@ -518,20 +548,24 @@ def _publish_telegram_pointer(
     )
     surface_ref = dict(publish.outputs.get("surface_ref", {}))
     readback = adapter.readback(surface_ref) if surface_ref else None
-    send_result = (
-        _send_telegram_pointer(
+    live_readback_hash = None
+    if allow_live_telegram:
+        live = _send_live_telegram_pointer(
             pointer=pointer,
             telegram_target=telegram_target or "",
             telegram_account=telegram_account or "",
+            output_root=output_root,
             telegram_send_cmd=telegram_send_cmd,
+            telegram_delivery=telegram_delivery,
         )
-        if allow_live_telegram
-        else {
+        send_result = live["send_result"]
+        live_readback_hash = live.get("readback_hash")
+    else:
+        send_result = {
             "status": "not_sent",
             "reason": "allow_live_telegram was not set",
             "performed": False,
         }
-    )
     return {
         "enabled": allow_live_telegram,
         "adapter_id": adapter.adapter_id,
@@ -540,6 +574,7 @@ def _publish_telegram_pointer(
         "readback_hash": _hash_file(Path(str(publish.outputs.get("message_path"))))
         if publish.outputs.get("message_path")
         else None,
+        "live_readback_hash": live_readback_hash,
         "readback_receipt_id": getattr(readback, "receipt_id", None),
         "target": telegram_target,
         "account": telegram_account,
@@ -588,6 +623,82 @@ def _send_telegram_pointer(
     }
 
 
+def _send_live_telegram_pointer(
+    *,
+    pointer: str,
+    telegram_target: str,
+    telegram_account: str,
+    output_root: Path,
+    telegram_send_cmd: str | None,
+    telegram_delivery: str,
+) -> dict[str, Any]:
+    command = ("openclaw",)
+    if telegram_send_cmd:
+        command = tuple(shlex.split(telegram_send_cmd))
+    elif telegram_delivery != "openclaw-message-send":
+        command = tuple(shlex.split(os.environ.get("AWK_TELEGRAM_SEND_CMD") or "openclaw"))
+    adapter = OpenClawTelegramSurfaceAdapter(
+        account=telegram_account,
+        target=telegram_target,
+        allow_live_send=True,
+        created_at=DETERMINISTIC_CREATED_AT,
+        canonical_surface="openclaw_cutover_telegram",
+        receipt_dir=output_root / "telegram-live-receipts",
+        command=command,
+    )
+    action_fingerprint = digest_data(
+        {
+            "schema": CUTOVER_SCHEMA,
+            "telegram_target": telegram_target,
+            "telegram_account": telegram_account,
+            "pointer": pointer,
+            "delivery": telegram_delivery,
+        }
+    )
+    invocation = AdapterInvocation(
+        invocation_id="cutover:telegram:live-pointer",
+        workflow_id="openclaw_cutover",
+        instance_id="openclaw-cutover",
+        stage_run_id="telegram_live_pointer",
+        adapter_family=AdapterFamily.SURFACE,
+        adapter_id=adapter.adapter_id,
+        operation="publish",
+        input_ref="cutover:obsidian-notes",
+        context_packet_ref="cutover:telegram-live-pointer",
+        idempotency_key=f"cutover:telegram-live:{action_fingerprint}",
+    )
+    publish = adapter.publish(
+        invocation,
+        {
+            "title": "OpenClaw AWK cutover pointer",
+            "message": pointer,
+            "stage_id": "telegram_live_pointer",
+            "gate_id": "cutover:telegram-live-pointer",
+            "allowed_decisions": ("acknowledged", "needs_follow_up", "blocked"),
+            "requested_action": "Read this operator-surface pointer.",
+            "exact_action": "Send this concise operator-surface pointer to the configured Telegram target.",
+            "action_fingerprint": action_fingerprint,
+            "evidence_refs": (),
+            "live_operator_surface_allowed": True,
+            "public_publish_blocked": True,
+        },
+    )
+    surface_ref = dict(publish.outputs.get("surface_ref", {}))
+    readback = adapter.readback(surface_ref) if surface_ref else None
+    readback_outputs = _mapping(readback.runtime_provenance.get("outputs")) if readback else {}
+    return {
+        "send_result": {
+            "status": "sent" if publish.status == "succeeded" else "blocked",
+            "performed": publish.status == "succeeded",
+            "publish_receipt_ref": publish.receipt_ref,
+            "message_id": publish.outputs.get("message_id"),
+            "command": publish.outputs.get("command"),
+            "error": _mapping(publish.outputs.get("error")).get("message"),
+        },
+        "readback_hash": digest_data(readback_outputs) if readback_outputs else None,
+    }
+
+
 def _telegram_pointer(
     *,
     obsidian: Mapping[str, Any],
@@ -603,7 +714,7 @@ def _telegram_pointer(
     safety = (
         f"safety: obsidian_enabled={allow_live_obsidian}; "
         f"telegram_enabled={allow_live_telegram}; mutation_permission_granted=False; "
-        f"blocked={','.join(blocked_actions)}"
+        "protected-action-gates=closed; see receipt for details"
     )
     return "\n".join(["OpenClaw AWK cutover review artifacts ready.", *note_lines, safety])
 

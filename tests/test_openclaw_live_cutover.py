@@ -77,9 +77,9 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
             output_dir = root / "cutover"
             vault_root = root / "sandbox-vault"
             completed = subprocess.CompletedProcess(
-                args=["telegram-send"],
+                args=["openclaw"],
                 returncode=0,
-                stdout="message/ref/123\n",
+                stdout='{"message_id":"message/ref/123"}\n',
                 stderr="",
             )
 
@@ -94,7 +94,7 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
                     allow_live_obsidian=True,
                     allow_live_telegram=True,
                     output_dir=output_dir,
-                    telegram_send_cmd="telegram-send",
+                    telegram_send_cmd="openclaw",
                 )
 
             self.assertEqual(receipt["status"], "ready")
@@ -114,7 +114,7 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
             self.assertNotIn("live_obsidian_or_northstar_write", receipt["safety"]["blocked_actions"])
             self.assertNotIn("telegram_send", receipt["safety"]["blocked_actions"])
             self.assertEqual(receipt["telegram"]["send_result"]["status"], "sent")
-            self.assertEqual(receipt["telegram"]["send_result"]["stdout_ref"], "message/ref/123")
+            self.assertEqual(receipt["telegram"]["send_result"]["message_id"], "message/ref/123")
             for note in receipt["obsidian"]["notes"]:
                 note_path = Path(note["note_path"])
                 self.assertTrue(note_path.exists())
