@@ -17,6 +17,7 @@ from agent_workflow_kernel import (  # noqa: E402
     AdapterRegistryError,
     ArtifactRef,
     ApprovalDecision,
+    FailureClass,
     HumanApprovalReceipt,
     KernelRuntimeConfig,
     LocalFakeRuntimeAdapter,
@@ -545,6 +546,63 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertEqual([row["stage_run_id"] for row in rows], ["instance-retry:draft:1", "instance-retry:draft:2"])
         self.assertEqual(rows[0]["idempotency_key"], rows[1]["idempotency_key"])
         self.assertEqual(rows[1]["parent_stage_run_id"], "instance-retry:draft:1")
+
+    def test_retry_policy_handles_adapter_exception_as_recoverable_runtime_failure(self) -> None:
+        class TimesOutOnceRuntimeAdapter(LocalFakeRuntimeAdapter):
+            adapter_id = "runtime.times_out_once"
+
+            def __init__(self, *, created_at: str) -> None:
+                super().__init__(created_at=created_at)
+                self.calls = 0
+
+            def invoke(self, invocation, runtime_input):
+                self.calls += 1
+                if self.calls == 1:
+                    raise TimeoutError("openclaw agent timed out after 180s")
+                return super().invoke(invocation, runtime_input)
+
+        adapter = TimesOutOnceRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry(
+            (AdapterRegistration.from_runtime_adapter(adapter, replay_safe=True),)
+        )
+        workflow = WorkflowDef(
+            id="toy-timeout-retry",
+            version="0.1.0",
+            name="Toy timeout retry",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter=adapter.adapter_id,
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    retry={"enabled": True, "max_attempts": 2, "backoff_seconds": 0},
+                ),
+            ),
+            transitions=(Transition(from_stage="draft", on="done", terminal="done"),),
+        )
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-timeout-retry", inputs={}, now=self.now)
+
+        first = kernel.run_once(now=self.now)
+        second = kernel.run_once(now=self.now)
+
+        self.assertEqual(first.decision, "retry")
+        self.assertIn("queued append-only retry", first.failure_summary or "")
+        self.assertEqual(second.decision, "succeeded")
+        first_run = self.ledger.get_stage_run("instance-timeout-retry:draft:1")
+        retry_run = self.ledger.get_stage_run("instance-timeout-retry:draft:2")
+        self.assertIsNotNone(first_run)
+        self.assertIsNotNone(retry_run)
+        assert first_run is not None
+        assert retry_run is not None
+        self.assertEqual(first_run.status, StageRunStatus.FAILED)
+        self.assertEqual(first_run.failure_class, FailureClass.RUNTIME_FAILURE)
+        self.assertEqual(retry_run.status, StageRunStatus.SUCCEEDED)
 
     def test_human_gate_waits_without_adapter_invocation(self) -> None:
         workflow = WorkflowDef(

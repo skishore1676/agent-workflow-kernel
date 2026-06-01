@@ -1062,16 +1062,61 @@ class WorkflowKernel:
             try:
                 adapter_result = registration.adapter.invoke(invocation, runtime_input)
             except Exception as exc:
+                error_summary = str(exc)
+                response_hash = digest_data({"adapter_exception": error_summary})
                 self.ledger.complete_adapter_invocation(
                     invocation_id=invocation.invocation_id,
                     status="failed",
                     actor=self.config.owner_id,
-                    response_hash=digest_data({"adapter_exception": str(exc)}),
+                    response_hash=response_hash,
                     error_class="adapter_exception",
-                    error_summary=str(exc),
+                    error_summary=error_summary,
                     completed_at=created_at,
                 )
-                raise
+                adapter_result = AdapterResult(
+                    invocation_id=invocation.invocation_id,
+                    status="failed",
+                    outputs={
+                        "error_class": "adapter_exception",
+                        "error_summary": error_summary,
+                    },
+                    residual_risk="Adapter raised before a trusted output was produced.",
+                    next_hint="Retry only through the runner recovery policy.",
+                )
+                receipt = _make_kernel_adapter_receipt(
+                    invocation,
+                    status=adapter_result.status,
+                    summary=f"Kernel invocation of {registration.adapter_id}.{operation} raised before trusted output.",
+                    created_at=created_at,
+                    stage_id=stage.id,
+                    artifact_refs=(),
+                    outputs=adapter_result.outputs,
+                    checks_run=("adapter_registered", "policy_preflight", "adapter_exception_recorded"),
+                    policy_snapshot=_policy_snapshot(gate, effective_policy),
+                    residual_risk=adapter_result.residual_risk,
+                    next_action=adapter_result.next_hint,
+                    rendered_context=rendered_context,
+                )
+                state["adapter_result"] = adapter_result
+                state["receipt_id"] = receipt.receipt_id
+                retry = _retry_result_for_adapter_failure(
+                    stage=stage,
+                    run=run,
+                    registration=registration,
+                    adapter_result=adapter_result,
+                    created_at=created_at,
+                )
+                if retry is not None:
+                    state["failure_summary"] = retry.failure_summary
+                    return replace(retry, receipt=receipt, output_hash=response_hash)
+                state["failure_summary"] = error_summary
+                return RunnerResult(
+                    decision="failed",
+                    receipt=receipt,
+                    output_hash=response_hash,
+                    failure_class=FailureClass.RUNTIME_FAILURE,
+                    failure_summary=error_summary,
+                )
             response_hash = digest_data(adapter_result)
             self.ledger.complete_adapter_invocation(
                 invocation_id=invocation.invocation_id,

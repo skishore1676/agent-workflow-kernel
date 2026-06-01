@@ -96,6 +96,10 @@ class LiveOperatorSurfaceAdaptersTest(unittest.TestCase):
                 artifact_title="Weekly improvement review",
                 artifact_link="artifact.md",
                 artifact_markdown="## Improvement Review\n\nJarvis produced the reviewable payload.",
+                executive_summary="Jarvis prepared a concise weekly improvement review for operator approval.",
+                why_this_matters="This proves the note leads with the operator decision instead of machine provenance.",
+                recommended_action="Approve only if the linked artifact matches the expected lane outcome.",
+                risk_summary="The decision remains scoped to the review gate.",
             )
             first = adapter.publish(call, packet)
             second = adapter.publish(call, packet)
@@ -130,10 +134,16 @@ class LiveOperatorSurfaceAdaptersTest(unittest.TestCase):
         self.assertTrue(readback.runtime_provenance["outputs"]["hash_matches"])
         self.assertIn("live_operator_surface_allowed: true", note_text)
         self.assertIn("public_publish_blocked: true", note_text)
+        self.assertIn("## Operator Brief", note_text)
+        self.assertIn("<summary>Evidence and provenance for audit/ingest</summary>", note_text)
+        self.assertLess(note_text.index("## Operator Brief"), note_text.index("### Review Context"))
+        self.assertLess(note_text.index("### Review Context"), note_text.index("\n## Decision\n"))
         self.assertIn("## Artifact To Review", note_text)
         self.assertIn("### Weekly improvement review", note_text)
         self.assertIn("[Weekly improvement review](<artifact.md>)", note_text)
+        self.assertIn("<summary>Full Weekly improvement review</summary>", note_text)
         self.assertIn("Jarvis produced the reviewable payload.", note_text)
+        self.assertTrue(first.outputs["operator_brief"]["executive_summary"])
         self.assertTrue(first.outputs["artifact_review"]["embedded"])
         self.assertEqual(decisions[0].status, "succeeded")
         outputs = decisions[0].runtime_provenance["outputs"]

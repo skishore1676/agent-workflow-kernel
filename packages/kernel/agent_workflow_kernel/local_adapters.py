@@ -894,6 +894,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
         requested_action = str(packet.get("requested_action") or exact_action).strip()
         artifact_review = _artifact_review_from_packet(packet)
         prompt_provenance = _prompt_provenance_from_packet(packet)
+        operator_brief = _operator_brief_from_packet(packet)
         note_text = _render_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -909,6 +910,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             evidence_refs=evidence_refs,
             artifact_review=artifact_review,
             prompt_provenance=prompt_provenance,
+            operator_brief=operator_brief,
             test_only=bool(packet.get("test_only", True)),
             non_live=True,
             created_at=self.created_at,
@@ -984,6 +986,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             "evidence_refs": list(evidence_refs),
             "artifact_review": artifact_review,
             "prompt_provenance": prompt_provenance,
+            "operator_brief": operator_brief,
             "mutation_mode": self.mutation_mode,
             "write_class": "sandbox",
             "test_only": bool(packet.get("test_only", True)),
@@ -2195,6 +2198,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
         requested_action = str(packet.get("requested_action") or exact_action).strip()
         artifact_review = _artifact_review_from_packet(packet)
         prompt_provenance = _prompt_provenance_from_packet(packet)
+        operator_brief = _operator_brief_from_packet(packet)
         note_text = _render_live_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -2210,6 +2214,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
             evidence_refs=evidence_refs,
             artifact_review=artifact_review,
             prompt_provenance=prompt_provenance,
+            operator_brief=operator_brief,
             created_at=self.created_at,
         )
         idempotency_replayed = False
@@ -2286,6 +2291,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
             "evidence_refs": list(evidence_refs),
             "artifact_review": artifact_review,
             "prompt_provenance": prompt_provenance,
+            "operator_brief": operator_brief,
             "mutation_mode": "live",
             "write_class": "live_operator_surface",
             "live_operator_surface_allowed": True,
@@ -2783,6 +2789,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         requested_action = str(packet.get("requested_action") or exact_action).strip()
         artifact_review = _artifact_review_from_packet(packet)
         prompt_provenance = _prompt_provenance_from_packet(packet)
+        operator_brief = _operator_brief_from_packet(packet)
 
         safety_error = _non_live_safety_error(packet, require_test_only=False)
         if safety_error is not None:
@@ -2852,6 +2859,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             evidence_refs=evidence_refs,
             artifact_review=artifact_review,
             prompt_provenance=prompt_provenance,
+            operator_brief=operator_brief,
             test_only=test_only,
             non_live=non_live,
             created_at=self.created_at,
@@ -2885,6 +2893,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             "evidence_refs": list(evidence_refs),
             "artifact_review": artifact_review,
             "prompt_provenance": prompt_provenance,
+            "operator_brief": operator_brief,
             "test_only": test_only,
             "non_live": non_live,
         }
@@ -3210,16 +3219,20 @@ def _artifact_review_from_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
     intro = str(packet.get("artifact_intro") or "").strip()
     link = str(packet.get("artifact_link") or packet.get("artifact_path") or "").strip()
     markdown = str(packet.get("artifact_markdown") or packet.get("artifact_body") or "").strip()
+    display_mode = str(packet.get("artifact_display_mode") or "").strip().lower()
     if not any((title, intro, link, markdown)):
         return {}
     if not title:
         title = "Artifact To Review"
+    if display_mode not in {"", "inline", "details", "link_only"}:
+        display_mode = ""
     return {
         "title": title,
         "intro": intro,
         "link": link,
         "markdown": markdown,
         "embedded": bool(markdown),
+        "display_mode": display_mode,
     }
 
 
@@ -3228,23 +3241,80 @@ def _artifact_review_metadata(artifact_review: Mapping[str, Any]) -> dict[str, A
         "title": str(artifact_review.get("title") or ""),
         "link": str(artifact_review.get("link") or ""),
         "embedded": bool(artifact_review.get("embedded")),
+        "display_mode": str(artifact_review.get("display_mode") or ""),
     }
 
 
-def _render_artifact_review_section(artifact_review: Mapping[str, Any]) -> list[str]:
+def _operator_brief_from_packet(packet: Mapping[str, Any]) -> dict[str, str]:
+    fields = {
+        "executive_summary": str(packet.get("executive_summary") or packet.get("summary") or "").strip(),
+        "why_this_matters": str(packet.get("why_this_matters") or packet.get("why") or "").strip(),
+        "recommended_action": str(packet.get("recommended_action") or packet.get("recommendation") or "").strip(),
+        "risk_summary": str(packet.get("risk_summary") or packet.get("risk") or "").strip(),
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+def _operator_brief_metadata(operator_brief: Mapping[str, str]) -> dict[str, bool]:
+    return {key: bool(operator_brief.get(key)) for key in sorted(operator_brief)}
+
+
+def _render_operator_brief_section(
+    *,
+    operator_brief: Mapping[str, str],
+    human_ask: str,
+    artifact_review: Mapping[str, Any],
+) -> list[str]:
+    summary = str(operator_brief.get("executive_summary") or "").strip()
+    if not summary:
+        summary = str(
+            artifact_review.get("intro")
+            or human_ask
+            or "Review the linked artifact and choose one decision."
+        ).strip()
+    lines = ["## Operator Brief", "", summary, ""]
+    if operator_brief.get("why_this_matters"):
+        lines.extend(["## Why This Matters", "", str(operator_brief["why_this_matters"]), ""])
+    if operator_brief.get("recommended_action"):
+        lines.extend(["## Recommended Action", "", str(operator_brief["recommended_action"]), ""])
+    if operator_brief.get("risk_summary"):
+        lines.extend(["## Risk / Open Question", "", str(operator_brief["risk_summary"]), ""])
+    return lines
+
+
+def _render_artifact_review_section(
+    artifact_review: Mapping[str, Any],
+    *,
+    default_display_mode: str = "inline",
+) -> list[str]:
     if not artifact_review:
         return []
     title = str(artifact_review.get("title") or "Artifact To Review")
     intro = str(artifact_review.get("intro") or "").strip()
     link = str(artifact_review.get("link") or "").strip()
     markdown = str(artifact_review.get("markdown") or "").strip()
+    display_mode = str(artifact_review.get("display_mode") or default_display_mode).strip().lower()
+    if display_mode not in {"inline", "details", "link_only"}:
+        display_mode = default_display_mode
     lines = ["## Artifact To Review", "", f"### {title}", ""]
     if intro:
         lines.extend([intro, ""])
     if link:
         lines.extend([f"- Review source: [{title}](<{link}>)", ""])
-    if markdown:
+    if markdown and display_mode == "inline":
         lines.extend([markdown, ""])
+    elif markdown and display_mode == "details":
+        lines.extend(
+            [
+                "<details>",
+                f"<summary>Full {title}</summary>",
+                "",
+                markdown,
+                "",
+                "</details>",
+                "",
+            ]
+        )
     return lines
 
 
@@ -3286,6 +3356,7 @@ def _render_review_card(
     evidence_refs: tuple[str, ...],
     artifact_review: Mapping[str, Any],
     prompt_provenance: Mapping[str, Any],
+    operator_brief: Mapping[str, str],
     test_only: bool,
     non_live: bool,
     created_at: str,
@@ -3311,14 +3382,21 @@ def _render_review_card(
         metadata["artifact_review"] = _artifact_review_metadata(artifact_review)
     if prompt_provenance:
         metadata["prompt_provenance"] = _prompt_provenance_metadata(prompt_provenance)
+    if operator_brief:
+        metadata["operator_brief"] = _operator_brief_metadata(operator_brief)
     frontmatter = "\n".join(
         f"{key}: {json.dumps(value, sort_keys=True)}" for key, value in metadata.items()
     )
     evidence_lines = "\n".join(f"- `{ref}`" for ref in evidence_refs) or "- `none`"
-    artifact_lines = _render_artifact_review_section(artifact_review)
+    ask = human_ask or "Choose exactly one allowed decision below."
+    brief_lines = _render_operator_brief_section(
+        operator_brief=operator_brief,
+        human_ask=ask,
+        artifact_review=artifact_review,
+    )
+    artifact_lines = _render_artifact_review_section(artifact_review, default_display_mode="details")
     decision_lines = "\n".join(f"- [ ] `{decision}`" for decision in allowed_decisions)
     label = "TEST ONLY - NON-LIVE LOCAL REVIEW PACKET" if test_only else "LOCAL REVIEW PACKET - NON-LIVE"
-    ask = human_ask or "Choose exactly one allowed decision below."
     return "\n".join(
         [
             "---",
@@ -3329,7 +3407,18 @@ def _render_review_card(
             "",
             f"**{label}**",
             "",
-            "## Review Context",
+            *brief_lines,
+            "### Decision Scope",
+            f"- Requested action: `{requested_action}`",
+            f"- Exact action: `{exact_action}`",
+            "- This is a local/test review packet; it grants no live mutation permission.",
+            "- Comments are context only and do not authorize any live, external, destructive, auth, money, deploy, publish, Telegram, OpenClaw, oldmac, or trading action.",
+            "",
+            *artifact_lines,
+            "<details>",
+            "<summary>Evidence and provenance for audit/ingest</summary>",
+            "",
+            "### Review Context",
             f"- Workflow ID: `{invocation.workflow_id}`",
             f"- Instance ID: `{invocation.instance_id}`",
             f"- Stage ID: `{stage_id}`",
@@ -3338,18 +3427,15 @@ def _render_review_card(
             f"- Invocation ID: `{invocation.invocation_id}`",
             f"- Canonical surface: `{canonical_surface}`",
             f"- Human ref: `{human_ref}`",
-            f"- Requested action: `{requested_action}`",
-            f"- Exact action: `{exact_action}`",
             f"- Action fingerprint: `{action_fingerprint}`",
             f"- Prompt bundle: `{prompt_provenance.get('prompt_bundle_digest') or 'not-provided'}`",
             "",
-            *artifact_lines,
-            "## Evidence",
+            "### Evidence Refs",
             evidence_lines,
             "",
-            "## Decision",
-            ask,
+            "</details>",
             "",
+            "## Decision",
             "Check exactly one allowed decision. Comments are context only and do not authorize any live, external, destructive, auth, money, deploy, publish, Telegram, OpenClaw, oldmac, or trading action.",
             "",
             decision_lines,
@@ -3374,6 +3460,7 @@ def _render_live_review_card(
     evidence_refs: tuple[str, ...],
     artifact_review: Mapping[str, Any],
     prompt_provenance: Mapping[str, Any],
+    operator_brief: Mapping[str, str],
     created_at: str,
 ) -> str:
     metadata = {
@@ -3397,13 +3484,20 @@ def _render_live_review_card(
         metadata["artifact_review"] = _artifact_review_metadata(artifact_review)
     if prompt_provenance:
         metadata["prompt_provenance"] = _prompt_provenance_metadata(prompt_provenance)
+    if operator_brief:
+        metadata["operator_brief"] = _operator_brief_metadata(operator_brief)
     frontmatter = "\n".join(
         f"{key}: {json.dumps(value, sort_keys=True)}" for key, value in metadata.items()
     )
     evidence_lines = "\n".join(f"- `{ref}`" for ref in evidence_refs) or "- `none`"
-    artifact_lines = _render_artifact_review_section(artifact_review)
-    decision_lines = "\n".join(f"- [ ] `{decision}`" for decision in allowed_decisions)
     ask = human_ask or "Choose exactly one allowed decision below."
+    brief_lines = _render_operator_brief_section(
+        operator_brief=operator_brief,
+        human_ask=ask,
+        artifact_review=artifact_review,
+    )
+    artifact_lines = _render_artifact_review_section(artifact_review, default_display_mode="details")
+    decision_lines = "\n".join(f"- [ ] `{decision}`" for decision in allowed_decisions)
     return "\n".join(
         [
             "---",
@@ -3414,7 +3508,18 @@ def _render_live_review_card(
             "",
             "**LIVE OPERATOR-SURFACE WRITE AUTHORIZED - PUBLIC PUBLISH BLOCKED**",
             "",
-            "## Review Context",
+            *brief_lines,
+            "### Decision Scope",
+            f"- Requested action: `{requested_action}`",
+            f"- Exact action: `{exact_action}`",
+            "- Public publish remains blocked unless a separate explicit approval says otherwise.",
+            "- Comments are context only and do not authorize public publish, deploy, trading, money movement, auth, secrets, destructive changes, or unscoped live mutation.",
+            "",
+            *artifact_lines,
+            "<details>",
+            "<summary>Evidence and provenance for audit/ingest</summary>",
+            "",
+            "### Review Context",
             f"- Workflow ID: `{invocation.workflow_id}`",
             f"- Instance ID: `{invocation.instance_id}`",
             f"- Stage ID: `{stage_id}`",
@@ -3423,19 +3528,16 @@ def _render_live_review_card(
             f"- Invocation ID: `{invocation.invocation_id}`",
             f"- Canonical surface: `{canonical_surface}`",
             f"- Human ref: `{human_ref}`",
-            f"- Requested action: `{requested_action}`",
-            f"- Exact action: `{exact_action}`",
             f"- Action fingerprint: `{action_fingerprint}`",
             f"- Prompt bundle: `{prompt_provenance.get('prompt_bundle_digest') or 'not-provided'}`",
             f"- Public publish blocked: `true`",
             "",
-            *artifact_lines,
-            "## Evidence",
+            "### Evidence Refs",
             evidence_lines,
             "",
-            "## Decision",
-            ask,
+            "</details>",
             "",
+            "## Decision",
             "Check exactly one allowed decision. Comments are context only and do not authorize public publish, deploy, trading, money movement, auth, secrets, destructive changes, or unscoped live mutation.",
             "",
             decision_lines,
