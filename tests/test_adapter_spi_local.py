@@ -12,6 +12,9 @@ from agent_workflow_kernel import (  # noqa: E402
     AdapterInvocation,
     AdapterResult,
     ArtifactRef,
+    DryRunObsidianSurfaceAdapter,
+    DryRunSheetsSurfaceAdapter,
+    DryRunTelegramSurfaceAdapter,
     LocalFakeHostAdapter,
     LocalFakeLaneAdapter,
     LocalFakeRuntimeAdapter,
@@ -22,6 +25,7 @@ from agent_workflow_kernel import (  # noqa: E402
     StageRun,
     StageRunStatus,
     SurfaceAdapter,
+    SurfaceCapabilityContract,
     to_plain_data,
 )
 
@@ -87,6 +91,128 @@ class AdapterSpiLocalTest(unittest.TestCase):
             "Review packet",
         )
 
+    def test_dry_run_surface_adapters_declare_non_live_contracts(self) -> None:
+        adapters = (
+            DryRunObsidianSurfaceAdapter(),
+            DryRunTelegramSurfaceAdapter(),
+            DryRunSheetsSurfaceAdapter(),
+        )
+
+        for adapter in adapters:
+            with self.subTest(adapter=adapter.adapter_id):
+                capabilities = adapter.capabilities()
+                contract = capabilities.metadata["surface_contract"]
+                declared_contract = SurfaceCapabilityContract(
+                    surface_kind=contract["surface_kind"],
+                    mode=contract["mode"],
+                    live_mutation_allowed=contract["live_mutation_allowed"],
+                    dry_run_only=contract["dry_run_only"],
+                    readback_required=contract["readback_required"],
+                    decision_ingest_supported=contract["decision_ingest_supported"],
+                    clear_requires_live_mutation=contract["clear_requires_live_mutation"],
+                    external_effects=tuple(contract["external_effects"]),
+                    receipt_schema=contract["receipt_schema"],
+                )
+
+                self.assertIsInstance(adapter, SurfaceAdapter)
+                self.assertEqual(declared_contract.as_metadata()["mode"], "dry_run")
+                self.assertEqual(capabilities.family, AdapterFamily.SURFACE)
+                self.assertIn("publish", capabilities.operations)
+                self.assertTrue(contract["dry_run_only"])
+                self.assertFalse(contract["live_mutation_allowed"])
+                self.assertTrue(contract["readback_required"])
+                self.assertTrue(contract["decision_ingest_supported"])
+                self.assertTrue(capabilities.metadata["non_live_only"])
+
+    def test_dry_run_surface_publish_readback_and_decision_receipts(self) -> None:
+        adapter = DryRunTelegramSurfaceAdapter()
+        publish = adapter.publish(
+            invocation(AdapterFamily.SURFACE, adapter.adapter_id, "publish"),
+            {
+                "title": "Owner brief",
+                "allowed_decisions": ("approved", "rejected"),
+                "exact_action": "continue_internal_work",
+                "action_fingerprint": "sha256:dry-run-action",
+                "test_only": True,
+                "non_live": True,
+            },
+        )
+        readback = adapter.readback(publish.outputs["surface_ref"])
+        decisions = adapter.ingest_decisions(
+            {
+                "query_id": "decision-1",
+                "gate_id": "gate-1",
+                "human_ref": "Suman(test)",
+                "decision": "approved",
+                "allowed_decisions": ("approved", "rejected"),
+                "requested_action": "continue_internal_work",
+                "exact_action": "continue_internal_work",
+                "expected_action_fingerprint": "sha256:dry-run-action",
+                "evidence_refs": ("fixture://owner-brief",),
+                "test_only": True,
+                "non_live": True,
+            }
+        )
+
+        self.assertEqual(publish.status, "succeeded")
+        self.assertTrue(publish.outputs["dry_run"])
+        self.assertTrue(publish.outputs["test_only"])
+        self.assertTrue(publish.outputs["non_live"])
+        self.assertFalse(publish.outputs["live_mutation_performed"])
+        self.assertEqual(publish.outputs["surface_ref"]["kind"], "telegram_message")
+        self.assertEqual(readback.status, "succeeded")
+        self.assertTrue(readback.runtime_provenance["outputs"]["readback_confirmed"])
+        self.assertEqual(len(decisions), 1)
+        decision_outputs = decisions[0].runtime_provenance["outputs"]
+        self.assertEqual(decisions[0].status, "succeeded")
+        self.assertEqual(decision_outputs["schema"], "dry_run_surface_decision.v1")
+        self.assertEqual(decision_outputs["canonical_surface"], adapter.adapter_id)
+        self.assertEqual(decision_outputs["decision"], "approved")
+        self.assertTrue(decision_outputs["test_only"])
+        self.assertTrue(decision_outputs["non_live"])
+        self.assertFalse(decision_outputs["live_mutation_performed"])
+
+    def test_dry_run_surface_blocks_live_mutation_requests(self) -> None:
+        adapter = DryRunSheetsSurfaceAdapter()
+
+        publish = adapter.publish(
+            invocation(AdapterFamily.SURFACE, adapter.adapter_id, "publish"),
+            {
+                "title": "Sheet row update",
+                "test_only": False,
+                "non_live": False,
+                "live_mutation_requested": True,
+            },
+        )
+        clear = adapter.clear(
+            {"surface_id": "surface:sheet-row", "kind": "sheet_range"},
+            "remove stale row",
+        )
+        decision = adapter.ingest_decisions(
+            {
+                "query_id": "live-read",
+                "decision": "approved",
+                "allowed_decisions": ("approved",),
+                "test_only": True,
+                "non_live": True,
+                "read_live_surface": True,
+            }
+        )[0]
+
+        self.assertEqual(publish.status, "blocked")
+        self.assertEqual(publish.outputs["error"]["error_class"], "live_mutation_refused")
+        self.assertFalse(publish.outputs["live_mutation_performed"])
+        self.assertEqual(clear.status, "blocked")
+        self.assertEqual(
+            clear.runtime_provenance["outputs"]["error"]["error_class"],
+            "live_mutation_refused",
+        )
+        self.assertEqual(decision.status, "blocked")
+        self.assertEqual(
+            decision.runtime_provenance["outputs"]["error"]["error_class"],
+            "live_mutation_refused",
+        )
+
     def test_local_markdown_human_review_publishes_card_and_reads_back(self) -> None:
         with TemporaryDirectory() as temp_dir:
             adapter = LocalMarkdownHumanReviewSurfaceAdapter(temp_dir)
@@ -96,8 +222,12 @@ class AdapterSpiLocalTest(unittest.TestCase):
             note_path = Path(result.outputs["note_path"])
             readback = adapter.readback(result.outputs["surface_ref"])
             note_text = note_path.read_text(encoding="utf-8")
+            contract = adapter.capabilities().metadata["surface_contract"]
 
         self.assertIsInstance(adapter, SurfaceAdapter)
+        self.assertEqual(contract["mode"], "local_artifact")
+        self.assertFalse(contract["live_mutation_allowed"])
+        self.assertTrue(contract["readback_required"])
         self.assertEqual(result.status, "succeeded")
         self.assertEqual(readback.status, "succeeded")
         self.assertTrue(result.outputs["non_live"])
@@ -110,6 +240,21 @@ class AdapterSpiLocalTest(unittest.TestCase):
         self.assertIn("- Action fingerprint: `sha256:review-action`", note_text)
         self.assertIn("- `fixture://weekly-card`", note_text)
         self.assertIn("- [ ] `read_clear`", note_text)
+
+    def test_local_markdown_human_review_blocks_live_surface_packet(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            adapter = LocalMarkdownHumanReviewSurfaceAdapter(temp_dir)
+            packet = self._review_packet()
+            packet["non_live"] = False
+
+            result = adapter.publish(
+                invocation(AdapterFamily.SURFACE, adapter.adapter_id, "publish"),
+                packet,
+            )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.outputs["error"]["error_class"], "live_mutation_refused")
+        self.assertFalse(result.outputs["non_live"])
 
     def test_local_markdown_human_review_ingests_one_checked_decision(self) -> None:
         with TemporaryDirectory() as temp_dir:
