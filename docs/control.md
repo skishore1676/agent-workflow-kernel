@@ -1,6 +1,6 @@
 # Agent Workflow Kernel Control
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
 
 ## Supervisor Contract
 
@@ -16,6 +16,41 @@ This document is the project brain. The supervisor thread owns:
 Worker threads should not ask for routine next steps. Each worker gets a bounded
 goal, acceptance criteria, and a target artifact. If blocked, it should leave a
 clear blocked note with evidence and the smallest unblock request.
+
+## Supervisor Autonomy Operating Rules
+
+The supervisor does not hand work back to Suman while a wave still has a safe
+automatic next step. A wave is terminal only after each worker has one of these
+proofs:
+
+- a final report or committed artifact, plus the commit hash when files changed;
+- exact verification results, or the exact environmental blocker;
+- `git status --short` from the worker checkout after commit;
+- an explicit blocked note naming the repeated blocker and the smallest human
+  decision required.
+
+Quiet workers are not a handoff condition. Poll patiently and let them finish;
+nudge only when they are blocked, unsafe, on the wrong branch/worktree, or past a
+declared deadline. Replace a worker only after reading its state and preserving
+any local artifacts or branch work.
+
+Runner completion is stateful evidence, not a chat assertion. For AWK/OpenClaw
+runner paths, accept completion only when receipts, ledger state, generated
+artifacts, and readback show each stage is terminal, waiting on a named human
+gate, or blocked with a named repair path. A worker final that says "done"
+without receipt/artifact/readback proof is still unverified.
+
+Oldmac or OpenClaw readiness claims require read-only live-host evidence. If the
+proof used local fixtures, stdin-piped scripts, or non-deployed helpers, label it
+as local audit or fallback evidence. Do not call it deployed oldmac readiness
+until the command ran from the live oldmac path and the report captures host,
+root, commit, command, output status, artifact paths, and readback.
+
+Final supervisor handoff requires a no-handoff-until-terminal checklist: worker
+finals read, worker commits/status inspected, requested tests run or blocked
+with exact output, live-readonly/readback evidence captured when relevant, and
+the next autonomous wave launched or deliberately classified as requiring
+Suman's decision.
 
 ## Vision
 
