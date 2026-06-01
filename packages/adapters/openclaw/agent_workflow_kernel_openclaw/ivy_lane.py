@@ -558,9 +558,7 @@ def _normalize_exported_ivy_fixture(data: Mapping[str, Any]) -> Mapping[str, Any
         for item in ivy.get("review_surfaces") or data.get("surface_refs") or ()
         if isinstance(item, Mapping)
     ]
-    normalized["transcript_refs"] = [
-        item for item in ivy.get("transcript_refs") or () if isinstance(item, Mapping)
-    ]
+    normalized["transcript_refs"] = _exported_transcript_refs(ivy.get("transcript_refs"))
     normalized["publish_packet_refs"] = _exported_publish_packet_refs(ivy.get("publish_packet_refs"))
     normalized["forbidden_actions"] = (
         data.get("forbidden_actions")
@@ -613,6 +611,39 @@ def _exported_review_surface(item: Mapping[str, Any]) -> Mapping[str, Any]:
         "status": str(item.get("status") or "observed"),
         "readback_required": bool(item.get("readback_required", True)),
     }
+
+
+def _exported_transcript_refs(items: Any) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        items = (items,) if items else ()
+    refs: list[Mapping[str, Any]] = []
+    for index, item in enumerate(items):
+        if isinstance(item, Mapping):
+            uri = item.get("uri") or item.get("resolved_path") or item.get("path")
+            if not uri:
+                continue
+            transcript_id = item.get("transcript_id") or item.get("id")
+            if not transcript_id:
+                transcript_id = f"transcript:{Path(str(uri)).stem or index + 1}"
+            refs.append(
+                {
+                    "transcript_id": str(transcript_id),
+                    "kind": str(item.get("kind") or item.get("role") or "transcript"),
+                    "uri": str(uri),
+                    "status": str(item.get("status") or "observed"),
+                    "proof_schema": item.get("proof_schema"),
+                }
+            )
+        elif item:
+            refs.append(
+                {
+                    "transcript_id": f"transcript:{Path(str(item)).stem or index + 1}",
+                    "kind": "transcript",
+                    "uri": str(item),
+                    "status": "observed",
+                }
+            )
+    return tuple(refs)
 
 
 def _exported_publish_packet_refs(items: Any) -> tuple[Mapping[str, Any], ...]:

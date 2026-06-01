@@ -107,6 +107,77 @@ class OpenClawIvyLaneAdoptionTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(json.loads(first)["schema"], IVY_JONAH_ADOPTION_REPORT_SCHEMA)
 
+    def test_exported_live_shape_accepts_path_only_transcript_refs(self) -> None:
+        raw_fixture = {
+            "lane": "ivy",
+            "fixture_id": "openclaw-ivy-agent-to-agent-communication-live-6",
+            "generated_at": "2026-06-01T00:29:41Z",
+            "invocation": {"operation": "inspect_fixture"},
+            "ivy": {
+                "project": {
+                    "project_id": "agent-to-agent-communication-live-6",
+                    "title": "Agent-to-Agent Communication",
+                    "gate": "P5",
+                    "target_channel": "substack_medium",
+                },
+                "stages": [
+                    {"stage": "P3", "next_action": "advance_to_p4"},
+                    {"stage": "P5", "human_gate": True},
+                ],
+                "actors": {"ivy": "Ivy", "jonah": "Jonah", "human": "Suman"},
+                "source_config": {
+                    "forbidden_actions": ["publish", "send externally", "push", "deploy"],
+                    "residual_risk": "Fixture data can drift from live OpenClaw state.",
+                },
+                "review_surfaces": [
+                    {
+                        "surface_id": "or_research_review_notes",
+                        "kind": "obsidian_review_surface",
+                        "status": "observable",
+                    }
+                ],
+                "transcript_refs": [
+                    {
+                        "kind": "transcript",
+                        "path": "workspace/agents/or_research/work_ledger_transcripts/work_6101-native-ivy-jonah-a2a.md",
+                        "resolved_path": "/Users/sunny/.openclaw/workspace/agents/or_research/work_ledger_transcripts/work_6101-native-ivy-jonah-a2a.md",
+                        "status": "observed",
+                    }
+                ],
+                "publish_packet_refs": [
+                    "/Users/sunny/.openclaw/workspace/agents/or_research/projects/agent-to-agent-communication-live-6/published.json"
+                ],
+                "publish_gate": {
+                    "external_publish_allowed_in_source": True,
+                    "exporter_action_allowed": False,
+                    "read_only_shadow_may_not_publish": True,
+                },
+            },
+            "mapping": {
+                "lane_id": "or_research",
+                "agent_id": "or_research",
+                "host_ref": "oldmac",
+                "work_ledger": {
+                    "work_item_id": "work_6101b6f3049f4e24",
+                    "handoff_id": "or-research-a2a-agent-communication-2026-05-30",
+                },
+                "surface_refs": [],
+                "runtime_refs": [],
+            },
+            "artifacts": [],
+        }
+
+        adoption = adopt_ivy_jonah_fixture(raw_fixture)
+        report = adoption.report.to_data()
+
+        self.assertEqual(adoption.fixture.transcript_refs[0].transcript_id, "transcript:work_6101-native-ivy-jonah-a2a")
+        self.assertEqual(report["ready_for_shadow"], True)
+        self.assertEqual(report["public_publish_blocked"], True)
+        self.assertEqual(
+            {packet["external_publish_performed"] for packet in report["evidence_refs"]["publish_packet_refs"]},
+            {False},
+        )
+
     def test_mutating_fixture_operation_is_rejected_before_mapping(self) -> None:
         path = FIXTURES / "p3_approval_to_p5_shadow.json"
         with path.open("r", encoding="utf-8") as handle:
