@@ -62,6 +62,8 @@ from .local_adapters import (
     LocalFakeRuntimeAdapter,
     LocalFakeSurfaceAdapter,
     LocalMarkdownHumanReviewSurfaceAdapter,
+    SandboxObsidianMarkdownSurfaceAdapter,
+    SandboxTelegramOutboxSurfaceAdapter,
 )
 from .local_runner import (
     LOCAL_RUNNER_ACTOR,
@@ -190,6 +192,8 @@ __all__ = [
     "RunnerStep",
     "RuntimeAdapter",
     "RuntimeRef",
+    "SandboxObsidianMarkdownSurfaceAdapter",
+    "SandboxTelegramOutboxSurfaceAdapter",
     "StageDef",
     "StageRun",
     "StageRunStatus",
