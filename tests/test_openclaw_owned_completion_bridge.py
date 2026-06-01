@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,13 +12,135 @@ sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 sys.path.insert(0, str(ROOT / "packages" / "adapters" / "openclaw"))
 
 from agent_workflow_kernel import WorkflowLedger, WorkflowStatus  # noqa: E402
-from agent_workflow_kernel_openclaw import run_owned_completion_bridge  # noqa: E402
+from agent_workflow_kernel_openclaw import (  # noqa: E402
+    plan_owned_completion_run,
+    run_owned_completion_bridge,
+    run_owned_completion_scheduler,
+)
 
 
 NOW = "2026-06-01T16:00:00+00:00"
 
 
 class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
+    def test_scheduler_plan_is_noop_and_reports_candidate_graph_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("weekly",))
+            self.write_openclaw_done_state(openclaw, "awk-cutover-weekly-test", "Weekly")
+            before = self.snapshot_tree(openclaw)
+            ledger_path = root / "awk-ledger.sqlite3"
+
+            summary = plan_owned_completion_run(
+                ledger_path=ledger_path,
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                now=NOW,
+            )
+
+            self.assertTrue(summary["ok"])
+            self.assertEqual(summary["mode"], "plan")
+            self.assertTrue(summary["dry_run"])
+            self.assertTrue(summary["read_only"])
+            self.assertFalse(summary["ledger_write_enabled"])
+            self.assertEqual(summary["openclaw_write_count"], 0)
+            self.assertFalse(ledger_path.exists())
+            self.assertEqual(before, self.snapshot_tree(openclaw))
+
+            result = summary["results"][0]
+            self.assertEqual(result["planned_action"], "create_or_resume")
+            self.assertEqual(result["predicted_stop_reason"], "would_reach_terminal")
+            self.assertEqual(result["next"]["stage_id"], "capture_openclaw_surface_artifact")
+            self.assertEqual(result["next"]["owner"], "awk_openclaw")
+            self.assertIsNone(result["predicted_next"])
+
+    def test_scheduler_run_mode_against_fixtures_writes_only_awk_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("ivy",))
+            self.write_openclaw_done_state(openclaw, "awk-cutover-ivy-test", "Ivy/Jonah")
+            before = self.snapshot_tree(openclaw)
+            ledger_path = root / "awk-ledger.sqlite3"
+
+            summary = run_owned_completion_scheduler(
+                ledger_path=ledger_path,
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                run=True,
+                now=NOW,
+            )
+
+            self.assertTrue(summary["ok"])
+            self.assertEqual(summary["mode"], "run")
+            self.assertFalse(summary["dry_run"])
+            self.assertTrue(summary["read_only"])
+            self.assertTrue(summary["ledger_write_enabled"])
+            self.assertEqual(summary["openclaw_write_count"], 0)
+            self.assertTrue(ledger_path.exists())
+            self.assertEqual(before, self.snapshot_tree(openclaw))
+            self.assertEqual(summary["results"][0]["status"], "done")
+
+    def test_scheduler_plan_reports_already_terminal_without_duplicate_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("ivy",))
+            self.write_openclaw_done_state(openclaw, "awk-cutover-ivy-test", "Ivy/Jonah")
+            ledger_path = root / "awk-ledger.sqlite3"
+
+            run_owned_completion_scheduler(
+                ledger_path=ledger_path,
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                run=True,
+                now=NOW,
+            )
+            plan = run_owned_completion_scheduler(
+                ledger_path=ledger_path,
+                openclaw_root=openclaw,
+                cutover_receipt_path=receipt,
+                run=False,
+                now=NOW,
+            )
+
+            result = plan["results"][0]
+            self.assertEqual(result["planned_action"], "already_terminal")
+            self.assertEqual(result["predicted_stop_reason"], "already_terminal")
+            self.assertEqual(result["workflow_status"], "done")
+            self.assertEqual(result["terminal_event_count"], 1)
+            self.assertIsNone(result["predicted_next"])
+
+    def test_cli_defaults_to_noop_plan_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            receipt = self.write_cutover_receipt(root, ("weekly",))
+            self.write_openclaw_done_state(openclaw, "awk-cutover-weekly-test", "Weekly")
+            ledger_path = root / "awk-ledger.sqlite3"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/openclaw_owned_completion_bridge.py",
+                    "--openclaw-root",
+                    str(openclaw),
+                    "--ledger",
+                    str(ledger_path),
+                    "--cutover-receipt",
+                    str(receipt),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+            summary = json.loads(completed.stdout)
+            self.assertEqual(summary["mode"], "plan")
+            self.assertFalse(ledger_path.exists())
+
     def test_acknowledged_blackboard_artifacts_reach_terminal_awk_workflow_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -425,6 +548,14 @@ class OpenClawOwnedCompletionBridgeTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+
+    def snapshot_tree(self, root: Path) -> dict[str, str]:
+        snapshot: dict[str, str] = {}
+        if not root.exists():
+            return snapshot
+        for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+            snapshot[str(path.relative_to(root))] = path.read_bytes().hex()
+        return snapshot
 
 
 if __name__ == "__main__":

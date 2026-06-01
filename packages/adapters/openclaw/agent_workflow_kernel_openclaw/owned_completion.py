@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,9 +40,12 @@ from .mapping import OpenClawIdentityCrosswalk, openclaw_identity_crosswalk_conf
 OWNED_COMPLETION_WORKFLOW_ID = "openclaw_migrated_lane_completion"
 OWNED_COMPLETION_WORKFLOW_VERSION = "0.1.0"
 OWNED_COMPLETION_SCHEMA = "openclaw.awk_owned_completion.v1"
+OWNED_COMPLETION_SCHEDULER_SCHEMA = "openclaw.awk_owned_completion_scheduler.v1"
 DEFAULT_OWNER_ID = "openclaw-owned-completion-bridge"
 CROSSWALK_RECORDED_EVENT = "openclaw_identity_crosswalk_recorded"
 CROSSWALK_REJECTED_EVENT = "openclaw_identity_crosswalk_rejected"
+TERMINAL_WORKFLOW_STATUSES = {"done", "policy_denied", "cancelled"}
+NON_RESUMABLE_WORKFLOW_STATUSES = {*TERMINAL_WORKFLOW_STATUSES, "blocked"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +210,107 @@ def run_owned_completion_bridge(
         "artifact_count": len(results),
         "results": results,
     }
+    return summary
+
+
+def plan_owned_completion_run(
+    *,
+    ledger_path: str | Path,
+    openclaw_root: str | Path,
+    cutover_receipt_path: str | Path | None = None,
+    artifact_ids: Sequence[str] = (),
+    now: datetime | str | None = None,
+) -> dict[str, Any]:
+    """Return a scheduler-safe no-op plan for OpenClaw owned completion.
+
+    Planning only reads OpenClaw files and an existing AWK ledger. If the ledger
+    path does not exist, it is not created.
+    """
+
+    openclaw = Path(openclaw_root).expanduser().resolve()
+    ledger_file = Path(ledger_path).expanduser().resolve()
+    timestamp = _iso(now)
+    evidence_items = discover_openclaw_artifacts(
+        openclaw_root=openclaw,
+        cutover_receipt_path=Path(cutover_receipt_path).expanduser().resolve()
+        if cutover_receipt_path is not None
+        else None,
+        artifact_ids=artifact_ids,
+    )
+    workflow = owned_completion_workflow()
+    results = [
+        _planned_result(
+            workflow=workflow,
+            evidence=evidence,
+            ledger_path=ledger_file,
+        )
+        for evidence in evidence_items
+    ]
+    runnable = [
+        result
+        for result in results
+        if result["planned_action"] in {"create_or_resume", "resume"}
+        and result["predicted_stop_reason"] != "openclaw_acknowledgement_missing"
+    ]
+    return {
+        "schema": OWNED_COMPLETION_SCHEDULER_SCHEMA,
+        "ok": True,
+        "mode": "plan",
+        "dry_run": True,
+        "read_only": True,
+        "live_mutation_enabled": False,
+        "created_at": timestamp,
+        "openclaw_root": str(openclaw),
+        "ledger_path": str(ledger_file),
+        "ledger_exists": ledger_file.exists(),
+        "workflow_id": workflow.id,
+        "workflow_version": workflow.version,
+        "artifact_count": len(results),
+        "runnable_count": len(runnable),
+        "openclaw_write_count": 0,
+        "ledger_write_enabled": False,
+        "summary_write_only": True,
+        "results": results,
+    }
+
+
+def run_owned_completion_scheduler(
+    *,
+    ledger_path: str | Path,
+    openclaw_root: str | Path,
+    cutover_receipt_path: str | Path | None = None,
+    artifact_ids: Sequence[str] = (),
+    run: bool = False,
+    now: datetime | str | None = None,
+) -> dict[str, Any]:
+    """Scheduler entry point; defaults to no-op planning."""
+
+    if not run:
+        return plan_owned_completion_run(
+            ledger_path=ledger_path,
+            openclaw_root=openclaw_root,
+            cutover_receipt_path=cutover_receipt_path,
+            artifact_ids=artifact_ids,
+            now=now,
+        )
+    summary = run_owned_completion_bridge(
+        ledger_path=ledger_path,
+        openclaw_root=openclaw_root,
+        cutover_receipt_path=cutover_receipt_path,
+        artifact_ids=artifact_ids,
+        now=now,
+    )
+    summary.update(
+        {
+            "mode": "run",
+            "dry_run": False,
+            "read_only": True,
+            "live_mutation_enabled": False,
+            "openclaw_write_count": 0,
+            "ledger_write_enabled": True,
+            "summary_write_only": True,
+        }
+    )
     return summary
 
 
@@ -523,7 +628,161 @@ def _result(
         "identity_crosswalk_hash": crosswalk.fingerprint(),
         "identity_crosswalk_status": crosswalk_persistence["status"],
         "identity_crosswalk_errors": crosswalk_persistence["errors"],
+        "next": _next_from_instance(workflow=owned_completion_workflow(), instance=instance, stage_rows=stage_rows),
         "stage_runs": [dict(row) for row in stage_rows],
+    }
+
+
+def _planned_result(
+    *,
+    workflow: WorkflowDef,
+    evidence: OpenClawArtifactEvidence,
+    ledger_path: Path,
+) -> dict[str, Any]:
+    instance_id = _instance_id(evidence.artifact_id)
+    existing = _read_existing_instance(ledger_path, instance_id)
+    if existing is None:
+        graph_stage = workflow.stages[0]
+        planned_action = "create_or_resume"
+        workflow_status = None
+        current_stage_id = None
+        stage_rows: list[Mapping[str, Any]] = []
+        terminal_event_count = 0
+    else:
+        graph_stage = _stage_for_id(workflow, existing.get("current_stage_id")) or workflow.stages[0]
+        workflow_status = existing.get("status")
+        current_stage_id = existing.get("current_stage_id")
+        stage_rows = list(existing.get("stage_runs") or [])
+        terminal_event_count = int(existing.get("terminal_event_count") or 0)
+        if workflow_status == WorkflowStatus.DONE.value:
+            planned_action = "already_terminal"
+        elif workflow_status == WorkflowStatus.BLOCKED.value:
+            planned_action = "report_blocked"
+        elif workflow_status in TERMINAL_WORKFLOW_STATUSES:
+            planned_action = "report_terminal"
+        else:
+            planned_action = "resume"
+    predicted_stage = _predicted_stage_after_run(workflow, evidence, workflow_status)
+    latest_stage_row = next((row for row in reversed(stage_rows) if row["stage_id"] == graph_stage.id), None)
+    return {
+        "artifact_id": evidence.artifact_id,
+        "lane_id": evidence.lane_id,
+        "title": evidence.title,
+        "instance_id": instance_id,
+        "status": workflow_status or "not_started",
+        "planned_action": planned_action,
+        "predicted_stop_reason": _predicted_stop_reason(evidence, workflow_status),
+        "workflow_status": workflow_status,
+        "current_stage_id": current_stage_id,
+        "terminal_event_count": terminal_event_count,
+        "record_path": _path_or_none(evidence.record_path),
+        "handoff_path": _path_or_none(evidence.handoff_path),
+        "runner_receipt_path": _path_or_none(evidence.runner_receipt_path),
+        "acknowledged": evidence.acknowledged,
+        "runner_done": evidence.runner_done,
+        "next": _next_stage_payload(
+            graph_stage,
+            stage_status=latest_stage_row["status"] if latest_stage_row is not None else None,
+        ),
+        "predicted_next": _next_stage_payload(predicted_stage, stage_status=None) if predicted_stage else None,
+        "stage_runs": [dict(row) for row in stage_rows],
+    }
+
+
+def _read_existing_instance(ledger_path: Path, instance_id: str) -> dict[str, Any] | None:
+    if not ledger_path.exists():
+        return None
+    uri = f"file:{ledger_path}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT instance_id, status, current_stage_id FROM workflow_instances WHERE instance_id = ?",
+            (instance_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        stage_rows = conn.execute(
+            "SELECT stage_run_id, stage_id, status, actor_ref FROM stage_runs WHERE instance_id = ? ORDER BY stage_run_id",
+            (instance_id,),
+        ).fetchall()
+        terminal_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM events WHERE instance_id = ? AND event_type = ?",
+            (instance_id, "workflow_terminal"),
+        ).fetchone()["count"]
+        return {
+            "instance_id": row["instance_id"],
+            "status": row["status"],
+            "current_stage_id": row["current_stage_id"],
+            "terminal_event_count": int(terminal_count),
+            "stage_runs": [dict(stage_row) for stage_row in stage_rows],
+        }
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _predicted_stop_reason(evidence: OpenClawArtifactEvidence, workflow_status: str | None) -> str:
+    if workflow_status == WorkflowStatus.DONE.value:
+        return "already_terminal"
+    if workflow_status in NON_RESUMABLE_WORKFLOW_STATUSES:
+        return str(workflow_status)
+    if not evidence.acknowledged:
+        return "openclaw_acknowledgement_missing"
+    if not evidence.runner_done:
+        return "openclaw_runner_done_receipt_missing"
+    return "would_reach_terminal"
+
+
+def _predicted_stage_after_run(
+    workflow: WorkflowDef,
+    evidence: OpenClawArtifactEvidence,
+    workflow_status: str | None,
+) -> StageDef | None:
+    if workflow_status in NON_RESUMABLE_WORKFLOW_STATUSES:
+        return None
+    if not evidence.acknowledged:
+        return _stage_for_id(workflow, "blackboard_acknowledgement")
+    if not evidence.runner_done:
+        return _stage_for_id(workflow, "verify_openclaw_review_runner")
+    return None
+
+
+def _next_from_instance(
+    *,
+    workflow: WorkflowDef,
+    instance: Any,
+    stage_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    if instance is None or instance.current_stage_id is None:
+        return None
+    stage = _stage_for_id(workflow, instance.current_stage_id)
+    if stage is None:
+        return None
+    row = next((row for row in reversed(stage_rows) if row["stage_id"] == stage.id), None)
+    return _next_stage_payload(stage, stage_status=row["status"] if row is not None else None)
+
+
+def _stage_for_id(workflow: WorkflowDef, stage_id: Any) -> StageDef | None:
+    if stage_id is None:
+        return None
+    text = str(stage_id)
+    return next((stage for stage in workflow.stages if stage.id == text), None)
+
+
+def _next_stage_payload(stage: StageDef, *, stage_status: str | None) -> dict[str, Any]:
+    actor_refs = tuple(str(value) for value in stage.actors.values())
+    owner = actor_refs[0] if actor_refs else None
+    return {
+        "stage_id": stage.id,
+        "stage_type": stage.type.value,
+        "owner": owner,
+        "actor_refs": list(actor_refs),
+        "status": stage_status,
     }
 
 
@@ -785,10 +1044,13 @@ def _iso(value: datetime | str | None) -> str:
 __all__ = [
     "DEFAULT_OWNER_ID",
     "OWNED_COMPLETION_SCHEMA",
+    "OWNED_COMPLETION_SCHEDULER_SCHEMA",
     "OWNED_COMPLETION_WORKFLOW_ID",
     "OWNED_COMPLETION_WORKFLOW_VERSION",
     "OpenClawArtifactEvidence",
     "discover_openclaw_artifacts",
     "owned_completion_workflow",
+    "plan_owned_completion_run",
     "run_owned_completion_bridge",
+    "run_owned_completion_scheduler",
 ]
