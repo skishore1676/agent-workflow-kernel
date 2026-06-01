@@ -25,9 +25,12 @@ from .ivy_lane import (
     stage_observations_from_fixture,
 )
 from .mapping import (
+    OPENCLAW_IDENTITY_CROSSWALK_SCHEMA,
+    OpenClawIdentityCrosswalk,
     OpenClawReferenceMapping,
     OpenClawWorkLedgerIds,
     mapping_from_fixture,
+    openclaw_identity_crosswalk_conflicts,
     runtime_refs_from_fixture,
     surface_refs_from_fixture,
 )
@@ -89,6 +92,8 @@ __all__ = [
     "OpenClawBlackboardDecisionLoopAdapter",
     "OpenClawReadOnlyAdapter",
     "OpenClawReadOnlyInspection",
+    "OPENCLAW_IDENTITY_CROSSWALK_SCHEMA",
+    "OpenClawIdentityCrosswalk",
     "OpenClawReferenceMapping",
     "OpenClawWorkLedgerIds",
     "OWNED_COMPLETION_SCHEMA",
@@ -111,6 +116,7 @@ __all__ = [
     "load_ivy_jonah_fixture",
     "load_weekly_update_fixture",
     "mapping_from_fixture",
+    "openclaw_identity_crosswalk_conflicts",
     "observations_from_weekly_update",
     "owned_completion_workflow",
     "receipts_from_weekly_update",
