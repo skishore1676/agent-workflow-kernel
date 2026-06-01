@@ -194,6 +194,34 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
             receipt_md = (output_dir / "cutover_receipt.md").read_text(encoding="utf-8")
             self.assertIn("## Blackboard", receipt_md)
 
+    def test_blackboard_cutover_ready_is_surface_evidence_not_terminal_workflow_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_dir = root / "cutover"
+            vault_root = root / "sandbox-vault"
+            openclaw_root = root / "openclaw"
+            write_blackboard_refresh_stub(openclaw_root)
+
+            receipt = script.build_live_cutover(
+                ivy_fixture=IVY_FIXTURE,
+                weekly_fixture=WEEKLY_FIXTURE,
+                vault_root=vault_root,
+                obsidian_prefix="OpenClaw/Cutover",
+                allow_live_obsidian=True,
+                output_dir=output_dir,
+                openclaw_root=openclaw_root,
+            )
+
+            self.assertEqual(receipt["status"], "ready")
+            self.assertEqual(receipt["blackboard"]["status"], "succeeded")
+            self.assertNotIn("workflow_instance_id", receipt)
+            self.assertNotIn("terminal_status", receipt)
+            self.assertNotIn("workflow_terminal", json.dumps(receipt, sort_keys=True))
+            for record in receipt["blackboard"]["records"]:
+                self.assertEqual(record["status"], "succeeded")
+                self.assertTrue(record["readback_found"])
+                self.assertTrue(record["receipt_id"].startswith("receipt:cutover:blackboard:"))
+
     def test_live_telegram_send_is_blocked_when_obsidian_receipts_are_untrusted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
