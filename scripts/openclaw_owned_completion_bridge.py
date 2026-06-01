@@ -13,11 +13,19 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_PATH = ROOT / "packages" / "kernel"
 OPENCLAW_ADAPTER_PATH = ROOT / "packages" / "adapters" / "openclaw"
-for package_path in (str(KERNEL_PATH), str(OPENCLAW_ADAPTER_PATH)):
-    if package_path not in sys.path:
-        sys.path.insert(0, package_path)
 
-from agent_workflow_kernel_openclaw import run_owned_completion_bridge  # noqa: E402
+
+def _ensure_source_checkout_imports() -> None:
+    for package_path in (str(KERNEL_PATH), str(OPENCLAW_ADAPTER_PATH)):
+        if package_path not in sys.path:
+            sys.path.insert(0, package_path)
+
+
+try:
+    from agent_workflow_kernel_openclaw import run_owned_completion_bridge  # noqa: E402
+except ModuleNotFoundError:
+    _ensure_source_checkout_imports()
+    from agent_workflow_kernel_openclaw import run_owned_completion_bridge  # noqa: E402
 
 
 def main(argv: Sequence[str] | None = None) -> int:

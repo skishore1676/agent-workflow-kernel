@@ -40,6 +40,10 @@ from .readonly import (
     invocation_from_fixture,
 )
 from .review_loop import OpenClawBlackboardDecisionLoopAdapter
+from .telegram import (
+    OPENCLAW_TELEGRAM_MESSAGE_SCHEMA,
+    OpenClawTelegramSurfaceAdapter,
+)
 from .owned_completion import (
     OWNED_COMPLETION_SCHEMA,
     OWNED_COMPLETION_WORKFLOW_ID,
@@ -90,7 +94,9 @@ __all__ = [
     "OpenClawReadOnlyAdapter",
     "OpenClawReadOnlyInspection",
     "OpenClawReferenceMapping",
+    "OpenClawTelegramSurfaceAdapter",
     "OpenClawWorkLedgerIds",
+    "OPENCLAW_TELEGRAM_MESSAGE_SCHEMA",
     "OWNED_COMPLETION_SCHEMA",
     "OWNED_COMPLETION_WORKFLOW_ID",
     "OWNED_COMPLETION_WORKFLOW_VERSION",

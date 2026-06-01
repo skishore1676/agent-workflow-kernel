@@ -8,6 +8,7 @@ from subprocess import CompletedProcess
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "kernel"))
+sys.path.insert(0, str(ROOT / "packages" / "adapters" / "openclaw"))
 
 from agent_workflow_kernel import (  # noqa: E402
     AdapterFamily,
@@ -15,7 +16,7 @@ from agent_workflow_kernel import (  # noqa: E402
     LiveObsidianMarkdownSurfaceAdapter,
     SurfaceAdapter,
 )
-from agent_workflow_kernel.local_adapters import OpenClawTelegramSurfaceAdapter  # noqa: E402
+from agent_workflow_kernel_openclaw import OpenClawTelegramSurfaceAdapter  # noqa: E402
 
 
 def invocation(adapter_id: str, operation: str = "publish") -> AdapterInvocation:

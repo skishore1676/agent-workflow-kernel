@@ -14,6 +14,11 @@ OpenClaw adapter: agents, sessions, Work Ledger compatibility, Blackboard,
 host paths, launchd/cron, Telegram/Obsidian, lane engines.
 ```
 
+The repository root editable install discovers both `agent_workflow_kernel` and
+`agent_workflow_kernel_openclaw`. OpenClaw-specific adapter classes should be
+imported from `agent_workflow_kernel_openclaw`; the portable kernel package
+should not re-export them.
+
 ## Boundary Requirements
 
 The portable kernel must not contain:
