@@ -102,6 +102,10 @@ class WorkflowLedger:
               current_stage_id TEXT,
               idempotency_key TEXT,
               input_hash TEXT NOT NULL,
+              input_snapshot_json TEXT,
+              workflow_definition_json TEXT,
+              workflow_definition_hash TEXT,
+              workflow_source_uri TEXT,
               recovery_epoch INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
@@ -243,6 +247,13 @@ class WorkflowLedger:
             ("rendered_context_hash", "rendered_context_hash TEXT"),
         ):
             self._ensure_stage_run_column(column_name, column_sql)
+        for column_name, column_sql in (
+            ("input_snapshot_json", "input_snapshot_json TEXT"),
+            ("workflow_definition_json", "workflow_definition_json TEXT"),
+            ("workflow_definition_hash", "workflow_definition_hash TEXT"),
+            ("workflow_source_uri", "workflow_source_uri TEXT"),
+        ):
+            self._ensure_workflow_instance_column(column_name, column_sql)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -256,7 +267,14 @@ class WorkflowLedger:
             self.connection.commit()
 
     def insert_workflow_instance(
-        self, instance: WorkflowInstance, *, created_at: datetime | str | None = None
+        self,
+        instance: WorkflowInstance,
+        *,
+        created_at: datetime | str | None = None,
+        input_snapshot: Any | None = None,
+        workflow_definition_json: str | None = None,
+        workflow_definition_hash: str | None = None,
+        workflow_source_uri: str | None = None,
     ) -> None:
         now = iso_timestamp(created_at)
         with self._transaction() as conn:
@@ -264,9 +282,11 @@ class WorkflowLedger:
                 """
                 INSERT INTO workflow_instances (
                   instance_id, workflow_def_id, workflow_version, status,
-                  current_stage_id, idempotency_key, input_hash, recovery_epoch,
+                  current_stage_id, idempotency_key, input_hash,
+                  input_snapshot_json, workflow_definition_json,
+                  workflow_definition_hash, workflow_source_uri, recovery_epoch,
                   created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     instance.instance_id,
@@ -276,6 +296,10 @@ class WorkflowLedger:
                     instance.current_stage_id,
                     instance.idempotency_key,
                     instance.input_hash,
+                    _json(input_snapshot) if input_snapshot is not None else None,
+                    workflow_definition_json,
+                    workflow_definition_hash,
+                    workflow_source_uri,
                     instance.recovery_epoch,
                     now,
                     now,
@@ -287,6 +311,37 @@ class WorkflowLedger:
             "SELECT * FROM workflow_instances WHERE instance_id = ?", (instance_id,)
         ).fetchone()
         return self._workflow_instance_from_row(row) if row else None
+
+    def get_workflow_instance_provenance(self, instance_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT input_hash, input_snapshot_json, workflow_definition_json,
+                   workflow_definition_hash, workflow_source_uri
+            FROM workflow_instances
+            WHERE instance_id = ?
+            """,
+            (instance_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "input_hash": row["input_hash"],
+            "input_snapshot": _loads_json(row["input_snapshot_json"])
+            if row["input_snapshot_json"]
+            else None,
+            "workflow_definition": _loads_json(row["workflow_definition_json"])
+            if row["workflow_definition_json"]
+            else None,
+            "workflow_definition_hash": row["workflow_definition_hash"],
+            "workflow_source_uri": row["workflow_source_uri"],
+        }
+
+    def get_workflow_input_snapshot(self, instance_id: str) -> dict[str, Any] | None:
+        provenance = self.get_workflow_instance_provenance(instance_id)
+        if provenance is None:
+            return None
+        snapshot = provenance.get("input_snapshot")
+        return dict(snapshot) if isinstance(snapshot, dict) else None
 
     def find_next_workflow_instance_for_work(
         self,
@@ -475,8 +530,7 @@ class WorkflowLedger:
                 """
                 UPDATE stage_runs
                 SET status = ?, lease_owner = ?, lease_token = ?,
-                    lease_expires_at = ?, started_at = COALESCE(started_at, ?),
-                    updated_at = ?
+                    lease_expires_at = ?, updated_at = ?
                 WHERE stage_run_id = ? AND status = ?
                 """,
                 (
@@ -484,7 +538,6 @@ class WorkflowLedger:
                     owner_id,
                     lease_token,
                     expires_at,
-                    claimed_at,
                     claimed_at,
                     row["stage_run_id"],
                     StageRunStatus.QUEUED.value,
@@ -550,6 +603,64 @@ class WorkflowLedger:
             )
         return True
 
+    def mark_stage_run_started(
+        self,
+        *,
+        stage_run_id: str,
+        lease_token: str,
+        actor: str,
+        idempotency_key: str | None = None,
+        side_effect_scope: dict[str, Any] | None = None,
+        adapter_family: str | None = None,
+        adapter_id: str | None = None,
+        operation: str | None = None,
+        request_hash: str | None = None,
+        now: datetime | str | None = None,
+    ) -> None:
+        """Mark a claimed run as past the safe replay point.
+
+        Once this is recorded, stale-lease recovery must assume adapter or
+        handler work may have started and must not blindly requeue the attempt.
+        """
+
+        started_at = iso_timestamp(now)
+        with self._transaction() as conn:
+            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            conn.execute(
+                """
+                UPDATE stage_runs
+                SET status = ?, started_at = COALESCE(started_at, ?),
+                    idempotency_key = COALESCE(idempotency_key, ?),
+                    updated_at = ?
+                WHERE stage_run_id = ? AND lease_token = ?
+                """,
+                (
+                    StageRunStatus.STARTED.value,
+                    started_at,
+                    idempotency_key,
+                    started_at,
+                    stage_run_id,
+                    lease_token,
+                ),
+            )
+            self._append_event(
+                conn,
+                instance_id=row["instance_id"],
+                stage_run_id=stage_run_id,
+                event_type="stage_started",
+                actor=actor,
+                payload={
+                    "previous_status": row["status"],
+                    "idempotency_key": idempotency_key or row["idempotency_key"],
+                    "adapter_family": adapter_family,
+                    "adapter_id": adapter_id,
+                    "operation": operation,
+                    "request_hash": request_hash,
+                    "side_effect_scope": side_effect_scope or {},
+                },
+                created_at=started_at,
+            )
+
     def record_adapter_invocation(
         self,
         invocation: AdapterInvocation,
@@ -597,6 +708,116 @@ class WorkflowLedger:
                     completed,
                     _json(invocation),
                 ),
+            )
+
+    def record_adapter_invocation_started(
+        self,
+        invocation: AdapterInvocation,
+        *,
+        request_hash: str | None,
+        actor: str,
+        side_effect_scope: dict[str, Any] | None = None,
+        started_at: datetime | str | None = None,
+    ) -> None:
+        started = iso_timestamp(started_at)
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO adapter_invocations (
+                  invocation_id, workflow_id, instance_id, stage_run_id,
+                  adapter_family, adapter_id, operation, input_ref,
+                  context_packet_ref, idempotency_key, status, request_hash,
+                  response_hash, external_ref, error_class, error_summary,
+                  started_at, completed_at, invocation_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, ?)
+                """,
+                (
+                    invocation.invocation_id,
+                    invocation.workflow_id,
+                    invocation.instance_id,
+                    invocation.stage_run_id,
+                    invocation.adapter_family.value,
+                    invocation.adapter_id,
+                    invocation.operation,
+                    invocation.input_ref,
+                    invocation.context_packet_ref,
+                    invocation.idempotency_key,
+                    "started",
+                    request_hash,
+                    started,
+                    _json(invocation),
+                ),
+            )
+            self._append_event(
+                conn,
+                instance_id=invocation.instance_id,
+                stage_run_id=invocation.stage_run_id,
+                event_type="adapter_invocation_preflight",
+                actor=actor,
+                payload={
+                    "invocation_id": invocation.invocation_id,
+                    "adapter_family": invocation.adapter_family.value,
+                    "adapter_id": invocation.adapter_id,
+                    "operation": invocation.operation,
+                    "idempotency_key": invocation.idempotency_key,
+                    "request_hash": request_hash,
+                    "side_effect_scope": side_effect_scope or {},
+                },
+                created_at=started,
+            )
+
+    def complete_adapter_invocation(
+        self,
+        *,
+        invocation_id: str,
+        status: str,
+        actor: str,
+        response_hash: str | None = None,
+        external_ref: str | None = None,
+        error_class: str | None = None,
+        error_summary: str | None = None,
+        completed_at: datetime | str | None = None,
+    ) -> None:
+        completed = iso_timestamp(completed_at)
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM adapter_invocations WHERE invocation_id = ?",
+                (invocation_id,),
+            ).fetchone()
+            if row is None:
+                raise LedgerConflict(f"adapter invocation {invocation_id!r} is not started")
+            conn.execute(
+                """
+                UPDATE adapter_invocations
+                SET status = ?, response_hash = ?, external_ref = ?,
+                    error_class = ?, error_summary = ?, completed_at = ?
+                WHERE invocation_id = ?
+                """,
+                (
+                    status,
+                    response_hash,
+                    external_ref,
+                    error_class,
+                    error_summary,
+                    completed,
+                    invocation_id,
+                ),
+            )
+            self._append_event(
+                conn,
+                instance_id=row["instance_id"],
+                stage_run_id=row["stage_run_id"],
+                event_type="adapter_invocation_completed",
+                actor=actor,
+                payload={
+                    "invocation_id": invocation_id,
+                    "status": status,
+                    "response_hash": response_hash,
+                    "external_ref": external_ref,
+                    "error_class": error_class,
+                    "error_summary": error_summary,
+                },
+                created_at=completed,
             )
 
     def record_stage_run_prompt_context(
@@ -738,23 +959,62 @@ class WorkflowLedger:
         retry_at = iso_timestamp(retry_after_at)
         with self._transaction() as conn:
             row = self._require_leased_run(conn, stage_run_id, lease_token)
+            next_attempt_row = conn.execute(
+                """
+                SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
+                FROM stage_runs
+                WHERE instance_id = ? AND stage_id = ?
+                """,
+                (row["instance_id"], row["stage_id"]),
+            ).fetchone()
+            next_attempt = int(next_attempt_row["next_attempt"])
+            next_stage_run_id = f"{row['instance_id']}:{row['stage_id']}:{next_attempt}"
+            next_retry_count = int(row["retry_count"] or 0) + 1
             conn.execute(
                 """
                 UPDATE stage_runs
                 SET status = ?, failure_class = ?, failure_summary = ?,
-                    retry_count = retry_count + 1, retry_after_at = ?,
+                    retry_count = ?, retry_after_at = ?,
                     lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
-                    updated_at = ?
+                    completed_at = ?, updated_at = ?
                 WHERE stage_run_id = ? AND lease_token = ?
                 """,
                 (
-                    StageRunStatus.QUEUED.value,
+                    _stage_status_for_failure(failure_class).value,
                     _failure_value(failure_class),
                     failure_summary,
+                    next_retry_count,
                     retry_at,
+                    scheduled_at,
                     scheduled_at,
                     stage_run_id,
                     lease_token,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO stage_runs (
+                  stage_run_id, instance_id, stage_id, attempt, status,
+                  adapter_id, actor_ref, idempotency_key, input_hash,
+                  retry_count, retry_after_at, parent_stage_run_id,
+                  created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    next_stage_run_id,
+                    row["instance_id"],
+                    row["stage_id"],
+                    next_attempt,
+                    StageRunStatus.QUEUED.value,
+                    row["adapter_id"],
+                    row["actor_ref"],
+                    row["idempotency_key"],
+                    row["input_hash"],
+                    next_retry_count,
+                    retry_at,
+                    row["stage_run_id"],
+                    scheduled_at,
+                    scheduled_at,
                 ),
             )
             self._append_event(
@@ -767,6 +1027,23 @@ class WorkflowLedger:
                     "failure_class": _failure_value(failure_class),
                     "failure_summary": failure_summary,
                     "retry_after_at": retry_at,
+                    "new_stage_run_id": next_stage_run_id,
+                    "new_attempt": next_attempt,
+                },
+                created_at=scheduled_at,
+            )
+            self._append_event(
+                conn,
+                instance_id=row["instance_id"],
+                stage_run_id=next_stage_run_id,
+                event_type="stage_retry_queued",
+                actor=actor,
+                payload={
+                    "parent_stage_run_id": row["stage_run_id"],
+                    "failure_class": _failure_value(failure_class),
+                    "retry_after_at": retry_at,
+                    "attempt": next_attempt,
+                    "idempotency_key": row["idempotency_key"],
                 },
                 created_at=scheduled_at,
             )
@@ -1019,11 +1296,18 @@ class WorkflowLedger:
             for row in rows:
                 previous_status = StageRunStatus(row["status"])
                 if row["status"] in requeue_statuses:
-                    action = "requeued"
-                    new_status = StageRunStatus.QUEUED.value
-                    approval_required = 0
-                    failure_class = FailureClass.STALE_LEASE
-                    failure_summary = "Lease expired before adapter work started."
+                    if _stage_run_has_start_evidence(conn, row["stage_run_id"]):
+                        action = "blocked"
+                        new_status = StageRunStatus.BLOCKED.value
+                        approval_required = 1
+                        failure_class = FailureClass.UNKNOWN_SIDE_EFFECT_STATE
+                        failure_summary = "Lease expired after adapter invocation may have started."
+                    else:
+                        action = "requeued"
+                        new_status = StageRunStatus.QUEUED.value
+                        approval_required = 0
+                        failure_class = FailureClass.STALE_LEASE
+                        failure_summary = "Lease expired before adapter work started."
                 elif row["status"] in block_statuses:
                     action = "blocked"
                     new_status = StageRunStatus.BLOCKED.value
@@ -1106,6 +1390,10 @@ class WorkflowLedger:
               wi.status AS instance_status,
               wi.current_stage_id,
               wi.input_hash AS instance_input_hash,
+              wi.input_snapshot_json,
+              wi.workflow_definition_json,
+              wi.workflow_definition_hash,
+              wi.workflow_source_uri,
               wi.recovery_epoch
             FROM stage_runs sr
             JOIN workflow_instances wi ON wi.instance_id = sr.instance_id
@@ -1154,7 +1442,17 @@ class WorkflowLedger:
                 "status": row["instance_status"],
                 "current_stage_id": row["current_stage_id"],
                 "input_hash": row["instance_input_hash"],
+                "input_snapshot": _loads_json(row["input_snapshot_json"])
+                if row["input_snapshot_json"]
+                else None,
                 "recovery_epoch": row["recovery_epoch"],
+            },
+            "workflow_provenance": {
+                "definition_hash": row["workflow_definition_hash"],
+                "source_uri": row["workflow_source_uri"],
+                "definition": _loads_json(row["workflow_definition_json"])
+                if row["workflow_definition_json"]
+                else None,
             },
             "stage_run": {
                 "stage_run_id": row["stage_run_id"],
@@ -1254,12 +1552,23 @@ class WorkflowLedger:
             )
 
     def _ensure_stage_run_column(self, column_name: str, column_sql: str) -> None:
+        self._ensure_table_column("stage_runs", column_name, column_sql)
+
+    def _ensure_workflow_instance_column(self, column_name: str, column_sql: str) -> None:
+        self._ensure_table_column("workflow_instances", column_name, column_sql)
+
+    def _ensure_table_column(
+        self,
+        table_name: str,
+        column_name: str,
+        column_sql: str,
+    ) -> None:
         columns = {
             row["name"]
-            for row in self.connection.execute("PRAGMA table_info(stage_runs)").fetchall()
+            for row in self.connection.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
         if column_name not in columns:
-            self.connection.execute(f"ALTER TABLE stage_runs ADD COLUMN {column_sql}")
+            self.connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
 
     def _require_leased_run(
         self, conn: sqlite3.Connection, stage_run_id: str, lease_token: str
@@ -1314,6 +1623,7 @@ class WorkflowLedger:
             receipt_id=row["receipt_id"],
             failure_class=FailureClass(row["failure_class"]) if row["failure_class"] else None,
             retry_after_at=row["retry_after_at"],
+            idempotency_key=row["idempotency_key"],
         )
 
     def _workflow_instance_from_row(self, row: sqlite3.Row) -> WorkflowInstance:
@@ -1346,6 +1656,35 @@ def _coerce_datetime(value: datetime | str) -> datetime:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
     return datetime.fromisoformat(value).astimezone(UTC)
+
+
+def _stage_status_for_failure(failure_class: FailureClass | str) -> StageRunStatus:
+    if _failure_value(failure_class) == FailureClass.INVALID_OUTPUT.value:
+        return StageRunStatus.INVALID_OUTPUT
+    return StageRunStatus.FAILED
+
+
+def _stage_run_has_start_evidence(conn: sqlite3.Connection, stage_run_id: str) -> bool:
+    invocation = conn.execute(
+        """
+        SELECT 1 FROM adapter_invocations
+        WHERE stage_run_id = ?
+        LIMIT 1
+        """,
+        (stage_run_id,),
+    ).fetchone()
+    if invocation is not None:
+        return True
+    event = conn.execute(
+        """
+        SELECT 1 FROM events
+        WHERE stage_run_id = ?
+          AND event_type IN ('stage_started', 'adapter_invocation_preflight')
+        LIMIT 1
+        """,
+        (stage_run_id,),
+    ).fetchone()
+    return event is not None
 
 
 def _receipt_export(row: sqlite3.Row) -> dict[str, Any]:

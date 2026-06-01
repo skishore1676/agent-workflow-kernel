@@ -120,6 +120,22 @@ class WorkflowRunner:
             return RunnerStep(stage_run=None, decision="idle")
         if run.lease_token is None:
             raise RuntimeError(f"claimed stage run {run.stage_run_id!r} has no lease token")
+        self.ledger.mark_stage_run_started(
+            stage_run_id=run.stage_run_id,
+            lease_token=run.lease_token,
+            actor=self.owner_id,
+            idempotency_key=run.idempotency_key,
+            side_effect_scope={
+                "boundary": "stage_handler",
+                "adapter_invocation_may_start": True,
+                "adapter_id": run.adapter_id,
+                "stage_id": run.stage_id,
+            },
+            now=now,
+        )
+        refreshed_run = self.ledger.get_stage_run(run.stage_run_id)
+        if refreshed_run is not None:
+            run = refreshed_run
 
         try:
             result = handler(run)

@@ -217,6 +217,7 @@ class StageRun:
     receipt_id: str | None = None
     failure_class: FailureClass | None = None
     retry_after_at: str | None = None
+    idempotency_key: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
