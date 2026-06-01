@@ -40,6 +40,15 @@ from .readonly import (
     invocation_from_fixture,
 )
 from .review_loop import OpenClawBlackboardDecisionLoopAdapter
+from .owned_completion import (
+    OWNED_COMPLETION_SCHEMA,
+    OWNED_COMPLETION_WORKFLOW_ID,
+    OWNED_COMPLETION_WORKFLOW_VERSION,
+    OpenClawArtifactEvidence,
+    discover_openclaw_artifacts,
+    owned_completion_workflow,
+    run_owned_completion_bridge,
+)
 from .weekly_update import (
     WEEKLY_UPDATE_ADOPTION_REPORT_SCHEMA,
     WEEKLY_UPDATE_FIXTURE_SCHEMA,
@@ -82,6 +91,10 @@ __all__ = [
     "OpenClawReadOnlyInspection",
     "OpenClawReferenceMapping",
     "OpenClawWorkLedgerIds",
+    "OWNED_COMPLETION_SCHEMA",
+    "OWNED_COMPLETION_WORKFLOW_ID",
+    "OWNED_COMPLETION_WORKFLOW_VERSION",
+    "OpenClawArtifactEvidence",
     "WEEKLY_UPDATE_ADOPTION_REPORT_SCHEMA",
     "WEEKLY_UPDATE_FIXTURE_SCHEMA",
     "WeeklyUpdateAdoptionReport",
@@ -91,6 +104,7 @@ __all__ = [
     "adoption_report_from_fixture",
     "adoption_report_from_observations",
     "artifact_refs_from_fixture",
+    "discover_openclaw_artifacts",
     "guard_read_only_operation",
     "invocation_from_fixture",
     "ivy_jonah_fixture_from_mapping",
@@ -98,9 +112,11 @@ __all__ = [
     "load_weekly_update_fixture",
     "mapping_from_fixture",
     "observations_from_weekly_update",
+    "owned_completion_workflow",
     "receipts_from_weekly_update",
     "receipts_from_stage_observations",
     "runtime_refs_from_fixture",
+    "run_owned_completion_bridge",
     "surface_refs_from_fixture",
     "stage_observations_from_fixture",
     "weekly_blackboard_bucket",
