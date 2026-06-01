@@ -155,6 +155,39 @@ class OpenClawPromptInventoryTest(unittest.TestCase):
             {f"{prompt_id}@1.0.0" for prompt_id in expected_mapped}.issubset(mapped_prompt_ids)
         )
 
+    def test_openclaw_cutover_and_live_cargo_prompts_are_resolvable(self) -> None:
+        registry = PromptRegistry.load(ROOT / "prompts")
+        profiles = [
+            [
+                ("policy.openclaw.review_only_human_gate", "policy"),
+                ("lane.jarvis_weekly_update_shadow", "lane"),
+                ("stage.openclaw.cutover_review_artifact", "stage"),
+            ],
+            [
+                ("identity.jarvis_weekly_shadow_worker", "identity"),
+                ("policy.openclaw.read_only_shadow", "policy"),
+                ("lane.jarvis_weekly_update_shadow", "lane"),
+                ("stage.jarvis_weekly.improvement_cargo", "stage"),
+            ],
+        ]
+
+        for refs in profiles:
+            with self.subTest(refs=[prompt_id for prompt_id, _ in refs]):
+                bundle = registry.resolve([script_ref(prompt_id, kind) for prompt_id, kind in refs])
+                self.assertEqual({prompt.ref.id for prompt in bundle.prompts}, {prompt_id for prompt_id, _ in refs})
+                self.assertTrue(bundle.prompt_bundle_digest.startswith("sha256:"))
+
+
+def script_ref(prompt_id: str, kind: str):
+    from agent_workflow_kernel import PromptRef
+
+    return PromptRef(
+        id=prompt_id,
+        kind=kind,
+        version="1.0.0",
+        render_mode="yaml" if kind == "policy" else "markdown",
+    )
+
 
 if __name__ == "__main__":
     unittest.main()

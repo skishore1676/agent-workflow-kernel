@@ -109,10 +109,20 @@ prompts:
     version: 1.0.0
     path: stages/jarvis-weekly/suman-review-gate/v1.0.0.md
     status: active
+  - id: stage.jarvis_weekly.improvement_cargo
+    kind: stage
+    version: 1.0.0
+    path: stages/jarvis-weekly/improvement-cargo/v1.0.0.md
+    status: active
   - id: stage.jarvis_weekly.route_follow_up
     kind: stage
     version: 1.0.0
     path: stages/jarvis-weekly-route-follow-up/v1.0.0.md
+    status: active
+  - id: stage.openclaw.cutover_review_artifact
+    kind: stage
+    version: 1.0.0
+    path: stages/openclaw-cutover/review-artifact/v1.0.0.md
     status: active
   - id: adapter_source.openclaw.imported_sources
     kind: adapter_source

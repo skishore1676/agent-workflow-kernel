@@ -893,6 +893,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
         gate_id = str(packet.get("gate_id") or "").strip()
         requested_action = str(packet.get("requested_action") or exact_action).strip()
         artifact_review = _artifact_review_from_packet(packet)
+        prompt_provenance = _prompt_provenance_from_packet(packet)
         note_text = _render_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -907,6 +908,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             action_fingerprint=action_fingerprint,
             evidence_refs=evidence_refs,
             artifact_review=artifact_review,
+            prompt_provenance=prompt_provenance,
             test_only=bool(packet.get("test_only", True)),
             non_live=True,
             created_at=self.created_at,
@@ -981,6 +983,7 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             "action_fingerprint": action_fingerprint,
             "evidence_refs": list(evidence_refs),
             "artifact_review": artifact_review,
+            "prompt_provenance": prompt_provenance,
             "mutation_mode": self.mutation_mode,
             "write_class": "sandbox",
             "test_only": bool(packet.get("test_only", True)),
@@ -2191,6 +2194,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
         gate_id = str(packet.get("gate_id") or "").strip()
         requested_action = str(packet.get("requested_action") or exact_action).strip()
         artifact_review = _artifact_review_from_packet(packet)
+        prompt_provenance = _prompt_provenance_from_packet(packet)
         note_text = _render_live_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -2205,6 +2209,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
             action_fingerprint=action_fingerprint,
             evidence_refs=evidence_refs,
             artifact_review=artifact_review,
+            prompt_provenance=prompt_provenance,
             created_at=self.created_at,
         )
         idempotency_replayed = False
@@ -2280,6 +2285,7 @@ class LiveObsidianMarkdownSurfaceAdapter:
             "action_fingerprint": action_fingerprint,
             "evidence_refs": list(evidence_refs),
             "artifact_review": artifact_review,
+            "prompt_provenance": prompt_provenance,
             "mutation_mode": "live",
             "write_class": "live_operator_surface",
             "live_operator_surface_allowed": True,
@@ -2776,6 +2782,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         gate_id = str(packet.get("gate_id") or "").strip()
         requested_action = str(packet.get("requested_action") or exact_action).strip()
         artifact_review = _artifact_review_from_packet(packet)
+        prompt_provenance = _prompt_provenance_from_packet(packet)
 
         safety_error = _non_live_safety_error(packet, require_test_only=False)
         if safety_error is not None:
@@ -2844,6 +2851,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             action_fingerprint=action_fingerprint,
             evidence_refs=evidence_refs,
             artifact_review=artifact_review,
+            prompt_provenance=prompt_provenance,
             test_only=test_only,
             non_live=non_live,
             created_at=self.created_at,
@@ -2876,6 +2884,7 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             "action_fingerprint": action_fingerprint,
             "evidence_refs": list(evidence_refs),
             "artifact_review": artifact_review,
+            "prompt_provenance": prompt_provenance,
             "test_only": test_only,
             "non_live": non_live,
         }
@@ -3239,6 +3248,28 @@ def _render_artifact_review_section(artifact_review: Mapping[str, Any]) -> list[
     return lines
 
 
+def _prompt_provenance_from_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
+    value = packet.get("prompt_provenance")
+    if not isinstance(value, Mapping):
+        return {}
+    refs = value.get("refs")
+    return {
+        "prompt_bundle_digest": str(value.get("prompt_bundle_digest") or ""),
+        "context_packet_ref": str(value.get("context_packet_ref") or value.get("context_packet_id") or ""),
+        "rendered_input_digest": str(value.get("rendered_input_digest") or ""),
+        "refs": [dict(ref) for ref in refs if isinstance(ref, Mapping)] if isinstance(refs, list) else [],
+    }
+
+
+def _prompt_provenance_metadata(prompt_provenance: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "prompt_bundle_digest": str(prompt_provenance.get("prompt_bundle_digest") or ""),
+        "context_packet_ref": str(prompt_provenance.get("context_packet_ref") or ""),
+        "rendered_input_digest": str(prompt_provenance.get("rendered_input_digest") or ""),
+        "ref_count": len(prompt_provenance.get("refs") or ()),
+    }
+
+
 def _render_review_card(
     *,
     invocation: AdapterInvocation,
@@ -3254,6 +3285,7 @@ def _render_review_card(
     action_fingerprint: str,
     evidence_refs: tuple[str, ...],
     artifact_review: Mapping[str, Any],
+    prompt_provenance: Mapping[str, Any],
     test_only: bool,
     non_live: bool,
     created_at: str,
@@ -3277,6 +3309,8 @@ def _render_review_card(
     }
     if artifact_review:
         metadata["artifact_review"] = _artifact_review_metadata(artifact_review)
+    if prompt_provenance:
+        metadata["prompt_provenance"] = _prompt_provenance_metadata(prompt_provenance)
     frontmatter = "\n".join(
         f"{key}: {json.dumps(value, sort_keys=True)}" for key, value in metadata.items()
     )
@@ -3307,6 +3341,7 @@ def _render_review_card(
             f"- Requested action: `{requested_action}`",
             f"- Exact action: `{exact_action}`",
             f"- Action fingerprint: `{action_fingerprint}`",
+            f"- Prompt bundle: `{prompt_provenance.get('prompt_bundle_digest') or 'not-provided'}`",
             "",
             *artifact_lines,
             "## Evidence",
@@ -3338,6 +3373,7 @@ def _render_live_review_card(
     action_fingerprint: str,
     evidence_refs: tuple[str, ...],
     artifact_review: Mapping[str, Any],
+    prompt_provenance: Mapping[str, Any],
     created_at: str,
 ) -> str:
     metadata = {
@@ -3359,6 +3395,8 @@ def _render_live_review_card(
     }
     if artifact_review:
         metadata["artifact_review"] = _artifact_review_metadata(artifact_review)
+    if prompt_provenance:
+        metadata["prompt_provenance"] = _prompt_provenance_metadata(prompt_provenance)
     frontmatter = "\n".join(
         f"{key}: {json.dumps(value, sort_keys=True)}" for key, value in metadata.items()
     )
@@ -3388,6 +3426,7 @@ def _render_live_review_card(
             f"- Requested action: `{requested_action}`",
             f"- Exact action: `{exact_action}`",
             f"- Action fingerprint: `{action_fingerprint}`",
+            f"- Prompt bundle: `{prompt_provenance.get('prompt_bundle_digest') or 'not-provided'}`",
             f"- Public publish blocked: `true`",
             "",
             *artifact_lines,

@@ -31,9 +31,12 @@ try:
         AdapterFamily,
         AdapterInvocation,
         LiveObsidianMarkdownSurfaceAdapter,
+        PromptRef,
+        PromptRegistry,
         SandboxObsidianMarkdownSurfaceAdapter,
         SandboxTelegramOutboxSurfaceAdapter,
         digest_data,
+        render_context_packet,
         to_plain_data,
     )
     from agent_workflow_kernel_openclaw import (  # noqa: E402
@@ -49,9 +52,12 @@ except ModuleNotFoundError:
         AdapterFamily,
         AdapterInvocation,
         LiveObsidianMarkdownSurfaceAdapter,
+        PromptRef,
+        PromptRegistry,
         SandboxObsidianMarkdownSurfaceAdapter,
         SandboxTelegramOutboxSurfaceAdapter,
         digest_data,
+        render_context_packet,
         to_plain_data,
     )
     from agent_workflow_kernel_openclaw import (  # noqa: E402
@@ -67,6 +73,10 @@ DETERMINISTIC_CREATED_AT = "2000-01-01T00:00:00Z"
 LANE_LABELS = {
     "ivy": "Ivy/Jonah editorial",
     "weekly": "Jarvis weekly update",
+}
+LANE_DECISION_LABELS = {
+    "ivy": ("accept_ivy_cutover", "request_ivy_revision", "block_ivy_cutover"),
+    "weekly": ("approve_next_weekly_test", "request_weekly_follow_up", "block_weekly_cutover"),
 }
 FORBIDDEN_ACTIONS = (
     "public_publish",
@@ -460,6 +470,7 @@ def _publish_obsidian_notes(
             created_at=DETERMINISTIC_CREATED_AT,
             canonical_surface="openclaw_cutover_obsidian",
         )
+    prompt_registry = PromptRegistry.load(ROOT / "prompts")
     notes: list[dict[str, Any]] = []
     lanes = _mapping(packet_summary.get("lanes"))
     for lane_id in sorted(lanes):
@@ -485,6 +496,16 @@ def _publish_obsidian_notes(
             lane_decisions=lane_decisions,
             blocked_actions=blocked_actions,
         )
+        prompt_provenance = _lane_prompt_provenance(
+            registry=prompt_registry,
+            lane_id=lane_id,
+            lane=lane,
+            auto_summary=auto_summary,
+            lane_decisions=lane_decisions,
+            action_fingerprint=action_fingerprint,
+            artifact_review=artifact_review,
+        )
+        decision_labels = LANE_DECISION_LABELS.get(lane_id, ("accept_cutover", "request_follow_up", "block_cutover"))
         invocation = AdapterInvocation(
             invocation_id=f"cutover:obsidian:{lane_id}",
             workflow_id=str(lane.get("workflow_id") or f"openclaw_{lane_id}_cutover"),
@@ -506,7 +527,7 @@ def _publish_obsidian_notes(
                 "gate_id": f"cutover:{lane_id}",
                 "human_ref": "operator-visible-cutover-review",
                 "human_ask": _obsidian_human_ask(lane_id, lane, lane_decisions),
-                "allowed_decisions": ("acknowledged", "needs_follow_up", "blocked"),
+                "allowed_decisions": decision_labels,
                 "requested_action": "Review this cutover artifact as evidence only.",
                 "exact_action": "Surface the OpenClaw AWK review state for operator readback only within this configured note path.",
                 "action_fingerprint": action_fingerprint,
@@ -515,6 +536,7 @@ def _publish_obsidian_notes(
                 "artifact_intro": artifact_review["intro"],
                 "artifact_link": artifact_review["link"],
                 "artifact_markdown": artifact_review["markdown"],
+                "prompt_provenance": prompt_provenance,
                 "test_only": not allow_live_obsidian,
                 "non_live": not allow_live_obsidian,
                 "live_operator_surface_allowed": allow_live_obsidian,
@@ -554,6 +576,10 @@ def _publish_obsidian_notes(
                 "artifact_review_embedded": bool(artifact_review["markdown"]),
                 "source_artifact_path": artifact_review["source_artifact_path"],
                 "summary_path": str(auto_summary.get("artifacts", {}).get("summary_json") or ""),
+                "decision_labels": list(decision_labels),
+                "prompt_hash": prompt_provenance.get("prompt_bundle_digest"),
+                "prompt_context_ref": prompt_provenance.get("context_packet_ref"),
+                "prompt_refs": prompt_provenance.get("refs", []),
                 "idempotency_replayed": bool(publish.outputs.get("idempotency_replayed", False)),
                 "trusted": trusted,
                 "error_class": publish_error.get("error_class"),
@@ -630,12 +656,15 @@ def _publish_blackboard_pointers(
                 ),
                 "owner": "Suman",
                 "producer": "AWK/OpenClaw live cutover",
-                "decision_labels": ("acknowledged", "needs_follow_up", "blocked"),
+                "decision_labels": tuple(note.get("decision_labels") or ("accept_cutover", "request_follow_up", "block_cutover")),
                 "lane_id": lane_id,
                 "gate_id": f"cutover:{lane_id}",
                 "action_fingerprint": note.get("action_fingerprint"),
                 "source_artifact_path": str(note.get("source_artifact_path") or ""),
                 "summary_path": str(note.get("summary_path") or ""),
+                "prompt_hash": str(note.get("prompt_hash") or ""),
+                "prompt_context_ref": str(note.get("prompt_context_ref") or ""),
+                "prompt_refs": note.get("prompt_refs") or (),
                 "receipt_path": str(output_root / "cutover_receipt.json"),
             },
         )
@@ -1126,6 +1155,75 @@ def _lane_artifact_review(
         "link": source_artifact_path,
         "markdown": "\n".join(lines).strip(),
         "source_artifact_path": source_artifact_path,
+    }
+
+
+def _lane_prompt_provenance(
+    *,
+    registry: PromptRegistry,
+    lane_id: str,
+    lane: Mapping[str, Any],
+    auto_summary: Mapping[str, Any],
+    lane_decisions: Sequence[Mapping[str, Any]],
+    action_fingerprint: str,
+    artifact_review: Mapping[str, str],
+) -> dict[str, Any]:
+    refs = [
+        PromptRef(
+            id="policy.openclaw.review_only_human_gate",
+            kind="policy",
+            version="1.0.0",
+            render_mode="yaml",
+        ),
+        PromptRef(
+            id="lane.ivy_jonah_editorial" if lane_id == "ivy" else "lane.jarvis_weekly_update_shadow",
+            kind="lane",
+            version="1.0.0",
+        ),
+        PromptRef(
+            id="stage.openclaw.cutover_review_artifact",
+            kind="stage",
+            version="1.0.0",
+        ),
+    ]
+    bundle = registry.resolve(refs)
+    rendered = render_context_packet(
+        prompt_bundle=bundle,
+        workflow_id="openclaw_live_cutover_review",
+        workflow_version="0.1.0",
+        instance_id=str(lane.get("fixture_id") or "openclaw-cutover"),
+        stage_id=f"{lane_id}_cutover_review",
+        stage_run_id=f"{lane_id}_cutover_review",
+        stage_type="human_gate",
+        inputs={
+            "lane_id": lane_id,
+            "lane_label": LANE_LABELS.get(lane_id, lane_id),
+            "lane_report_path": artifact_review.get("source_artifact_path"),
+            "auto_review_summary": _mapping(auto_summary.get("artifacts")).get("summary_json"),
+            "decision_labels": LANE_DECISION_LABELS.get(lane_id, ()),
+            "action_fingerprint": action_fingerprint,
+            "readiness": _mapping(lane.get("readiness")),
+            "source_evidence": _mapping(lane.get("source_evidence")),
+        },
+        approvals=lane_decisions,
+        constraints={
+            "public_publish_blocked": True,
+            "mutation_permission_granted": False,
+            "allowed_effect": "operator_review_surface_only",
+        },
+        permissions={
+            "live_operator_surface_write": True,
+            "public_publish": False,
+            "telegram_send": False,
+            "runtime_mutation": False,
+        },
+    )
+    return {
+        "prompt_bundle_digest": rendered.prompt_bundle.prompt_bundle_digest,
+        "context_packet_ref": rendered.packet.context_id,
+        "packet_digest": rendered.packet_digest,
+        "rendered_input_digest": rendered.rendered_input_digest,
+        "refs": rendered.prompt_bundle.provenance_refs(),
     }
 
 

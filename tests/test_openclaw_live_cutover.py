@@ -108,14 +108,26 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
                 note_text = note_path.read_text(encoding="utf-8")
                 self.assertIn("## Artifact To Review", note_text)
                 self.assertIn("### Evidence Paths", note_text)
+                self.assertIn("Prompt bundle: `sha256:", note_text)
                 self.assertTrue(note["artifact_review_embedded"])
                 self.assertTrue(Path(note["source_artifact_path"]).exists())
+                self.assertTrue(note["prompt_hash"].startswith("sha256:"))
+                self.assertTrue(note["prompt_context_ref"].startswith("ctx_"))
+                self.assertIn("stage.openclaw.cutover_review_artifact", {ref["id"] for ref in note["prompt_refs"]})
                 if note["lane_id"] == "ivy":
                     self.assertIn("### Ivy/Jonah Boundary", note_text)
                     self.assertIn("Public publish blocked", note_text)
+                    self.assertEqual(
+                        note["decision_labels"],
+                        ["accept_ivy_cutover", "request_ivy_revision", "block_ivy_cutover"],
+                    )
                 if note["lane_id"] == "weekly":
                     self.assertIn("### Jarvis Weekly Boundary", note_text)
                     self.assertIn("Read clear is mutation permission", note_text)
+                    self.assertEqual(
+                        note["decision_labels"],
+                        ["approve_next_weekly_test", "request_weekly_follow_up", "block_weekly_cutover"],
+                    )
 
     def test_explicit_flags_write_temp_vault_notes_and_mock_telegram_send(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -204,6 +216,12 @@ class OpenClawLiveCutoverTest(unittest.TestCase):
                 record_json = json.loads(Path(record["record_path"]).read_text(encoding="utf-8"))
                 self.assertTrue(Path(record_json["source_artifact_path"]).exists())
                 self.assertTrue(Path(record_json["summary_path"]).exists())
+                self.assertTrue(record_json["awk"]["prompt_hash"].startswith("sha256:"))
+                self.assertTrue(record_json["awk"]["prompt_context_ref"].startswith("ctx_"))
+                self.assertIn(
+                    "stage.openclaw.cutover_review_artifact",
+                    {ref["id"] for ref in record_json["awk"]["prompt_refs"]},
+                )
                 self.assertIn(record["blackboard_item_id"], blackboard)
             self.assertIn("Blackboard", receipt["telegram"]["pointer"])
             receipt_md = (output_dir / "cutover_receipt.md").read_text(encoding="utf-8")
