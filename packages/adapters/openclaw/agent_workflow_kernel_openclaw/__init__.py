@@ -42,12 +42,15 @@ from .readonly import (
 from .review_loop import OpenClawBlackboardDecisionLoopAdapter
 from .owned_completion import (
     OWNED_COMPLETION_SCHEMA,
+    OWNED_COMPLETION_SCHEDULER_SCHEMA,
     OWNED_COMPLETION_WORKFLOW_ID,
     OWNED_COMPLETION_WORKFLOW_VERSION,
     OpenClawArtifactEvidence,
     discover_openclaw_artifacts,
     owned_completion_workflow,
+    plan_owned_completion_run,
     run_owned_completion_bridge,
+    run_owned_completion_scheduler,
 )
 from .weekly_update import (
     WEEKLY_UPDATE_ADOPTION_REPORT_SCHEMA,
@@ -92,6 +95,7 @@ __all__ = [
     "OpenClawReferenceMapping",
     "OpenClawWorkLedgerIds",
     "OWNED_COMPLETION_SCHEMA",
+    "OWNED_COMPLETION_SCHEDULER_SCHEMA",
     "OWNED_COMPLETION_WORKFLOW_ID",
     "OWNED_COMPLETION_WORKFLOW_VERSION",
     "OpenClawArtifactEvidence",
@@ -113,10 +117,12 @@ __all__ = [
     "mapping_from_fixture",
     "observations_from_weekly_update",
     "owned_completion_workflow",
+    "plan_owned_completion_run",
     "receipts_from_weekly_update",
     "receipts_from_stage_observations",
     "runtime_refs_from_fixture",
     "run_owned_completion_bridge",
+    "run_owned_completion_scheduler",
     "surface_refs_from_fixture",
     "stage_observations_from_fixture",
     "weekly_blackboard_bucket",

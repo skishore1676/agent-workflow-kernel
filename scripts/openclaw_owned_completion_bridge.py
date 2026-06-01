@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import OpenClaw Blackboard acknowledgement state into an AWK owned ledger."""
+"""Plan or run OpenClaw Blackboard acknowledgement import into an AWK ledger."""
 
 from __future__ import annotations
 
@@ -17,25 +17,34 @@ for package_path in (str(KERNEL_PATH), str(OPENCLAW_ADAPTER_PATH)):
     if package_path not in sys.path:
         sys.path.insert(0, package_path)
 
-from agent_workflow_kernel_openclaw import run_owned_completion_bridge  # noqa: E402
+from agent_workflow_kernel_openclaw import run_owned_completion_scheduler  # noqa: E402
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Prove AWK-owned terminal completion for migrated OpenClaw Blackboard work IDs."
+        description=(
+            "Scheduler-friendly AWK-owned completion runner for migrated OpenClaw "
+            "Blackboard work IDs. Defaults to no-op/read-only planning."
+        )
     )
     parser.add_argument("--openclaw-root", required=True, type=Path)
     parser.add_argument("--ledger", required=True, type=Path)
     parser.add_argument("--cutover-receipt", type=Path)
     parser.add_argument("--artifact-id", action="append", default=[])
     parser.add_argument("--summary-json", type=Path)
+    parser.add_argument(
+        "--run",
+        action="store_true",
+        help="Execute the owned-completion runner and write the AWK ledger. Without this flag only a no-op plan is returned.",
+    )
     args = parser.parse_args(argv)
     try:
-        summary = run_owned_completion_bridge(
+        summary = run_owned_completion_scheduler(
             ledger_path=args.ledger,
             openclaw_root=args.openclaw_root,
             cutover_receipt_path=args.cutover_receipt,
             artifact_ids=tuple(args.artifact_id),
+            run=args.run,
         )
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True), file=sys.stderr)
@@ -44,6 +53,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.summary_json.parent.mkdir(parents=True, exist_ok=True)
         args.summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(summary, sort_keys=True))
+    if not args.run:
+        return 0
     return 0 if summary["ok"] else 1
 
 
