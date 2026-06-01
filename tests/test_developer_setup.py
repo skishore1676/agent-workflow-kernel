@@ -15,14 +15,16 @@ class DeveloperSetupTest(unittest.TestCase):
         self.assertIn(".venv/bin/python -m pip install --upgrade pip", script)
         self.assertIn(".venv/bin/python -m pip install -e '.[dev]'", script)
 
-    def test_check_runs_bare_unittest_and_venv_pytest_when_available(self) -> None:
+    def test_check_prefers_venv_python_when_available(self) -> None:
         script = (ROOT / "scripts" / "check.sh").read_text(encoding="utf-8")
 
         self.assertIn("#!/usr/bin/env bash", script)
         self.assertIn("set -euo pipefail", script)
-        self.assertIn("python3 -m unittest discover -s tests", script)
+        self.assertIn('PYTHON="${PYTHON:-python3}"', script)
         self.assertIn("if [[ -x .venv/bin/python ]]", script)
-        self.assertIn(".venv/bin/python -m pytest", script)
+        self.assertIn('PYTHON=".venv/bin/python"', script)
+        self.assertIn('"$PYTHON" -m unittest discover -s tests', script)
+        self.assertIn('"$PYTHON" -m pytest', script)
         self.assertIn("Run ./scripts/dev_setup.sh first", script)
 
     def test_makefile_exposes_one_command_setup_and_check_targets(self) -> None:
