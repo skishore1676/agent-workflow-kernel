@@ -9,8 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 
 from agent_workflow_kernel import (  # noqa: E402
+    AUTOMATED_SUMAN_REVIEWER_HUMAN_REF,
     AdapterRegistration,
     AdapterRegistry,
+    AutomatedSumanReviewer,
     KernelRuntimeConfig,
     LocalFakeRuntimeAdapter,
     LocalMarkdownHumanReviewSurfaceAdapter,
@@ -174,6 +176,110 @@ class WorkflowRunnerOwnedExecutionTest(unittest.TestCase):
         notes = list(self.notes_dir.glob("review_cards/*.md"))
         self.assertEqual(len(notes), 1)
 
+    def test_owned_runner_automated_suman_reviewer_approves_safe_shadow_gate(self) -> None:
+        kernel = self.kernel_for(self.human_gate_workflow())
+        kernel.start(instance_id="instance-auto-approve", inputs={}, now=self.now)
+        artifact = Path(self.tmpdir.name) / "draft-package.json"
+        artifact.write_text('{"ok": true}\n', encoding="utf-8")
+
+        summary = self.runner().run_kernel_until_idle(
+            kernel,
+            publish_human_gate=True,
+            ingest_human_decision=True,
+            automated_reviewer=AutomatedSumanReviewer(created_at=self.now.isoformat()),
+            reviewer_context={
+                "required_artifacts": (str(artifact),),
+                "public_publish_blocked": True,
+                "adoption_blockers": (),
+            },
+            now=self.now,
+        )
+
+        self.assertEqual(summary.status, "done")
+        self.assertEqual(
+            [result.operation for result in summary.surface_results],
+            ["publish", "readback", "automated_review", "ingest_decisions"],
+        )
+        review = summary.surface_results[2]
+        self.assertEqual(review.decision, "approved")
+        self.assertEqual(review.human_ref, AUTOMATED_SUMAN_REVIEWER_HUMAN_REF)
+        self.assertTrue(Path(review.receipt_path).exists())
+        note_text = Path(review.note_path).read_text(encoding="utf-8")
+        self.assertIn("- [x] `approved`", note_text)
+        row = self.ledger.connection.execute(
+            "SELECT decision, human_ref, canonical_surface FROM human_decisions WHERE instance_id = ?",
+            ("instance-auto-approve",),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["decision"], "approved")
+        self.assertEqual(row["human_ref"], AUTOMATED_SUMAN_REVIEWER_HUMAN_REF)
+        self.assertNotEqual(row["human_ref"], "Suman")
+        self.assertEqual(row["canonical_surface"], "local_test_review")
+
+    def test_automated_suman_reviewer_requests_revision_when_artifacts_are_missing(self) -> None:
+        kernel = self.kernel_for(self.revise_blocks_workflow())
+        kernel.start(instance_id="instance-auto-revise", inputs={}, now=self.now)
+
+        summary = self.runner().run_kernel_until_idle(
+            kernel,
+            publish_human_gate=True,
+            ingest_human_decision=True,
+            automated_reviewer=AutomatedSumanReviewer(created_at=self.now.isoformat()),
+            reviewer_context={
+                "required_artifacts": (str(Path(self.tmpdir.name) / "missing-draft.json"),),
+                "public_publish_blocked": True,
+            },
+            now=self.now,
+        )
+
+        self.assertEqual(summary.status, "blocked")
+        review = summary.surface_results[2]
+        self.assertEqual(review.operation, "automated_review")
+        self.assertEqual(review.decision, "revise")
+        self.assertFalse(review.outputs["checks"]["required_artifacts_present"])
+        approve = self.ledger.get_stage_run("instance-auto-revise:approve:1")
+        self.assertIsNotNone(approve)
+        assert approve is not None
+        self.assertEqual(approve.status, StageRunStatus.SUCCEEDED)
+        stored = self.ledger.get_workflow_instance("instance-auto-revise")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.BLOCKED)
+
+    def test_automated_suman_reviewer_refuses_to_approve_public_publish_or_external_send(self) -> None:
+        kernel = self.kernel_for(self.public_publish_gate_workflow())
+        kernel.start(instance_id="instance-auto-public-publish", inputs={}, now=self.now)
+
+        summary = self.runner().run_kernel_until_idle(
+            kernel,
+            publish_human_gate=True,
+            ingest_human_decision=True,
+            automated_reviewer=AutomatedSumanReviewer(created_at=self.now.isoformat()),
+            reviewer_context={
+                "override_decision": "approved",
+                "hard_gates": ("external_send",),
+                "required_artifacts": (),
+                "public_publish_blocked": False,
+            },
+            now=self.now,
+        )
+
+        self.assertEqual(summary.status, "blocked")
+        review = summary.surface_results[2]
+        self.assertEqual(review.operation, "automated_review")
+        self.assertEqual(review.decision, "park")
+        self.assertFalse(review.outputs["checks"]["unsafe_effect_absent"])
+        self.assertIn("action:public_publish", review.outputs["checks"]["unsafe_reasons"])
+        self.assertIn("hard_gates:external_send", review.outputs["checks"]["unsafe_reasons"])
+        rows = self.ledger.connection.execute(
+            "SELECT decision, human_ref FROM human_decisions WHERE instance_id = ?",
+            ("instance-auto-public-publish",),
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["decision"], "park")
+        self.assertEqual(rows[0]["human_ref"], AUTOMATED_SUMAN_REVIEWER_HUMAN_REF)
+
     def runner(self) -> WorkflowRunner:
         return WorkflowRunner(self.ledger, owner_id="owned-runner-test")
 
@@ -260,6 +366,80 @@ class WorkflowRunnerOwnedExecutionTest(unittest.TestCase):
                 Transition(from_stage="approve", on="rejected", terminal="policy_denied"),
                 Transition(from_stage="approve", on="revise", to_stage="draft"),
                 Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def revise_blocks_workflow(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="owned-human-gate-revise-blocks",
+            version="0.1.0",
+            name="Owned human gate revision blocks",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="approve",
+                    type=StageType.HUMAN_GATE,
+                    adapter="surface.local_markdown_human_review",
+                    outcomes=("approved", "revise", "park"),
+                    inputs={"decision_action": "review_clear"},
+                    actors={"operator": "operator(test)"},
+                    surface={
+                        "title": "Review packet",
+                        "human_ask": "Choose the next workflow state.",
+                        "allowed_decisions": ("approved", "revise", "park"),
+                        "evidence_refs": ("fixture://runner-owned",),
+                    },
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="approve"),
+                Transition(from_stage="approve", on="approved", terminal="done"),
+                Transition(from_stage="approve", on="revise", terminal="blocked"),
+                Transition(from_stage="approve", on="park", terminal="blocked"),
+            ),
+        )
+
+    def public_publish_gate_workflow(self) -> WorkflowDef:
+        return WorkflowDef(
+            id="owned-public-publish-gate",
+            version="0.1.0",
+            name="Owned public publish gate",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="approve",
+                    type=StageType.HUMAN_GATE,
+                    adapter="surface.local_markdown_human_review",
+                    outcomes=("approved", "revise", "park"),
+                    inputs={"decision_action": "public_publish"},
+                    actors={"operator": "operator(test)"},
+                    surface={
+                        "title": "Public publish gate",
+                        "human_ask": "Choose the next workflow state.",
+                        "allowed_decisions": ("approved", "revise", "park"),
+                        "evidence_refs": ("fixture://runner-owned-public",),
+                    },
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="approve"),
+                Transition(from_stage="approve", on="approved", terminal="done"),
+                Transition(from_stage="approve", on="revise", terminal="blocked"),
+                Transition(from_stage="approve", on="park", terminal="blocked"),
             ),
         )
 
