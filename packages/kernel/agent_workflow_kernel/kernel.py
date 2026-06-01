@@ -92,6 +92,19 @@ class KernelDecisionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class HumanGateSurfaceResult:
+    stage_run: StageRun
+    adapter_id: str
+    operation: Literal["publish", "readback", "ingest_decisions"]
+    status: str
+    receipt_id: str | None = None
+    surface_ref: Mapping[str, Any] | None = None
+    outputs: Mapping[str, Any] = field(default_factory=dict)
+    decision_result: KernelDecisionResult | None = None
+    failure_summary: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _TransitionResult:
     decision: KernelTransitionDecision
     queued_stage_id: str | None = None
@@ -294,7 +307,12 @@ class WorkflowKernel:
             )
 
         gate = self._human_gate(stage, waiting_run)
-        validation_error = _human_decision_validation_error(decision, gate, now=now)
+        validation_error = _human_decision_validation_error(
+            decision,
+            gate,
+            now=now,
+            allowed_decisions=stage.outcomes,
+        )
         if validation_error is not None:
             self._block_waiting_human_run(waiting_run, validation_error, now=now)
             return KernelDecisionResult(
@@ -377,6 +395,332 @@ class WorkflowKernel:
             queued_stage_id=transition.queued_stage_id,
             terminal_status=transition.terminal_status,
             failure_summary=transition.failure_summary,
+        )
+
+    def publish_waiting_human_gate(
+        self,
+        *,
+        instance_id: str,
+        surface_adapter_ref: str | None = None,
+        allowed_decisions: tuple[str, ...] | None = None,
+        evidence_refs: tuple[str, ...] | None = None,
+        title: str | None = None,
+        human_ask: str | None = None,
+        human_ref: str | None = None,
+        test_only: bool = False,
+        non_live: bool = False,
+        now: Any = None,
+    ) -> HumanGateSurfaceResult:
+        """Publish the current waiting human gate through its surface adapter."""
+
+        waiting = self._waiting_human_gate_context(instance_id=instance_id)
+        run, stage, gate = waiting
+        registration = self._resolve_surface_registration(
+            stage,
+            operation="publish",
+            surface_adapter_ref=surface_adapter_ref,
+        )
+        packet = self._human_gate_surface_packet(
+            run=run,
+            stage=stage,
+            gate=gate,
+            allowed_decisions=allowed_decisions,
+            evidence_refs=evidence_refs,
+            title=title,
+            human_ask=human_ask,
+            human_ref=human_ref,
+            test_only=test_only,
+            non_live=non_live,
+        )
+        created_at = iso_timestamp(now)
+        invocation = self._surface_invocation(
+            run=run,
+            registration=registration,
+            operation="publish",
+            idempotency_key=f"{run.stage_run_id}:human_gate_surface:publish",
+        )
+        request_hash = digest_data({"invocation": invocation, "surface_packet": packet})
+        adapter_result = registration.adapter.publish(invocation, packet)
+        response_hash = digest_data(adapter_result)
+        self.ledger.record_adapter_invocation(
+            invocation,
+            status=adapter_result.status,
+            request_hash=request_hash,
+            response_hash=response_hash,
+            external_ref=_surface_external_ref(adapter_result.outputs),
+            started_at=created_at,
+            completed_at=created_at,
+        )
+        receipt = _make_kernel_adapter_receipt(
+            invocation,
+            status=adapter_result.status,
+            summary=f"Kernel published waiting human gate through {registration.adapter_id}.",
+            created_at=created_at,
+            stage_id=stage.id,
+            artifact_refs=adapter_result.artifact_refs,
+            outputs=adapter_result.outputs,
+            checks_run=("surface_adapter_registered", "waiting_gate_bound", "surface_packet_published"),
+            policy_snapshot=to_plain_data(gate),
+            residual_risk=adapter_result.residual_risk,
+            next_action=adapter_result.next_hint,
+            rendered_context=None,
+        )
+        self.ledger.record_receipt(receipt)
+        surface_ref = _surface_ref_from_outputs(adapter_result.outputs)
+        self.ledger.append_event(
+            instance_id=run.instance_id,
+            stage_run_id=run.stage_run_id,
+            event_type="human_gate_surface_published",
+            actor=self.config.owner_id,
+            payload={
+                "adapter_id": registration.adapter_id,
+                "gate_id": gate.gate_id,
+                "receipt_id": receipt.receipt_id,
+                "status": adapter_result.status,
+                "surface_ref": surface_ref,
+            },
+            created_at=created_at,
+        )
+        return HumanGateSurfaceResult(
+            stage_run=run,
+            adapter_id=registration.adapter_id,
+            operation="publish",
+            status=adapter_result.status,
+            receipt_id=receipt.receipt_id,
+            surface_ref=surface_ref,
+            outputs=adapter_result.outputs,
+            failure_summary=None if adapter_result.status == ADAPTER_STATUS_SUCCEEDED else adapter_result.residual_risk,
+        )
+
+    def readback_human_gate_surface(
+        self,
+        *,
+        instance_id: str,
+        surface_ref: Mapping[str, Any] | None = None,
+        surface_adapter_ref: str | None = None,
+        now: Any = None,
+    ) -> HumanGateSurfaceResult:
+        """Read back the published human-gate surface through its adapter."""
+
+        waiting = self._waiting_human_gate_context(instance_id=instance_id)
+        run, stage, gate = waiting
+        registration = self._resolve_surface_registration(
+            stage,
+            operation="readback",
+            surface_adapter_ref=surface_adapter_ref,
+        )
+        resolved_surface_ref = self._resolve_human_gate_surface_ref(run, surface_ref)
+        created_at = iso_timestamp(now)
+        invocation = self._surface_invocation(
+            run=run,
+            registration=registration,
+            operation="readback",
+            idempotency_key=f"{run.stage_run_id}:human_gate_surface:readback:{uuid.uuid4().hex[:8]}",
+        )
+        request_hash = digest_data({"invocation": invocation, "surface_ref": resolved_surface_ref})
+        adapter_receipt = registration.adapter.readback(resolved_surface_ref)
+        outputs = {
+            "surface_ref": resolved_surface_ref,
+            "adapter_receipt": to_plain_data(adapter_receipt),
+            "readback": _receipt_outputs(adapter_receipt),
+        }
+        response_hash = digest_data(outputs)
+        self.ledger.record_adapter_invocation(
+            invocation,
+            status=adapter_receipt.status,
+            request_hash=request_hash,
+            response_hash=response_hash,
+            external_ref=_surface_external_ref({"surface_ref": resolved_surface_ref}),
+            started_at=created_at,
+            completed_at=created_at,
+        )
+        receipt = _make_kernel_adapter_receipt(
+            invocation,
+            status=adapter_receipt.status,
+            summary=adapter_receipt.summary,
+            created_at=created_at,
+            stage_id=stage.id,
+            artifact_refs=adapter_receipt.artifact_refs,
+            outputs=outputs,
+            checks_run=("surface_adapter_registered", "surface_ref_readback"),
+            policy_snapshot=to_plain_data(gate),
+            residual_risk=adapter_receipt.residual_risk,
+            next_action=adapter_receipt.next_action,
+            rendered_context=None,
+        )
+        self.ledger.record_receipt(receipt)
+        self.ledger.append_event(
+            instance_id=run.instance_id,
+            stage_run_id=run.stage_run_id,
+            event_type="human_gate_surface_readback",
+            actor=self.config.owner_id,
+            payload={
+                "adapter_id": registration.adapter_id,
+                "gate_id": gate.gate_id,
+                "receipt_id": receipt.receipt_id,
+                "status": adapter_receipt.status,
+                "surface_ref": resolved_surface_ref,
+            },
+            created_at=created_at,
+        )
+        return HumanGateSurfaceResult(
+            stage_run=run,
+            adapter_id=registration.adapter_id,
+            operation="readback",
+            status=adapter_receipt.status,
+            receipt_id=receipt.receipt_id,
+            surface_ref=resolved_surface_ref,
+            outputs=outputs,
+            failure_summary=None if adapter_receipt.status == ADAPTER_STATUS_SUCCEEDED else adapter_receipt.summary,
+        )
+
+    def ingest_human_gate_surface_decision(
+        self,
+        *,
+        instance_id: str,
+        surface_ref: Mapping[str, Any] | None = None,
+        surface_adapter_ref: str | None = None,
+        allowed_decisions: tuple[str, ...] | None = None,
+        evidence_refs: tuple[str, ...] | None = None,
+        human_ref: str | None = None,
+        now: Any = None,
+    ) -> HumanGateSurfaceResult:
+        """Ingest one structured surface decision and resume the waiting gate."""
+
+        waiting = self._waiting_human_gate_context(instance_id=instance_id)
+        run, stage, gate = waiting
+        registration = self._resolve_surface_registration(
+            stage,
+            operation="ingest_decisions",
+            surface_adapter_ref=surface_adapter_ref,
+        )
+        resolved_surface_ref = self._resolve_human_gate_surface_ref(run, surface_ref)
+        query = self._human_gate_surface_query(
+            run=run,
+            stage=stage,
+            gate=gate,
+            surface_ref=resolved_surface_ref,
+            allowed_decisions=allowed_decisions,
+            evidence_refs=evidence_refs,
+            human_ref=human_ref,
+        )
+        created_at = iso_timestamp(now)
+        invocation = self._surface_invocation(
+            run=run,
+            registration=registration,
+            operation="ingest_decisions",
+            idempotency_key=f"{run.stage_run_id}:human_gate_surface:ingest:{uuid.uuid4().hex[:8]}",
+        )
+        request_hash = digest_data({"invocation": invocation, "surface_query": query})
+        decision_receipts = tuple(registration.adapter.ingest_decisions(query))
+        candidate_receipts = tuple(
+            receipt for receipt in decision_receipts if _is_surface_decision_receipt(receipt)
+        )
+        approval: HumanApprovalReceipt | None = None
+        conversion_error: str | None = None
+        if len(candidate_receipts) == 1 and candidate_receipts[0].status == ADAPTER_STATUS_SUCCEEDED:
+            approval, conversion_error = _human_approval_from_surface_receipt(
+                candidate_receipts[0],
+                gate=gate,
+                surface_adapter_id=registration.adapter_id,
+            )
+        ingest_status = (
+            ADAPTER_STATUS_SUCCEEDED
+            if (
+                len(candidate_receipts) == 1
+                and candidate_receipts[0].status == ADAPTER_STATUS_SUCCEEDED
+                and conversion_error is None
+            )
+            else "blocked"
+        )
+        outputs = {
+            "surface_ref": resolved_surface_ref,
+            "surface_query": query,
+            "candidate_decision_count": len(candidate_receipts),
+            "adapter_receipts": [to_plain_data(receipt) for receipt in decision_receipts],
+        }
+        response_hash = digest_data(outputs)
+        failure_summary = conversion_error or _surface_ingest_failure_summary(
+            decision_receipts,
+            candidate_receipts,
+        )
+        self.ledger.record_adapter_invocation(
+            invocation,
+            status=ingest_status,
+            request_hash=request_hash,
+            response_hash=response_hash,
+            external_ref=_surface_external_ref({"surface_ref": resolved_surface_ref}),
+            error_class=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else "human_decision_ingest_blocked",
+            error_summary=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else failure_summary,
+            started_at=created_at,
+            completed_at=created_at,
+        )
+        receipt = _make_kernel_adapter_receipt(
+            invocation,
+            status=ingest_status,
+            summary=(
+                "Kernel ingested one human-gate surface decision."
+                if ingest_status == ADAPTER_STATUS_SUCCEEDED
+                else failure_summary
+            ),
+            created_at=created_at,
+            stage_id=stage.id,
+            outputs=outputs,
+            checks_run=("surface_adapter_registered", "exactly_one_decision_receipt"),
+            policy_snapshot=to_plain_data(gate),
+            residual_risk=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else failure_summary,
+            next_action=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else "Fix the surface decision and retry from a fresh waiting gate.",
+            rendered_context=None,
+        )
+        self.ledger.record_receipt(receipt)
+        self.ledger.append_event(
+            instance_id=run.instance_id,
+            stage_run_id=run.stage_run_id,
+            event_type="human_gate_surface_decision_ingested",
+            actor=self.config.owner_id,
+            payload={
+                "adapter_id": registration.adapter_id,
+                "gate_id": gate.gate_id,
+                "receipt_id": receipt.receipt_id,
+                "status": ingest_status,
+                "candidate_decision_count": len(candidate_receipts),
+            },
+            created_at=created_at,
+        )
+        if ingest_status != ADAPTER_STATUS_SUCCEEDED:
+            self._block_waiting_human_run(run, failure_summary, now=now)
+            return HumanGateSurfaceResult(
+                stage_run=run,
+                adapter_id=registration.adapter_id,
+                operation="ingest_decisions",
+                status=ingest_status,
+                receipt_id=receipt.receipt_id,
+                surface_ref=resolved_surface_ref,
+                outputs=outputs,
+                decision_result=KernelDecisionResult(
+                    stage_run=run,
+                    decision="blocked",
+                    failure_summary=failure_summary,
+                ),
+                failure_summary=failure_summary,
+            )
+
+        assert approval is not None
+        decision_result = self.ingest_human_decision(
+            instance_id=instance_id,
+            decision=approval,
+            now=now,
+        )
+        return HumanGateSurfaceResult(
+            stage_run=run,
+            adapter_id=registration.adapter_id,
+            operation="ingest_decisions",
+            status="succeeded" if decision_result.decision != "blocked" else "blocked",
+            receipt_id=receipt.receipt_id,
+            surface_ref=resolved_surface_ref,
+            outputs=outputs,
+            decision_result=decision_result,
+            failure_summary=decision_result.failure_summary,
         )
 
     def _handle_stage(self, state: dict[str, Any], *, now: Any):
@@ -628,6 +972,159 @@ class WorkflowKernel:
             next_action="Fix prompt registry configuration before retrying the stage.",
         )
 
+    def _waiting_human_gate_context(
+        self,
+        *,
+        instance_id: str,
+    ) -> tuple[StageRun, StageDef, Any]:
+        waiting_run = self.ledger.find_waiting_human_stage_run(instance_id=instance_id)
+        if waiting_run is None:
+            raise ValueError(f"No human gate is waiting for instance {instance_id!r}.")
+        stage = self._stage_by_id.get(waiting_run.stage_id)
+        if stage is None or stage.type != StageType.HUMAN_GATE:
+            raise ValueError("Waiting run does not match a human gate in this workflow.")
+        return waiting_run, stage, self._human_gate(stage, waiting_run)
+
+    def _resolve_surface_registration(
+        self,
+        stage: StageDef,
+        *,
+        operation: str,
+        surface_adapter_ref: str | None,
+    ) -> AdapterRegistration:
+        adapter_ref = surface_adapter_ref or stage.adapter
+        registration = self.config.adapter_registry.resolve(
+            adapter_ref,
+            stage_type=StageType.HUMAN_GATE,
+        )
+        if registration.family != AdapterFamily.SURFACE:
+            raise AdapterRegistryError(
+                "human gate surface lifecycle requires a surface adapter registration"
+            )
+        if not registration.supports(operation):
+            raise AdapterRegistryError(
+                f"{registration.adapter_id} does not support operation {operation!r}."
+            )
+        return registration
+
+    def _surface_invocation(
+        self,
+        *,
+        run: StageRun,
+        registration: AdapterRegistration,
+        operation: str,
+        idempotency_key: str,
+    ) -> AdapterInvocation:
+        return AdapterInvocation(
+            invocation_id=f"kernel:{run.stage_run_id}:human_gate_surface:{operation}:{uuid.uuid4().hex[:12]}",
+            workflow_id=self.workflow.id,
+            instance_id=run.instance_id,
+            stage_run_id=run.stage_run_id,
+            adapter_family=registration.family,
+            adapter_id=registration.adapter_id,
+            operation=operation,
+            input_ref=f"stage:{run.stage_id}:human_gate_surface",
+            idempotency_key=idempotency_key,
+        )
+
+    def _human_gate_surface_packet(
+        self,
+        *,
+        run: StageRun,
+        stage: StageDef,
+        gate: Any,
+        allowed_decisions: tuple[str, ...] | None,
+        evidence_refs: tuple[str, ...] | None,
+        title: str | None,
+        human_ask: str | None,
+        human_ref: str | None,
+        test_only: bool,
+        non_live: bool,
+    ) -> dict[str, Any]:
+        decisions = allowed_decisions or _human_gate_allowed_decisions(stage)
+        evidence = evidence_refs or _human_gate_evidence_refs(stage, gate)
+        packet = dict(stage.surface)
+        packet.update(
+            {
+                "schema": "human_gate_surface_packet.v1",
+                "workflow_id": self.workflow.id,
+                "workflow_version": self.workflow.version,
+                "instance_id": run.instance_id,
+                "stage_id": stage.id,
+                "stage_run_id": run.stage_run_id,
+                "gate_id": gate.gate_id,
+                "requested_action": gate.requested_action,
+                "exact_action": gate.requested_action,
+                "exact_action_approved": gate.requested_action,
+                "action_fingerprint": gate.action_fingerprint,
+                "allowed_decisions": decisions,
+                "evidence_refs": evidence,
+                "policy_gate": to_plain_data(gate),
+                "readback_required": True,
+                "test_only": test_only,
+                "non_live": non_live,
+                "human_ref": human_ref or _human_ref(stage),
+                "title": title or stage.surface.get("title") or f"Human gate: {stage.id}",
+                "human_ask": human_ask
+                or stage.surface.get("human_ask")
+                or stage.surface.get("ask")
+                or "Choose exactly one allowed decision.",
+            }
+        )
+        return packet
+
+    def _human_gate_surface_query(
+        self,
+        *,
+        run: StageRun,
+        stage: StageDef,
+        gate: Any,
+        surface_ref: Mapping[str, Any],
+        allowed_decisions: tuple[str, ...] | None,
+        evidence_refs: tuple[str, ...] | None,
+        human_ref: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "query_id": f"{run.stage_run_id}:human_gate_surface_decision",
+            "workflow_id": self.workflow.id,
+            "workflow_version": self.workflow.version,
+            "instance_id": run.instance_id,
+            "stage_id": stage.id,
+            "stage_run_id": run.stage_run_id,
+            "gate_id": gate.gate_id,
+            "requested_action": gate.requested_action,
+            "exact_action": gate.requested_action,
+            "exact_action_approved": gate.requested_action,
+            "expected_action_fingerprint": gate.action_fingerprint,
+            "action_fingerprint": gate.action_fingerprint,
+            "allowed_decisions": allowed_decisions or _human_gate_allowed_decisions(stage),
+            "evidence_refs": evidence_refs or _human_gate_evidence_refs(stage, gate),
+            "human_ref": human_ref or _human_ref(stage),
+            "surface_ref": dict(surface_ref),
+            "policy_gate": to_plain_data(gate),
+        }
+
+    def _resolve_human_gate_surface_ref(
+        self,
+        run: StageRun,
+        surface_ref: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any]:
+        if surface_ref is not None:
+            plain = to_plain_data(surface_ref)
+            if not isinstance(plain, Mapping):
+                raise ValueError("surface_ref must be a mapping or SurfaceRef-like value.")
+            return dict(plain)
+        for event in reversed(self.ledger.list_events(stage_run_id=run.stage_run_id)):
+            if event["event_type"] != "human_gate_surface_published":
+                continue
+            payload = event["payload"]
+            candidate = payload.get("surface_ref")
+            if payload.get("status") == ADAPTER_STATUS_SUCCEEDED and isinstance(candidate, Mapping):
+                return dict(candidate)
+        raise ValueError(
+            "No published human-gate surface reference is available; publish the waiting gate first."
+        )
+
     def _human_gate(self, stage: StageDef, run: StageRun):
         return self.config.policy_engine.evaluate(
             ActionRequest(
@@ -645,6 +1142,7 @@ class WorkflowKernel:
                 stage_id=stage.id,
                 actor_ref=run.actor_ref,
                 adapter_ref=stage.adapter,
+                evidence_refs=_human_gate_evidence_refs(stage, None),
             )
         )
 
@@ -832,6 +1330,36 @@ def _human_decision_action(stage: StageDef) -> str:
     return "human_decision"
 
 
+def _human_gate_allowed_decisions(stage: StageDef) -> tuple[str, ...]:
+    configured = stage.surface.get("allowed_decisions", stage.inputs.get("allowed_decisions"))
+    if configured is not None:
+        return _string_tuple(configured)
+    if stage.outcomes:
+        return tuple(stage.outcomes)
+    return (
+        ApprovalDecision.APPROVED.value,
+        ApprovalDecision.REJECTED.value,
+        ApprovalDecision.REVISE.value,
+        ApprovalDecision.PARK.value,
+    )
+
+
+def _human_gate_evidence_refs(stage: StageDef, gate: Any | None) -> tuple[str, ...]:
+    configured = stage.surface.get("evidence_refs", stage.inputs.get("evidence_refs"))
+    if configured is not None:
+        return _string_tuple(configured)
+    if gate is not None:
+        return _string_tuple(getattr(gate, "evidence_refs", ()))
+    return ()
+
+
+def _human_ref(stage: StageDef) -> str:
+    configured = stage.surface.get("human_ref", stage.inputs.get("human_ref"))
+    if configured is not None:
+        return str(configured)
+    return _actor_ref(stage) or "human"
+
+
 def _outcome_for_stage_result(stage: StageDef, adapter_result: AdapterResult | None) -> str:
     if adapter_result is not None:
         outcome = adapter_result.outputs.get("outcome")
@@ -863,6 +1391,7 @@ def _human_decision_validation_error(
     gate: Any,
     *,
     now: Any,
+    allowed_decisions: tuple[str, ...] = (),
 ) -> str | None:
     if decision is None:
         return "Missing human decision receipt."
@@ -873,7 +1402,7 @@ def _human_decision_validation_error(
         return "Human decision receipt is missing a human_ref."
     if not decision.canonical_surface:
         return "Human decision receipt is missing a canonical_surface."
-    if decision_text not in _KNOWN_HUMAN_DECISIONS:
+    if decision_text not in _KNOWN_HUMAN_DECISIONS and decision_text not in allowed_decisions:
         return f"Unsupported human decision {decision_text!r}."
     if decision.gate_id != gate.gate_id:
         return "Human decision receipt does not match the waiting gate."
@@ -978,6 +1507,120 @@ def _actor_ref(stage: StageDef) -> str | None:
     return str(stage.actors[next(iter(stage.actors))])
 
 
+def _surface_ref_from_outputs(outputs: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    surface_ref = outputs.get("surface_ref")
+    if isinstance(surface_ref, Mapping):
+        return dict(surface_ref)
+    return None
+
+
+def _surface_external_ref(outputs: Mapping[str, Any]) -> str | None:
+    surface_ref = _surface_ref_from_outputs(outputs)
+    if surface_ref is None:
+        return None
+    for key in ("external_id", "surface_id", "note_path"):
+        value = surface_ref.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _receipt_outputs(receipt: Receipt) -> Mapping[str, Any]:
+    outputs = receipt.runtime_provenance.get("outputs", {})
+    return outputs if isinstance(outputs, Mapping) else {}
+
+
+def _is_surface_decision_receipt(receipt: Receipt) -> bool:
+    outputs = _receipt_outputs(receipt)
+    decision = outputs.get("decision")
+    return decision is not None and str(decision).strip() != ""
+
+
+def _surface_ingest_failure_summary(
+    decision_receipts: tuple[Receipt, ...],
+    candidate_receipts: tuple[Receipt, ...],
+) -> str:
+    if not decision_receipts:
+        return "Surface adapter returned no human decision receipts."
+    if len(candidate_receipts) != 1:
+        blocked = next((receipt for receipt in decision_receipts if receipt.status != ADAPTER_STATUS_SUCCEEDED), None)
+        if blocked is not None:
+            return blocked.summary
+        return (
+            "Surface decision ingest must return exactly one structured human decision "
+            f"receipt; got {len(candidate_receipts)}."
+        )
+    if candidate_receipts[0].status != ADAPTER_STATUS_SUCCEEDED:
+        return candidate_receipts[0].summary
+    return ""
+
+
+def _human_approval_from_surface_receipt(
+    receipt: Receipt,
+    *,
+    gate: Any,
+    surface_adapter_id: str,
+) -> tuple[HumanApprovalReceipt | None, str | None]:
+    outputs = _receipt_outputs(receipt)
+    required_fields = (
+        "gate_id",
+        "human_ref",
+        "canonical_surface",
+        "decision",
+        "exact_action_approved",
+        "action_fingerprint",
+    )
+    missing = tuple(field for field in required_fields if not str(outputs.get(field, "")).strip())
+    if missing:
+        return None, (
+            "Surface decision receipt is missing required approval fields: "
+            + ", ".join(missing)
+        )
+    constraints = {
+        "surface_adapter_id": surface_adapter_id,
+        "surface_receipt_ref": receipt.receipt_id,
+    }
+    for flag in ("test_only", "non_live"):
+        if flag in outputs:
+            constraints[flag] = bool(outputs[flag])
+    return (
+        HumanApprovalReceipt(
+            approval_id=str(outputs.get("approval_id") or receipt.receipt_id),
+            gate_id=str(outputs["gate_id"]),
+            human_ref=str(outputs["human_ref"]),
+            canonical_surface=str(outputs["canonical_surface"]),
+            decision=_approval_decision_value(outputs["decision"]),
+            exact_action_approved=str(outputs["exact_action_approved"]),
+            action_fingerprint=str(outputs["action_fingerprint"]),
+            evidence_refs=_string_tuple(outputs.get("evidence_refs", ())),
+            constraints=constraints,
+            created_at=receipt.created_at,
+            transcript_or_message_ref=str(
+                outputs.get("transcript_or_message_ref")
+                or outputs.get("source_note_path")
+                or receipt.receipt_id
+            ),
+        ),
+        None,
+    )
+
+
+def _approval_decision_value(value: Any) -> ApprovalDecision | str:
+    text = _decision_text(value)
+    try:
+        return ApprovalDecision(text)
+    except ValueError:
+        return text
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(str(item) for item in value)
+
+
 def _make_kernel_adapter_receipt(
     invocation: AdapterInvocation,
     *,
@@ -1012,4 +1655,10 @@ def _prior_receipts(ledger: WorkflowLedger, instance_id: str) -> tuple[Mapping[s
     return tuple(receipts)
 
 
-__all__ = ["KernelDecisionResult", "KernelRuntimeConfig", "KernelStep", "WorkflowKernel"]
+__all__ = [
+    "HumanGateSurfaceResult",
+    "KernelDecisionResult",
+    "KernelRuntimeConfig",
+    "KernelStep",
+    "WorkflowKernel",
+]

@@ -12,12 +12,16 @@ sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 from agent_workflow_kernel import (  # noqa: E402
     AdapterRegistration,
     AdapterRegistry,
+    AdapterRegistryError,
     ApprovalDecision,
     HumanApprovalReceipt,
     KernelRuntimeConfig,
     LocalFakeRuntimeAdapter,
+    LocalFakeSurfaceAdapter,
+    LocalMarkdownHumanReviewSurfaceAdapter,
     PromptRef,
     PromptRegistry,
+    Receipt,
     RiskClass,
     StageDef,
     StageRunStatus,
@@ -435,15 +439,252 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         ).fetchone()["count"]
         self.assertEqual(invocation_count, 0)
 
+    def test_human_gate_surface_lifecycle_publishes_reads_back_and_resumes(self) -> None:
+        with tempfile.TemporaryDirectory() as notes_dir:
+            surface = LocalMarkdownHumanReviewSurfaceAdapter(
+                notes_dir,
+                created_at=self.now.isoformat(),
+            )
+            kernel = self.kernel_for(
+                self.workflow_with_surface_lifecycle_gate(surface.adapter_id),
+                surface_adapter=surface,
+            )
+            self._run_to_waiting_gate(kernel, instance_id="instance-1")
+
+            publish = kernel.publish_waiting_human_gate(
+                instance_id="instance-1",
+                test_only=True,
+                non_live=True,
+                now=self.now,
+            )
+            note_path = Path(publish.outputs["note_path"])
+            readback = kernel.readback_human_gate_surface(
+                instance_id="instance-1",
+                now=self.now,
+            )
+            note_text = note_path.read_text(encoding="utf-8")
+            note_path.write_text(
+                note_text.replace("- [ ] `approved`", "- [x] `approved`"),
+                encoding="utf-8",
+            )
+
+            ingest = kernel.ingest_human_gate_surface_decision(
+                instance_id="instance-1",
+                now=self.now,
+            )
+
+        self.assertEqual(publish.status, "succeeded")
+        self.assertIsNotNone(publish.surface_ref)
+        self.assertEqual(publish.outputs["workflow_id"], "toy-surface-resume")
+        self.assertEqual(publish.outputs["instance_id"], "instance-1")
+        self.assertEqual(publish.outputs["stage_id"], "approve")
+        self.assertEqual(publish.outputs["stage_run_id"], "instance-1:approve:1")
+        self.assertEqual(publish.outputs["gate_id"][:5], "gate-")
+        self.assertEqual(publish.outputs["requested_action"], "surface_review_clear")
+        self.assertIn("Gate ID: `gate-", note_text)
+        self.assertIn("- Requested action: `surface_review_clear`", note_text)
+        self.assertEqual(readback.status, "succeeded")
+        self.assertTrue(readback.outputs["readback"]["exists"])
+        self.assertEqual(ingest.status, "succeeded")
+        self.assertIsNotNone(ingest.decision_result)
+        assert ingest.decision_result is not None
+        self.assertEqual(ingest.decision_result.decision, "queued")
+        self.assertEqual(ingest.decision_result.outcome, "approved")
+        self.assertEqual(ingest.decision_result.queued_stage_id, "apply")
+        apply = self.ledger.get_stage_run("instance-1:apply:1")
+        self.assertIsNotNone(apply)
+        assert apply is not None
+        self.assertEqual(apply.status, StageRunStatus.QUEUED)
+
+    def test_surface_decision_ingest_blocks_invalid_markdown_decisions(self) -> None:
+        cases = {
+            "multiple_checked": lambda text: text.replace(
+                "- [ ] `approved`",
+                "- [x] `approved`",
+            ).replace(
+                "- [ ] `rejected`",
+                "- [x] `rejected`",
+            ),
+            "unknown_checked": lambda text: text + "- [x] `ship_it_anyway`\n",
+            "mismatched_fingerprint": lambda text: text.replace(
+                "- Action fingerprint: `",
+                "- Action fingerprint: `edited-",
+            ),
+        }
+
+        for name, mutate in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as notes_dir:
+                surface = LocalMarkdownHumanReviewSurfaceAdapter(
+                    notes_dir,
+                    created_at=self.now.isoformat(),
+                )
+                kernel = self.kernel_for(
+                    self.workflow_with_surface_lifecycle_gate(surface.adapter_id),
+                    surface_adapter=surface,
+                )
+                instance_id = f"instance-{name}"
+                self._run_to_waiting_gate(kernel, instance_id=instance_id)
+                publish = kernel.publish_waiting_human_gate(
+                    instance_id=instance_id,
+                    test_only=True,
+                    non_live=True,
+                    now=self.now,
+                )
+                note_path = Path(publish.outputs["note_path"])
+                note_path.write_text(
+                    mutate(note_path.read_text(encoding="utf-8")),
+                    encoding="utf-8",
+                )
+
+                ingest = kernel.ingest_human_gate_surface_decision(
+                    instance_id=instance_id,
+                    now=self.now,
+                )
+
+                self.assertEqual(ingest.status, "blocked")
+                self.assertIsNotNone(ingest.decision_result)
+                assert ingest.decision_result is not None
+                self.assertEqual(ingest.decision_result.decision, "blocked")
+                self.assertIsNone(self.ledger.get_stage_run(f"{instance_id}:apply:1"))
+                approve = self.ledger.get_stage_run(f"{instance_id}:approve:1")
+                self.assertIsNotNone(approve)
+                assert approve is not None
+                self.assertEqual(approve.status, StageRunStatus.BLOCKED)
+
+    def test_generic_surface_adapter_can_publish_and_readback_waiting_gate(self) -> None:
+        surface = LocalFakeSurfaceAdapter(created_at=self.now.isoformat())
+        kernel = self.kernel_for(
+            self.workflow_with_surface_lifecycle_gate(surface.adapter_id),
+            surface_adapter=surface,
+        )
+        self._run_to_waiting_gate(kernel, instance_id="instance-generic")
+
+        publish = kernel.publish_waiting_human_gate(
+            instance_id="instance-generic",
+            test_only=True,
+            non_live=True,
+            now=self.now,
+        )
+        readback = kernel.readback_human_gate_surface(
+            instance_id="instance-generic",
+            now=self.now,
+        )
+
+        self.assertEqual(publish.status, "succeeded")
+        self.assertEqual(publish.outputs["surface_packet"]["gate_id"][:5], "gate-")
+        self.assertEqual(
+            publish.outputs["surface_packet"]["action_fingerprint"],
+            publish.outputs["surface_packet"]["policy_gate"]["action_fingerprint"],
+        )
+        self.assertEqual(readback.status, "succeeded")
+        self.assertEqual(
+            readback.outputs["readback"]["packet"]["stage_run_id"],
+            "instance-generic:approve:1",
+        )
+
+    def test_surface_adapter_without_structured_decision_blocks_resume(self) -> None:
+        surface = LocalFakeSurfaceAdapter(created_at=self.now.isoformat())
+        kernel = self.kernel_for(
+            self.workflow_with_surface_lifecycle_gate(surface.adapter_id),
+            surface_adapter=surface,
+        )
+        self._run_to_waiting_gate(kernel, instance_id="instance-generic")
+        kernel.publish_waiting_human_gate(
+            instance_id="instance-generic",
+            test_only=True,
+            non_live=True,
+            now=self.now,
+        )
+
+        ingest = kernel.ingest_human_gate_surface_decision(
+            instance_id="instance-generic",
+            now=self.now,
+        )
+
+        self.assertEqual(ingest.status, "blocked")
+        self.assertIn("exactly one", ingest.failure_summary or "")
+        self.assertIsNone(self.ledger.get_stage_run("instance-generic:apply:1"))
+
+    def test_surface_decision_receipt_mismatch_blocks_via_kernel_validation(self) -> None:
+        class WrongGateSurfaceAdapter(LocalFakeSurfaceAdapter):
+            adapter_id = "surface.wrong_gate"
+
+            def ingest_decisions(self, surface_query):
+                receipt = Receipt(
+                    receipt_id="receipt:wrong-gate-decision",
+                    kind="adapter.surface.ingest_decisions",
+                    workflow_id=str(surface_query["workflow_id"]),
+                    instance_id=str(surface_query["instance_id"]),
+                    stage_id=str(surface_query["stage_id"]),
+                    stage_run_id=str(surface_query["stage_run_id"]),
+                    status="succeeded",
+                    summary="Wrong gate decision fixture.",
+                    created_at=self.created_at,
+                    runtime_provenance={
+                        "outputs": {
+                            "gate_id": "gate-wrong",
+                            "human_ref": "Suman(test)",
+                            "canonical_surface": "local_fake",
+                            "decision": "approved",
+                            "requested_action": surface_query["requested_action"],
+                            "exact_action_approved": surface_query["exact_action"],
+                            "action_fingerprint": surface_query["expected_action_fingerprint"],
+                            "evidence_refs": surface_query["evidence_refs"],
+                            "test_only": True,
+                            "non_live": True,
+                        }
+                    },
+                )
+                self.receipts.append(receipt)
+                return [receipt]
+
+        surface = WrongGateSurfaceAdapter(created_at=self.now.isoformat())
+        kernel = self.kernel_for(
+            self.workflow_with_surface_lifecycle_gate(surface.adapter_id),
+            surface_adapter=surface,
+        )
+        self._run_to_waiting_gate(kernel, instance_id="instance-mismatch")
+        kernel.publish_waiting_human_gate(
+            instance_id="instance-mismatch",
+            test_only=True,
+            non_live=True,
+            now=self.now,
+        )
+
+        ingest = kernel.ingest_human_gate_surface_decision(
+            instance_id="instance-mismatch",
+            now=self.now,
+        )
+
+        self.assertEqual(ingest.status, "blocked")
+        self.assertIn("waiting gate", ingest.failure_summary or "")
+        self.assertIsNone(self.ledger.get_stage_run("instance-mismatch:apply:1"))
+
+    def test_missing_surface_adapter_fails_audibly(self) -> None:
+        kernel = self.kernel_for(self.workflow_with_surface_lifecycle_gate("surface.missing"))
+        self._run_to_waiting_gate(kernel, instance_id="instance-missing")
+
+        with self.assertRaises(AdapterRegistryError):
+            kernel.publish_waiting_human_gate(
+                instance_id="instance-missing",
+                test_only=True,
+                non_live=True,
+                now=self.now,
+            )
+
     def kernel_for(
         self,
         workflow: WorkflowDef,
         *,
         prompt_registry: PromptRegistry | None = None,
         prompt_registry_path: Path | None = None,
+        surface_adapter: object | None = None,
     ) -> WorkflowKernel:
         adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
-        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        registrations = [AdapterRegistration.from_runtime_adapter(adapter)]
+        if surface_adapter is not None:
+            registrations.append(AdapterRegistration.from_surface_adapter(surface_adapter))
+        registry = AdapterRegistry(tuple(registrations))
         return WorkflowKernel(
             self.ledger,
             workflow,
@@ -514,6 +755,52 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
                 Transition(from_stage="approve", on="approval_granted", to_stage="apply"),
                 Transition(from_stage="approve", on="reject", terminal="policy_denied"),
                 Transition(from_stage="approve", on="revise_plan", to_stage="draft"),
+                Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def workflow_with_surface_lifecycle_gate(self, surface_adapter: str) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-surface-resume",
+            version="0.1.0",
+            name="Toy surface resumable workflow",
+            stages=(
+                StageDef(
+                    id="draft",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("done",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="approve",
+                    type=StageType.HUMAN_GATE,
+                    adapter=surface_adapter,
+                    outcomes=("approved", "rejected", "revise"),
+                    inputs={"decision_action": "surface_review_clear"},
+                    actors={"operator": "Suman(test)"},
+                    surface={
+                        "title": "Surface review packet",
+                        "human_ask": "Choose the next workflow state.",
+                        "allowed_decisions": ("approved", "rejected", "revise"),
+                        "evidence_refs": ("fixture://surface-review",),
+                    },
+                ),
+                StageDef(
+                    id="apply",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("applied",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="draft", on="done", to_stage="approve"),
+                Transition(from_stage="approve", on="approved", to_stage="apply"),
+                Transition(from_stage="approve", on="rejected", terminal="policy_denied"),
+                Transition(from_stage="approve", on="revise", to_stage="draft"),
                 Transition(from_stage="apply", on="applied", terminal="done"),
             ),
         )

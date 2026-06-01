@@ -414,6 +414,9 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         title = str(packet.get("title") or "Local human review")
         human_ref = str(packet.get("human_ref") or "Suman(test)")
         test_only = bool(packet.get("test_only", True))
+        non_live = bool(packet.get("non_live", True))
+        gate_id = str(packet.get("gate_id") or "").strip()
+        requested_action = str(packet.get("requested_action") or exact_action).strip()
 
         missing_fields = tuple(
             name
@@ -454,11 +457,14 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             human_ask=str(packet.get("human_ask") or packet.get("ask") or ""),
             human_ref=human_ref,
             canonical_surface=self.canonical_surface,
+            gate_id=gate_id,
             allowed_decisions=allowed_decisions,
+            requested_action=requested_action,
             exact_action=exact_action,
             action_fingerprint=action_fingerprint,
             evidence_refs=evidence_refs,
             test_only=test_only,
+            non_live=non_live,
             created_at=self.created_at,
         )
         note_path.write_text(note_text, encoding="utf-8")
@@ -473,17 +479,23 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         )
         outputs = {
             "schema": LOCAL_HUMAN_REVIEW_CARD_SCHEMA,
+            "workflow_id": invocation.workflow_id,
+            "instance_id": invocation.instance_id,
+            "stage_id": stage_id,
+            "stage_run_id": invocation.stage_run_id,
             "surface_ref": to_plain_data(asdict(surface_ref)),
             "note_path": str(note_path),
             "content_hash": f"sha256:{content_hash}",
             "canonical_surface": self.canonical_surface,
+            "gate_id": gate_id,
+            "requested_action": requested_action,
             "human_ref": human_ref,
             "allowed_decisions": list(allowed_decisions),
             "exact_action": exact_action,
             "action_fingerprint": action_fingerprint,
             "evidence_refs": list(evidence_refs),
             "test_only": test_only,
-            "non_live": True,
+            "non_live": non_live,
         }
         receipt = make_adapter_receipt(
             invocation,
@@ -562,6 +574,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             or surface_query.get("requested_action")
             or ""
         ).strip()
+        expected_gate_id = str(surface_query.get("gate_id") or "").strip()
+        requested_action = str(surface_query.get("requested_action") or exact_action).strip()
         allowed_decisions = _string_tuple(surface_query.get("allowed_decisions", ()))
         evidence_refs = _string_tuple(surface_query.get("evidence_refs", ()))
         human_ref = str(surface_query.get("human_ref") or "Suman(test)")
@@ -573,6 +587,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
                     summary="Local Markdown decision ingest blocked because the source note is missing.",
                     note_path=note_path,
                     human_ref=human_ref,
+                    gate_id=expected_gate_id,
+                    requested_action=requested_action,
                     exact_action=exact_action,
                     action_fingerprint=expected_fingerprint,
                     evidence_refs=evidence_refs,
@@ -593,6 +609,11 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             expected_fingerprint = note_fingerprint
         if not exact_action:
             exact_action = str(note_metadata.get("exact_action", ""))
+        if not requested_action:
+            requested_action = str(note_metadata.get("requested_action") or exact_action)
+        note_gate_id = str(note_metadata.get("gate_id") or "")
+        if not expected_gate_id:
+            expected_gate_id = note_gate_id
         if not evidence_refs:
             evidence_refs = _string_tuple(note_metadata.get("evidence_refs", ()))
 
@@ -604,6 +625,9 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         elif note_fingerprint != expected_fingerprint:
             block_reason = "Local Markdown decision ingest blocked because the source note fingerprint does not match the expected action."
             error_class = "action_fingerprint_mismatch"
+        elif note_gate_id and expected_gate_id and note_gate_id != expected_gate_id:
+            block_reason = "Local Markdown decision ingest blocked because the source note gate id does not match the expected waiting gate."
+            error_class = "gate_id_mismatch"
         elif unknown_checked:
             block_reason = "Local Markdown decision ingest blocked because the note contains a checked unknown decision."
             error_class = "unknown_checked_decision"
@@ -619,6 +643,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
                     summary=block_reason,
                     note_path=note_path,
                     human_ref=human_ref,
+                    gate_id=expected_gate_id,
+                    requested_action=requested_action,
                     exact_action=exact_action,
                     action_fingerprint=expected_fingerprint,
                     evidence_refs=evidence_refs,
@@ -637,6 +663,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             summary=f"Local Markdown human review decision ingested: {decision}.",
             note_path=note_path,
             human_ref=human_ref,
+            gate_id=expected_gate_id,
+            requested_action=requested_action,
             decision=decision,
             exact_action=exact_action,
             action_fingerprint=expected_fingerprint,
@@ -698,6 +726,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         summary: str,
         note_path: Path,
         human_ref: str,
+        gate_id: str,
+        requested_action: str,
         exact_action: str,
         action_fingerprint: str,
         evidence_refs: tuple[str, ...],
@@ -711,8 +741,10 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         outputs: dict[str, Any] = {
             "schema": LOCAL_HUMAN_REVIEW_DECISION_SCHEMA,
             "canonical_surface": self.canonical_surface,
+            "gate_id": gate_id,
             "human_ref": human_ref,
             "decision": decision,
+            "requested_action": requested_action,
             "exact_action_approved": exact_action,
             "action_fingerprint": action_fingerprint,
             "note_action_fingerprint": note_action_fingerprint,
@@ -790,11 +822,14 @@ def _render_review_card(
     human_ask: str,
     human_ref: str,
     canonical_surface: str,
+    gate_id: str,
     allowed_decisions: tuple[str, ...],
+    requested_action: str,
     exact_action: str,
     action_fingerprint: str,
     evidence_refs: tuple[str, ...],
     test_only: bool,
+    non_live: bool,
     created_at: str,
 ) -> str:
     metadata = {
@@ -805,11 +840,13 @@ def _render_review_card(
         "stage_id": stage_id,
         "stage_run_id": invocation.stage_run_id,
         "invocation_id": invocation.invocation_id,
+        "gate_id": gate_id,
         "allowed_decisions": list(allowed_decisions),
+        "requested_action": requested_action,
         "exact_action": exact_action,
         "evidence_refs": list(evidence_refs),
         "test_only": test_only,
-        "non_live": True,
+        "non_live": non_live,
         "created_at": created_at,
     }
     frontmatter = "\n".join(
@@ -834,9 +871,11 @@ def _render_review_card(
             f"- Instance ID: `{invocation.instance_id}`",
             f"- Stage ID: `{stage_id}`",
             f"- Stage Run ID: `{invocation.stage_run_id}`",
+            f"- Gate ID: `{gate_id or 'not-provided'}`",
             f"- Invocation ID: `{invocation.invocation_id}`",
             f"- Canonical surface: `{canonical_surface}`",
             f"- Human ref: `{human_ref}`",
+            f"- Requested action: `{requested_action}`",
             f"- Exact action: `{exact_action}`",
             f"- Action fingerprint: `{action_fingerprint}`",
             "",
