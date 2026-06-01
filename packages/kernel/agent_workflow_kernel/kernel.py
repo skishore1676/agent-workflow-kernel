@@ -816,6 +816,13 @@ class WorkflowKernel:
                         failure_class=failure_class,
                         failure_summary=str(exc),
                     )
+                self.ledger.record_stage_run_prompt_context(
+                    stage_run_id=run.stage_run_id,
+                    prompt_hash=rendered_context.prompt_bundle.prompt_bundle_digest,
+                    context_packet_ref=rendered_context.packet.context_id,
+                    context_packet_hash=rendered_context.packet_digest,
+                    rendered_context_hash=rendered_context.rendered_input_digest,
+                )
 
             invocation = AdapterInvocation(
                 invocation_id=f"kernel:{run.stage_run_id}:{uuid.uuid4().hex[:12]}",

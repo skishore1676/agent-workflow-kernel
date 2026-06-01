@@ -154,6 +154,7 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertIsNotNone(context_ref)
         self.assertEqual(receipt["prompt_provenance"]["context"]["packet_id"], context_ref)
         self.assertEqual(len(receipt["prompt_provenance"]["refs"]), 4)
+        self.assertTrue(receipt["prompt_provenance"]["prompt_bundle_digest"].startswith("sha256:"))
         self.assertTrue(
             receipt["prompt_provenance"]["context"]["rendered_input_digest"].startswith("sha256:")
         )
@@ -166,6 +167,33 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertEqual(runtime_input["context_packet"]["packet_id"], context_ref)
         self.assertEqual(runtime_input["context_packet"]["workflow"]["id"], "toy-kernel")
         self.assertIn("identity.portable_worker", runtime_input["rendered_input"])
+
+        run_row = self.ledger.connection.execute(
+            """
+            SELECT prompt_hash, context_packet_ref, context_packet_hash, rendered_context_hash
+            FROM stage_runs
+            WHERE stage_run_id = ?
+            """,
+            ("instance-1:draft:1",),
+        ).fetchone()
+        self.assertEqual(run_row["prompt_hash"], receipt["prompt_provenance"]["prompt_bundle_digest"])
+        self.assertEqual(run_row["context_packet_ref"], context_ref)
+        self.assertEqual(run_row["context_packet_hash"], receipt["prompt_provenance"]["context"]["packet_digest"])
+        self.assertEqual(
+            run_row["rendered_context_hash"],
+            receipt["prompt_provenance"]["context"]["rendered_input_digest"],
+        )
+
+        audit = self.ledger.export_stage_run_audit(stage_run_id="instance-1:draft:1")
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertEqual(audit["workflow"]["id"], "toy-kernel")
+        self.assertEqual(audit["instance"]["instance_id"], "instance-1")
+        self.assertEqual(audit["stage_run"]["stage_run_id"], "instance-1:draft:1")
+        self.assertEqual(audit["provenance"]["prompt_hash"], run_row["prompt_hash"])
+        self.assertEqual(audit["provenance"]["context_packet_ref"], context_ref)
+        self.assertEqual(audit["receipts"][0]["prompt_hash"], run_row["prompt_hash"])
+        self.assertEqual(audit["adapter_invocations"][0]["context_packet_ref"], context_ref)
 
     def test_prompt_hash_mismatch_blocks_before_adapter_invocation(self) -> None:
         bad_ref = PromptRef(
@@ -206,6 +234,41 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertEqual(receipt["kind"], "kernel.prompt_context")
         self.assertEqual(receipt["status"], "blocked")
         self.assertEqual(receipt["prompt_provenance"]["error"]["class"], "invalid_output")
+
+    def test_missing_prompt_blocks_before_adapter_invocation(self) -> None:
+        missing_ref = PromptRef(id="stage.missing", kind="stage", version="9.9.9")
+        workflow = self.workflow_with_runtime_stage(prompt_refs=(missing_ref,))
+        adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(
+                owner_id="kernel-test",
+                adapter_registry=registry,
+                prompt_registry=PromptRegistry.load(ROOT / "prompts"),
+            ),
+        )
+        kernel.start(instance_id="instance-1", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "blocked")
+        self.assertIn("Missing required prompt", step.failure_summary or "")
+        self.assertEqual(adapter.receipts, [])
+        invocation_count = self.ledger.connection.execute(
+            "SELECT COUNT(*) AS count FROM adapter_invocations"
+        ).fetchone()["count"]
+        self.assertEqual(invocation_count, 0)
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE stage_run_id = ?",
+            ("instance-1:draft:1",),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        self.assertEqual(receipt["kind"], "kernel.prompt_context")
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["prompt_provenance"]["error"]["class"], "missing_dependency")
 
     def test_missing_adapter_blocks_without_invocation(self) -> None:
         workflow = self.workflow_with_runtime_stage(adapter="runtime.missing")

@@ -83,6 +83,10 @@ class PromptBundle:
     registry_snapshot_digest: str
 
     @property
+    def prompt_bundle_digest(self) -> str:
+        return digest_data(self.canonical_data())
+
+    @property
     def prompt_refs(self) -> tuple[PromptRef, ...]:
         return tuple(prompt.ref for prompt in self.prompts)
 
