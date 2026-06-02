@@ -86,6 +86,9 @@ Host adapters own:
 
 Generic rail, domain-specific cargo.
 
+For new lane adoption, use the concise checklist in
+[`docs/lane-adoption-checklist.md`](lane-adoption-checklist.md).
+
 ## Current Decisions
 
 | ID | Decision | Status |

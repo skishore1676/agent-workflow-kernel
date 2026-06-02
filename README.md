@@ -25,6 +25,8 @@ domain logic inside YAML.
 
 Wave 3 local harness is integrated. The living project control document is
 [`docs/control.md`](docs/control.md).
+For adopting a new lane, use the concise
+[`docs/lane-adoption-checklist.md`](docs/lane-adoption-checklist.md).
 
 Implemented so far:
 
