@@ -3,8 +3,8 @@
 Portable workflow kernel for agent-driven work.
 
 This repository is intentionally independent from OpenClaw. OpenClaw is the
-first reference host and proving ground, but the kernel should stay portable
-across agent runtimes, surfaces, and domain workflows.
+first reference host and active production adopter, but the kernel should stay
+portable across agent runtimes, surfaces, and domain workflows.
 
 ## Product Thesis
 
@@ -23,8 +23,11 @@ domain logic inside YAML.
 
 ## Current Status
 
-Wave 3 local harness is integrated. The living project control document is
-[`docs/control.md`](docs/control.md).
+AWK is an active workflow-control layer. Selected OpenClaw lanes now use
+AWK-owned production entrypoints, and new lane work should either adopt AWK or
+explicitly document why a different rail is required.
+
+The living project control document is [`docs/control.md`](docs/control.md).
 For adopting a new lane, use the concise
 [`docs/lane-adoption-checklist.md`](docs/lane-adoption-checklist.md).
 
@@ -42,7 +45,9 @@ Implemented so far:
 - operator CLI commands for validating, compiling, and locally running workflow
   fixtures;
 - fixture-based parity reporting;
-- read-only OpenClaw adapter boundary;
+- OpenClaw adapter package with production lane wrappers, Blackboard bus
+  support, prompt registry integration, surface adapters, policy gates, and
+  compatibility cargo for legacy OpenClaw behavior;
 - repeatable `make setup` and `make check` paths.
 
 Useful CLI entrypoints:
@@ -79,8 +84,10 @@ has installed `.[dev]`. Generated development outputs such as `.venv`,
 ## Starting Principles
 
 - Build for the full portable harness vision.
-- Validate first through narrow, low-risk OpenClaw slices.
+- Evolve through narrow, low-risk OpenClaw slices that become production lanes
+  once the cutover checklist passes.
 - Keep generic kernel code free of OpenClaw paths and lane names.
-- Preserve working OpenClaw behavior until parity is proven.
+- Preserve working OpenClaw behavior through adapters and guarded legacy
+  shims, then retire duplicate entrypoints after the AWK lane is live.
 - Treat publish, deploy, trade, auth, money, external sends, and destructive
   actions as explicit human-gated policy zones.

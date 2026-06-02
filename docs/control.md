@@ -1,6 +1,6 @@
 # Agent Workflow Kernel Control
 
-Last updated: 2026-06-01
+Last updated: 2026-06-02
 
 ## Supervisor Contract
 
@@ -58,8 +58,12 @@ Build a portable agent-workflow kernel that can run graph-defined workflows
 across LLM agents, scripts, humans, reviewer/doer loops, surfaces, prompts,
 receipts, and host runtimes.
 
-OpenClaw is the reference host and first proving ground. The kernel must be
-designed so it can later run outside OpenClaw.
+OpenClaw is the reference host and active production adopter. The kernel must
+stay designed so it can later run outside OpenClaw.
+
+As of 2026-06-02, AWK is also an active production rail for selected OpenClaw
+lanes. Current adoption work is production evolution with receipts, policy
+gates, launchd readback, prompt registry coverage, and guarded legacy shims.
 
 ## Product Boundary
 
@@ -106,6 +110,7 @@ For new lane adoption, use the concise checklist in
 | D011 | Launch Wave 3 as four independent AWK project threads: CLI/local execution, read-only OpenClaw adapter, parity reporting, and developer setup hardening. | accepted |
 | D012 | Keep developer checks split between bare `python3` unittest resilience and `.venv` dependency verification through `make setup` and `make check`. | accepted |
 | D013 | Treat Wave 4 as adoption pressure, not another abstract parity pass: Ivy/Jonah and Jarvis weekly update are the first OpenClaw lanes. | accepted |
+| D014 | Treat AWK as the default rail for newly adopted OpenClaw decision/workflow lanes once a lane passes the cutover checklist. | accepted |
 
 ## Workstreams
 
@@ -377,6 +382,20 @@ The first skeleton is acceptable only if:
 Before replacing any OpenClaw path, the harness must dual-run or fixture-run
 against current behavior and produce equivalent receipts or a documented delta.
 
+## Current Production Posture
+
+Current OpenClaw production entrypoints using AWK include:
+
+- Ivy/Jonah editorial runner;
+- Suman + Jarvis weekly check-in;
+- safe token optimizer review lane;
+- Blackboard decision ingester and publisher bus.
+
+Legacy OpenClaw scripts for these lanes should be guarded compatibility shims,
+not parallel production paths. New recurring or decision-driven OpenClaw lanes
+should begin from the lane adoption checklist and prompt registry unless they
+are intentionally classified as non-AWK production.
+
 ## Open Questions
 
 - How strict should output schemas be for creative work?
@@ -389,9 +408,9 @@ against current behavior and produce equivalent receipts or a documented delta.
 
 ## Next Supervisor Actions
 
-1. Decide the first lane where AWK can move from shadow to owning a low-risk
-   step.
-2. Run one oldmac read-only fixture export to compare source checkout behavior
-   against live runtime-shaped artifacts before replacement.
-3. Keep public publishing, Telegram sends, Obsidian writes, cron changes, and
+1. Soak active AWK cutovers under normal launchd/runtime rhythm.
+2. Prove one full Ivy/Jonah P5 revision loop from human revise decision through
+   updated P5 surface.
+3. Turn the lane adoption checklist into a reusable new-lane kit.
+4. Keep public publishing, Telegram sends, Obsidian writes, cron changes, and
    deploys behind explicit human gates.

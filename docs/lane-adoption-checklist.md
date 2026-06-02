@@ -6,6 +6,10 @@ Use this checklist when adopting any new lane into AWK. Keep domain behavior in
 lane adapters, prompts, scripts, and artifacts; keep AWK responsible for durable
 workflow control.
 
+AWK is the active adoption rail for selected OpenClaw lanes. This checklist is
+the production cutover discipline: use it to add, harden, or retire lanes
+without splitting the operator surface.
+
 ## Checklist
 
 | Rail | Adoption question | Evidence |
@@ -50,6 +54,9 @@ Do not count a lane as `cutover` just because AWK has a shadow adapter,
 fixture, prompt profile, or Obsidian card. `cutover` means the production
 entrypoint for that lane now rides AWK, or the lane is explicitly documented as
 non-AWK production with AWK used only for observation.
+
+After cutover, keep improving the lane in AWK. Do not keep a parallel legacy
+board or scheduler unless it is a named compatibility/emergency fallback.
 
 ## Status Snapshot
 
