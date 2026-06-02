@@ -20,6 +20,7 @@ from agent_workflow_kernel import (  # noqa: E402
     FailureClass,
     HumanApprovalReceipt,
     KernelRuntimeConfig,
+    LocalFakeLaneAdapter,
     LocalFakeRuntimeAdapter,
     LocalFakeSurfaceAdapter,
     LocalMarkdownHumanReviewSurfaceAdapter,
@@ -68,6 +69,25 @@ class OutcomeSequenceRuntimeAdapter(LocalFakeRuntimeAdapter):
             return result
         outcome = sequence[min(count, len(sequence) - 1)]
         return replace(result, outputs={**result.outputs, "outcome": outcome})
+
+
+class UsageReportingRuntimeAdapter(LocalFakeRuntimeAdapter):
+    def invoke(self, invocation, runtime_input):
+        result = super().invoke(invocation, runtime_input)
+        return replace(
+            result,
+            outputs={
+                **result.outputs,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 25,
+                    "total_tokens": 125,
+                    "cached_input_tokens": 10,
+                    "session_id": "session-bound-1",
+                    "source": "fixture",
+                },
+            },
+        )
 
 
 class WorkflowKernelRunOnceTest(unittest.TestCase):
@@ -139,7 +159,6 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             receipt["runtime_provenance"]["outputs"]["runtime_input"]["stage"]["id"],
             "draft",
         )
-
         invocation_count = self.ledger.connection.execute(
             "SELECT COUNT(*) AS count FROM adapter_invocations"
         ).fetchone()["count"]
@@ -158,6 +177,78 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
                 "workflow_stage_succeeded",
             ],
         )
+
+    def test_run_once_invokes_registered_lane_system_action(self) -> None:
+        lane = LocalFakeLaneAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_lane_adapter(lane),))
+        workflow = WorkflowDef(
+            id="toy-lane-system-action",
+            version="0.1.0",
+            name="Toy lane system action",
+            stages=(
+                StageDef(
+                    id="validate",
+                    type=StageType.SYSTEM_ACTION,
+                    adapter="lane.local_fake",
+                    outcomes=("valid", "blocked"),
+                    inputs={"source": "fixture"},
+                ),
+            ),
+            transitions=(Transition(from_stage="validate", on="valid", terminal="done"),),
+        )
+        kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-lane-system-action", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "succeeded")
+        stored = self.ledger.get_workflow_instance("instance-lane-system-action")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.DONE)
+        self.assertEqual(stored.current_stage_id, None)
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE stage_run_id = ?",
+            ("instance-lane-system-action:validate:1",),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        self.assertEqual(receipt["runtime_provenance"]["adapter_family"], "lane")
+        self.assertEqual(receipt["runtime_provenance"]["adapter_id"], "lane.local_fake")
+        self.assertEqual(receipt["runtime_provenance"]["operation"], "build_stage_input")
+        self.assertEqual(receipt["runtime_provenance"]["outputs"]["outcome"], "valid")
+        self.assertEqual(
+            receipt["runtime_provenance"]["outputs"]["stage_id"],
+            "validate",
+        )
+
+    def test_adapter_reported_usage_is_captured_in_receipt_provenance(self) -> None:
+        adapter = UsageReportingRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry((AdapterRegistration.from_runtime_adapter(adapter),))
+        kernel = WorkflowKernel(
+            self.ledger,
+            self.workflow_with_runtime_stage(),
+            KernelRuntimeConfig(owner_id="kernel-test", adapter_registry=registry),
+        )
+        kernel.start(instance_id="instance-usage", inputs={}, now=self.now)
+
+        step = kernel.run_once(now=self.now)
+
+        self.assertEqual(step.decision, "succeeded")
+        receipt_row = self.ledger.connection.execute(
+            "SELECT receipt_json FROM receipts WHERE stage_run_id = ?",
+            ("instance-usage:draft:1",),
+        ).fetchone()
+        self.assertIsNotNone(receipt_row)
+        receipt = json.loads(receipt_row["receipt_json"])
+        self.assertEqual(receipt["runtime_provenance"]["usage"]["input_tokens"], 100)
+        self.assertEqual(receipt["runtime_provenance"]["usage"]["output_tokens"], 25)
+        self.assertEqual(receipt["runtime_provenance"]["usage"]["total_tokens"], 125)
+        self.assertEqual(receipt["runtime_provenance"]["usage"]["session_id"], "session-bound-1")
 
     def test_stage_actor_lease_precedence_and_receipt_visibility(self) -> None:
         cases = (
