@@ -22,13 +22,18 @@ Commands:
 python3 -m unittest tests/test_codex_cli_runtime_adapter.py tests/test_packaging_discovery.py
 python3 scripts/codex_cli_runtime_smoke.py --run-real --mode session --timeout-seconds 300
 ./scripts/check.sh
+ssh oldmac 'cd /Users/sunny/code/agent-workflow-kernel && python3 -m unittest tests/test_codex_cli_runtime_adapter.py tests/test_packaging_discovery.py'
+ssh oldmac 'cd /Users/sunny/code/agent-workflow-kernel && python3 scripts/codex_cli_runtime_smoke.py --run-real --mode session --timeout-seconds 300'
 ```
 
 Results:
 
 - Focused tests: 7 passed.
-- Full check: 220 unittest cases passed and 220 pytest cases passed.
+- Full check: 221 unittest cases passed and 221 pytest cases passed.
 - Live smoke: captured session id `019e8689-c031-7f62-af8b-cf3ad86005a4`,
+  resumed it, and recalled the nonce from the prior turn.
+- oldmac focused tests: 7 passed.
+- oldmac live smoke: captured session id `019e868c-5ab9-7f70-9d89-72d5147c8dba`,
   resumed it, and recalled the nonce from the prior turn.
 
 ## Risks

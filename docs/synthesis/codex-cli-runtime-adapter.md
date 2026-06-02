@@ -89,6 +89,10 @@ python3 scripts/codex_cli_runtime_smoke.py --run-real --mode session
 This smoke does not mutate production OpenClaw, Northstar, Telegram, auth,
 trading, or public publish surfaces.
 
-Current proof: the live smoke on 2026-06-02 captured session id
+Current local proof: the live smoke on 2026-06-02 captured session id
 `019e8689-c031-7f62-af8b-cf3ad86005a4`, resumed it, and the second turn
 recalled the nonce from the first turn.
+
+Current oldmac proof: the same smoke captured session id
+`019e868c-5ab9-7f70-9d89-72d5147c8dba`, resumed it, and recalled the nonce
+from the prior turn.
