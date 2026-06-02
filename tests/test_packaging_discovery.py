@@ -19,6 +19,7 @@ class PackagingDiscoveryTest(unittest.TestCase):
         self.assertIn("agent_workflow_kernel", discovered)
         self.assertIn("agent_workflow_kernel_openclaw", discovered)
         self.assertIn("agent_workflow_kernel_codex_cli", discovered)
+        self.assertIn("agent_workflow_kernel_codex_sdk", discovered)
 
     def test_openclaw_telegram_adapter_imports_from_adapter_package(self) -> None:
         sys.path.insert(0, str(ROOT / "packages" / "kernel"))
@@ -39,6 +40,16 @@ class PackagingDiscoveryTest(unittest.TestCase):
 
         self.assertFalse(hasattr(agent_workflow_kernel, "CodexCliSessionRuntimeAdapter"))
         self.assertEqual(CodexCliSessionRuntimeAdapter.adapter_id, "runtime.codex_cli_session")
+
+    def test_codex_sdk_adapter_imports_from_adapter_package_without_sdk_import(self) -> None:
+        sys.path.insert(0, str(ROOT / "packages" / "kernel"))
+        sys.path.insert(0, str(ROOT / "packages" / "adapters" / "codex_sdk"))
+
+        import agent_workflow_kernel
+        from agent_workflow_kernel_codex_sdk import CodexSdkSessionRuntimeAdapter
+
+        self.assertFalse(hasattr(agent_workflow_kernel, "CodexSdkSessionRuntimeAdapter"))
+        self.assertEqual(CodexSdkSessionRuntimeAdapter.adapter_id, "runtime.codex_sdk_session")
 
 
 def _discover_packages(package_root: Path, include: tuple[str, ...]) -> set[str]:
