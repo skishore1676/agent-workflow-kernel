@@ -6,10 +6,16 @@ AWK can use the native Codex CLI as a worker runtime without routing through
 OpenClaw. This keeps AWK portable while still using Suman's normal Codex auth
 path.
 
+`runtime.codex_sdk_session` is now the preferred native Codex runtime when the
+official `openai-codex` Python SDK is available. The CLI adapters remain as the
+fallback path for hosts that intentionally choose subprocess-backed execution.
+
 Adapter ids:
 
 - `runtime.codex_cli_exec`: one-shot `codex exec`.
 - `runtime.codex_cli_session`: bounded reusable `codex exec` session.
+- `runtime.codex_sdk_session`: preferred SDK-backed bounded session, documented
+  separately in `docs/synthesis/codex-sdk-runtime-adapter.md`.
 
 The session adapter is not optional for serious lane adoption. It captures a
 concrete session id from Codex JSONL events, stores that id in adapter outputs,

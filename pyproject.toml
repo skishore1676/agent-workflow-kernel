@@ -15,12 +15,16 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
+codex-sdk = [
+  "openai-codex>=0.1.0b2",
+]
 
 [tool.setuptools.packages.find]
 where = [
   "packages/kernel",
   "packages/adapters/openclaw",
   "packages/adapters/codex_cli",
+  "packages/adapters/codex_sdk",
 ]
 include = [
   "agent_workflow_kernel",
@@ -29,6 +33,8 @@ include = [
   "agent_workflow_kernel_openclaw.*",
   "agent_workflow_kernel_codex_cli",
   "agent_workflow_kernel_codex_cli.*",
+  "agent_workflow_kernel_codex_sdk",
+  "agent_workflow_kernel_codex_sdk.*",
 ]
 
 [tool.pytest.ini_options]
