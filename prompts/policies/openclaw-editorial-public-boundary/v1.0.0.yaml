@@ -1,0 +1,33 @@
+schema_version: policy-envelope.v1
+id: policy.openclaw.editorial_public_boundary
+version: 1.0.0
+risk_class: internal_generation
+approval_required_for:
+  - public_publish
+  - browser_publish
+  - external_send
+  - telegram_send
+  - obsidian_write
+  - push
+  - deploy
+  - auth_change
+  - destructive_change
+tool_permissions:
+  shell:
+    allowed: true
+    network: false
+  browser:
+    allowed: false
+  connectors:
+    allowed: []
+allowed_effects:
+  - local_artifact_prepare
+  - local_receipt_write
+forbidden_effects:
+  - public_publish
+  - external_send
+  - mutate_openclaw_runtime
+  - credential_access
+redaction:
+  secrets: block
+  receipts: summarize_sensitive_values

@@ -1,0 +1,33 @@
+schema_version: policy-envelope.v1
+id: policy.openclaw.read_only_shadow
+version: 1.0.0
+risk_class: read_only
+shadow_only: true
+approval_required_for:
+  - live_runtime_mutation
+  - obsidian_write
+  - telegram_send
+  - public_publish
+  - external_send
+  - auth_change
+  - live_trade
+  - money_movement
+  - destructive_change
+tool_permissions:
+  shell:
+    allowed: true
+    network: false
+  browser:
+    allowed: false
+  connectors:
+    allowed: []
+forbidden_effects:
+  - write_obsidian
+  - send_telegram
+  - mutate_openclaw_runtime
+  - change_cron
+  - touch_credentials
+  - public_publish
+redaction:
+  secrets: block
+  receipts: summarize_sensitive_values

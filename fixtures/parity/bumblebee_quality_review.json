@@ -1,0 +1,156 @@
+{
+  "schema": "workflow.kernel.parity-fixture.v1",
+  "name": "Bumblebee quality review verdict parity",
+  "expected_label": "openclaw_bumblebee_receipt",
+  "actual_label": "kernel_bumblebee_receipt",
+  "metadata": {
+    "slice": "bumblebee_quality_review",
+    "source": "fixture",
+    "purpose": "Compare the current host verdict shape with the portable kernel receipt shape before adapter replacement."
+  },
+  "ignored_fields": {
+    "$.runtime_provenance.host_runtime": "Host runtime identity is adapter-local and not part of portable parity.",
+    "$.runtime_provenance.metadata.openclaw_work_id": "Legacy Work Ledger id is retained only by the OpenClaw adapter.",
+    "$.runtime_provenance.metadata.kernel_stage_type": "Kernel stage type is local provenance, not a host field."
+  },
+  "expected_host_receipt": {
+    "receipt_id": "receipt-bumblebee-review-001",
+    "kind": "review_verdict.v1",
+    "workflow_id": "bumblebee_quality_review",
+    "instance_id": "fixture-bumblebee-001",
+    "stage_id": "review_artifact",
+    "stage_run_id": "stage-run-bumblebee-review-001",
+    "status": "succeeded",
+    "summary": "Quality review accepted with one follow-up note.",
+    "created_at": "2026-05-31T12:00:00Z",
+    "artifact_refs": [
+      {
+        "artifact_id": "artifact-review-packet-001",
+        "role": "review_packet",
+        "uri": "artifact://fixture/bumblebee/review-packet.md",
+        "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "mime_type": "text/markdown",
+        "visibility": "internal"
+      },
+      {
+        "artifact_id": "artifact-verdict-001",
+        "role": "review_verdict",
+        "uri": "artifact://fixture/bumblebee/verdict.json",
+        "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "mime_type": "application/json",
+        "visibility": "internal"
+      }
+    ],
+    "context_packet_ref": "context-bumblebee-review-001",
+    "prompt_provenance": {
+      "context": {
+        "packet_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "rendered_input_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "refs": [
+        {
+          "id": "lane.quality_review",
+          "kind": "lane",
+          "version": "1.0.0",
+          "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      ]
+    },
+    "runtime_provenance": {
+      "adapter_id": "openclaw.work_ledger.bumblebee",
+      "host_runtime": "openclaw-work-ledger",
+      "model": "gpt-5-codex",
+      "metadata": {
+        "native_session_proof": {
+          "schema": "native_session_proof.v1",
+          "trusted": true
+        },
+        "openclaw_work_id": "wl-bumblebee-001",
+        "review_questions": 2
+      }
+    },
+    "policy_snapshot": {
+      "denied": [
+        "external_send",
+        "filesystem_mutation"
+      ],
+      "granted": [
+        "artifact_read",
+        "review_comment"
+      ],
+      "human_gate_required": false
+    },
+    "residual_risk": "Reviewer accepted the packet; Suman only needed if the lane escalates.",
+    "next_action": "Store verdict and surface follow-up note."
+  },
+  "actual_kernel_receipt": {
+    "receipt_id": "receipt-bumblebee-review-001",
+    "kind": "review_verdict.v1",
+    "workflow_id": "bumblebee_quality_review",
+    "instance_id": "fixture-bumblebee-001",
+    "stage_id": "review_artifact",
+    "stage_run_id": "stage-run-bumblebee-review-001",
+    "status": "succeeded",
+    "summary": "Quality review accepted with one follow-up note.",
+    "created_at": "2026-05-31T12:00:00Z",
+    "artifact_refs": [
+      {
+        "artifact_id": "artifact-review-packet-001",
+        "role": "review_packet",
+        "uri": "artifact://fixture/bumblebee/review-packet.md",
+        "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "mime_type": "text/markdown",
+        "visibility": "internal"
+      },
+      {
+        "artifact_id": "artifact-verdict-001",
+        "role": "review_verdict",
+        "uri": "artifact://fixture/bumblebee/verdict.json",
+        "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "mime_type": "application/json",
+        "visibility": "internal"
+      }
+    ],
+    "context_packet_ref": "context-bumblebee-review-001",
+    "prompt_provenance": {
+      "context": {
+        "packet_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "rendered_input_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "refs": [
+        {
+          "id": "lane.quality_review",
+          "kind": "lane",
+          "version": "1.0.0",
+          "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      ]
+    },
+    "runtime_provenance": {
+      "adapter_id": "kernel.runtime.quality_review",
+      "host_runtime": "kernel-local-fixture",
+      "model": "gpt-5-codex",
+      "metadata": {
+        "kernel_stage_type": "a2a_review_loop",
+        "native_session_proof": {
+          "schema": "native_session_proof.v1",
+          "trusted": true
+        },
+        "review_questions": 2
+      }
+    },
+    "policy_snapshot": {
+      "denied": [
+        "external_send",
+        "filesystem_mutation"
+      ],
+      "granted": [
+        "artifact_read",
+        "review_comment"
+      ],
+      "human_gate_required": false
+    },
+    "residual_risk": "Reviewer accepted the packet; Suman only needed if the lane escalates.",
+    "next_action": "Store verdict and surface follow-up note."
+  }
+}

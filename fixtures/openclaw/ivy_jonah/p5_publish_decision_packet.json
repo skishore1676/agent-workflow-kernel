@@ -1,0 +1,135 @@
+{
+  "schema": "openclaw.ivy-jonah.fixture.v1",
+  "fixture_id": "ivy-jonah-p5-publish-decision-packet",
+  "created_at": "2026-05-31T12:05:00Z",
+  "invocation": {
+    "operation": "inspect_fixture"
+  },
+  "project": {
+    "project_id": "agent-to-agent-communication-live",
+    "title": "Agent-to-Agent Communication Needs Boring Receipts",
+    "p_stage": "P5",
+    "target_channel": "substack_medium"
+  },
+  "handoff": {
+    "handoff_type": "or_research_m5_publish_decision",
+    "action": "prepare_publish_bundle",
+    "p_stage": "P5",
+    "source": "obsidian_p5_publish_decision",
+    "phase": "publish_packet"
+  },
+  "actors": {
+    "ivy": {
+      "name": "Ivy",
+      "agent_id": "or_research",
+      "role": "editorial_writer"
+    },
+    "jonah": {
+      "name": "Jonah",
+      "agent_id": "jonah_editor",
+      "role": "editorial_reviewer"
+    },
+    "human": {
+      "name": "Suman",
+      "role": "final_approver"
+    }
+  },
+  "mapping": {
+    "lane_id": "or_research",
+    "agent_id": "or_research",
+    "host_ref": "openclaw-core:workspace-main",
+    "work_ledger": {
+      "work_item_id": "work_shadow_publish_packet",
+      "handoff_id": "handoff_shadow_publish_decision",
+      "receipt_ids": [
+        "receipt:or_research_publish_packet_ready"
+      ]
+    },
+    "surface_refs": [
+      {
+        "surface_id": "surface:publish-review-decision-shadow",
+        "kind": "obsidian_review_note",
+        "external_id": "03 Agent Org/or_research/Reviews/2026-05-31-agent-to-agent-communication-p5.md",
+        "title": "Agent-to-Agent Communication - P5 Review",
+        "readback_required": true,
+        "status": "approval_required"
+      }
+    ],
+    "runtime_refs": [
+      {
+        "runtime_id": "runtime:publish-control-shadow",
+        "kind": "script",
+        "external_id": "or_research_publish_control.py prepare-bundle browser-plan",
+        "host_ref": "openclaw-core:workspace-main",
+        "redacted_locator": "script:or_research_publish_control",
+        "status": "completed"
+      }
+    ]
+  },
+  "review_surfaces": [
+    {
+      "surface_id": "surface:publish-review-decision-shadow",
+      "kind": "obsidian_review_note",
+      "title": "Agent-to-Agent Communication - P5 Review",
+      "uri": "fixture://openclaw/ivy_jonah/p5-review-note.md",
+      "p_stage": "P5",
+      "status": "approval_required",
+      "readback_required": true
+    }
+  ],
+  "publish_packet_refs": [
+    {
+      "packet_id": "packet:publish-approved-json-shadow",
+      "kind": "publish_approval_record",
+      "uri": "fixture://openclaw/ivy_jonah/publish-approved.json",
+      "status": "prepared_local_only",
+      "external_publish_performed": false
+    },
+    {
+      "packet_id": "packet:publish-ready-markdown-shadow",
+      "kind": "publish_bundle",
+      "uri": "fixture://openclaw/ivy_jonah/publish_bundle/publish-ready.md",
+      "status": "prepared_local_only",
+      "external_publish_performed": false
+    },
+    {
+      "packet_id": "packet:browser-plan-shadow",
+      "kind": "browser_staging_plan",
+      "uri": "fixture://openclaw/ivy_jonah/browser-plan.json",
+      "status": "prepared_local_only",
+      "external_publish_performed": false
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "artifact:publish-ready-shadow",
+      "role": "publish_bundle",
+      "uri": "fixture://openclaw/ivy_jonah/publish_bundle/publish-ready.md",
+      "content_hash": "sha256:publish-ready-shadow-fixture",
+      "mime_type": "text/markdown",
+      "created_by": "work_ledger_runner"
+    },
+    {
+      "artifact_id": "artifact:browser-plan-shadow",
+      "role": "browser_staging_plan",
+      "uri": "fixture://openclaw/ivy_jonah/browser-plan.json",
+      "content_hash": "sha256:browser-plan-shadow-fixture",
+      "mime_type": "application/json",
+      "created_by": "work_ledger_runner"
+    }
+  ],
+  "forbidden_actions": [
+    "external_publish",
+    "email",
+    "x_post",
+    "linkedin_post",
+    "credential_mutation",
+    "git_push",
+    "deploy",
+    "trade"
+  ],
+  "open_questions": [
+    "AWK shadow mode can prepare receipts for local publish-packet work, but browser staging and public posting require a separate explicit approval path."
+  ],
+  "residual_risk": "External Substack/Medium publishing still requires a separate browser action and receipt."
+}

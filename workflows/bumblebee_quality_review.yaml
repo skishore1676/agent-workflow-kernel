@@ -1,0 +1,177 @@
+schema: workflow.kernel.v1
+workflow:
+  id: bumblebee_quality_review
+  version: 0.1.0
+  name: Bumblebee Quality Review
+  owner: review_lane_adapter
+  description: Portable producer and reviewer quality gate with bounded questions.
+
+inputs:
+  required:
+    - work_item
+    - source_artifacts
+  optional:
+    - acceptance_criteria
+    - operator_surface
+
+defaults:
+  policy_class: read_only_review
+  timeout_seconds: 900
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: retry
+      invalid_output: block
+
+actors:
+  producer:
+    adapter: runtime.agent
+    role: producer
+  reviewer:
+    adapter: runtime.agent
+    role: quality_reviewer
+  operator:
+    adapter: human.operator
+    role: owner
+
+stages:
+  - id: build_review_contract
+    type: system_action
+    adapter: lane.review_contract_builder
+    inputs:
+      work_item: input.work_item
+      source_artifacts: input.source_artifacts
+      acceptance_criteria: input.acceptance_criteria
+    outputs:
+      artifacts:
+        - role: review_contract
+          required: true
+      receipt_kind: review_contract.v1
+      outcome_schema: review_contract_result.v1
+    outcomes:
+      - ready
+      - blocked
+
+  - id: seed_or_claim_producer
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      producer: actors.producer
+    inputs:
+      review_contract: artifacts.build_review_contract.review_contract
+    outputs:
+      artifacts:
+        - role: producer_packet
+          required: true
+      receipt_kind: producer_packet.v1
+      outcome_schema: producer_packet_result.v1
+    outcomes:
+      - ready
+      - blocked
+
+  - id: probe_with_reviewer
+    type: a2a_review_loop
+    adapter: runtime.a2a
+    actors:
+      producer: actors.producer
+      reviewer: actors.reviewer
+    inputs:
+      review_contract: artifacts.build_review_contract.review_contract
+      producer_packet: artifacts.seed_or_claim_producer.producer_packet
+    budget:
+      max_questions: 3
+      max_revision_turns: 2
+      max_ping_pong_turns: 7
+    outputs:
+      artifacts:
+        - role: review_transcript
+          required: true
+        - role: review_verdict
+          required: true
+      receipt_kind: probing_review_verdict.v1
+      outcome_schema: review_verdict.v1
+    outcomes:
+      - pass
+      - refine
+      - block
+      - needs_human
+
+  - id: validate_verdict
+    type: system_action
+    adapter: lane.receipt_validator
+    inputs:
+      verdict: artifacts.probe_with_reviewer.review_verdict
+      transcript: artifacts.probe_with_reviewer.review_transcript
+    outputs:
+      receipt_kind: validation_receipt.v1
+      outcome_schema: validation_result.v1
+    outcomes:
+      - valid
+      - invalid
+
+  - id: surface_decision
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: review_only
+      requires_explicit_approval: true
+      binds_to: artifacts.probe_with_reviewer.review_verdict
+    inputs:
+      verdict: artifacts.probe_with_reviewer.review_verdict
+      validation_receipt: receipts.validate_verdict
+    outputs:
+      receipt_kind: human_review_decision.v1
+      outcome_schema: human_decision.v1
+    outcomes:
+      - approval_granted
+      - approval_denied
+      - revise
+
+transitions:
+  - from: build_review_contract
+    "on": ready
+    to: seed_or_claim_producer
+  - from: build_review_contract
+    "on": blocked
+    terminal: blocked
+  - from: seed_or_claim_producer
+    "on": ready
+    to: probe_with_reviewer
+  - from: seed_or_claim_producer
+    "on": blocked
+    terminal: blocked
+  - from: probe_with_reviewer
+    "on": pass
+    to: validate_verdict
+  - from: probe_with_reviewer
+    "on": refine
+    to: seed_or_claim_producer
+    guard: within_revision_budget
+  - from: probe_with_reviewer
+    "on": block
+    terminal: blocked
+  - from: probe_with_reviewer
+    "on": needs_human
+    to: surface_decision
+  - from: validate_verdict
+    "on": valid
+    terminal: done
+  - from: validate_verdict
+    "on": invalid
+    terminal: blocked
+  - from: surface_decision
+    "on": approval_granted
+    terminal: done
+  - from: surface_decision
+    "on": approval_denied
+    terminal: policy_denied
+  - from: surface_decision
+    "on": revise
+    to: seed_or_claim_producer
+    guard: within_revision_budget
+
+compatibility:
+  fixture_id: example.bumblebee_quality_review.v1
+  portability_note: Review identity and rubric resolve through adapters, not the kernel.
