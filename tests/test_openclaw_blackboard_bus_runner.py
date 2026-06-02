@@ -148,6 +148,38 @@ class OpenClawBlackboardBusRunnerTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
 
+    def test_decision_loop_uses_final_legacy_json_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            scaffold_openclaw(
+                openclaw,
+                direct_loop_body=(
+                    "#!/usr/bin/env bash\n"
+                    "printf '{\"ok\": true, \"ingested_count\": 1}\\n'\n"
+                    "printf '{\"ok\": true, \"action\": \"handled_or_research_review_handoff\"}\\n'\n"
+                ),
+            )
+            summary_path = root / "summary.json"
+
+            with redirect_stdout(io.StringIO()):
+                exit_code = script.main(
+                    [
+                        "decision-ingest",
+                        "--openclaw-root",
+                        str(openclaw),
+                        "--allow-agent-dispatch",
+                        "--summary-json",
+                        str(summary_path),
+                        "--instance-id",
+                        "blackboard-bus-final-json",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["action"], "handled_or_research_review_handoff")
+
     def test_repeated_runs_can_share_the_same_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -184,7 +216,12 @@ class OpenClawBlackboardBusRunnerTest(unittest.TestCase):
             self.assertEqual(len({row["stage_run_id"] for row in stage_runs}), 2)
 
 
-def scaffold_openclaw(openclaw: Path, *, publisher_payload: dict | None = None) -> None:
+def scaffold_openclaw(
+    openclaw: Path,
+    *,
+    publisher_payload: dict | None = None,
+    direct_loop_body: str | None = None,
+) -> None:
     scripts = openclaw / "workspace-main" / "scripts"
     write_script(scripts / "update_review_inbox.py", "import json\nprint(json.dumps({'ok': True}))\n")
     write_script(
@@ -202,7 +239,7 @@ def scaffold_openclaw(openclaw: Path, *, publisher_payload: dict | None = None) 
     )
     write_script(
         openclaw / "scripts" / "run_blackboard_decision_ingester.sh",
-        "#!/usr/bin/env bash\nprintf '{\"ok\": true, \"direct_loop\": true}\\n'\n",
+        direct_loop_body or "#!/usr/bin/env bash\nprintf '{\"ok\": true, \"direct_loop\": true}\\n'\n",
     )
 
 

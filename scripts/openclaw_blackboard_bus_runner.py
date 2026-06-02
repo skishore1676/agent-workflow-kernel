@@ -218,7 +218,11 @@ def run_publisher(args: argparse.Namespace) -> dict[str, Any]:
         receipts=(receipt,),
         ledger_path=args.ledger,
         compatibility_cargo="workspace-main/scripts/publish_or_research_attention.py",
-        surface_ref=parsed.get("review_note") or parsed.get("review_note_path") or parsed.get("review_note_rel"),
+        surface_ref=(
+            parsed.get("review_note") or parsed.get("review_note_path") or parsed.get("review_note_rel")
+            if action == "published_review_note"
+            else None
+        ),
     )
 
 

@@ -355,7 +355,16 @@ def _json_or_none(text: str | None) -> Any | None:
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
-        return None
+        pass
+    for line in reversed(stripped.splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 def _short_text(value: str | None, limit: int = 4000) -> str:
