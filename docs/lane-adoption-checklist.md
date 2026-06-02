@@ -17,6 +17,18 @@ workflow control.
 | Surface adapters | Do human gates appear on the intended surface and ingest exact decisions safely? | Obsidian/Telegram/Sheets/local readback shows link, choices, and decision receipt. |
 | Policy layer | Are publish, deploy, trade, auth, external-send, and destructive actions blocked unless explicitly approved? | Policy receipt or test proves risky actions fail closed. |
 
+## Surface Posture
+
+- Obsidian is the durable executive review room: show the artifact, decision
+  choices, links, owner, current state, and concise receipts.
+- Telegram is the sparse interrupt channel: use it for failures, action-needed
+  nudges, publish/deploy handoffs, or short summaries that link back to the
+  durable surface.
+- Do not dump machine logs, repeated receipts, or every stage update into either
+  surface; store that detail in the ledger/artifacts and link it when useful.
+- Every human gate should have one canonical decision surface. If Telegram and
+  Obsidian disagree, stop and write a blocked receipt instead of guessing.
+
 ## Cutover Gate
 
 A lane is not cut over until:
