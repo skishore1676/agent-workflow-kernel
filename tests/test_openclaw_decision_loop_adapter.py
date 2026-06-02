@@ -56,6 +56,15 @@ def scaffold_openclaw(root: Path) -> None:
         ),
     )
     write_script(
+        workspace_scripts / "publish_or_research_attention.py",
+        "\n".join(
+            [
+                "import json, sys",
+                "print(json.dumps({'ok': True, 'published': False, 'argv': sys.argv[1:]}))",
+            ]
+        ),
+    )
+    write_script(
         root / "scripts" / "run_blackboard_decision_ingester.sh",
         "#!/usr/bin/env bash\nprintf '{\"ok\": true, \"direct_loop\": true}\\n'\n",
     )
@@ -81,6 +90,21 @@ class OpenClawBlackboardDecisionLoopAdapterTest(unittest.TestCase):
             self.assertFalse(ingest_json["applied"])
             self.assertIn("--refresh-blackboard", ingest_json["argv"])
             self.assertIn("--validate", ingest_json["argv"])
+
+    def test_publish_attention_wraps_existing_publisher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "openclaw"
+            scaffold_openclaw(root)
+            adapter = OpenClawBlackboardDecisionLoopAdapter(root, created_at="2000-01-01T00:00:00Z")
+
+            receipt = adapter.publish_attention(invocation("publish_attention"))
+
+            self.assertEqual(receipt.status, "succeeded")
+            parsed = receipt.runtime_provenance["outputs"]["command_result"]["parsed_json"]
+            self.assertTrue(parsed["ok"])
+            self.assertFalse(parsed["published"])
+            self.assertIn("--if-present", parsed["argv"])
+            self.assertIn("--validate", parsed["argv"])
 
     def test_ingest_apply_requires_explicit_allow(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

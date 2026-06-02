@@ -32,6 +32,7 @@ EXPECTED_WORKFLOWS = {
     "trading_research_gate",
     "radhe_review_pipeline",
     "deterministic_system_action",
+    "openclaw_blackboard_bus",
 }
 
 CORE_CAPABILITIES = {

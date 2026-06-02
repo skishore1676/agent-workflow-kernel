@@ -1,0 +1,169 @@
+schema: workflow.kernel.v1
+workflow:
+  id: openclaw_blackboard_bus
+  version: 0.1.0
+  name: OpenClaw Blackboard Bus
+  owner: openclaw_blackboard_bus_adapter
+  description: AWK-owned surface-control rail for OpenClaw Blackboard publishing and checked decision ingestion.
+
+inputs:
+  required:
+    - mode
+  optional:
+    - openclaw_root
+    - vault_root
+    - scheduler_event
+
+defaults:
+  policy_class: internal_state
+  timeout_seconds: 2700
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: block
+      invalid_output: block
+      unknown_side_effect_state: block
+  capability_policy:
+    allowed:
+      - refresh_blackboard
+      - publish_review_note_pointer
+      - ingest_checked_review_decision
+      - route_already_approved_handoff
+      - record_receipt
+    forbidden:
+      - public_publish
+      - trade
+      - mutate_auth
+      - deploy
+      - destructive_cleanup
+
+actors:
+  scheduler:
+    adapter: host.scheduler
+    role: deterministic_wakeup
+  operator:
+    adapter: human.operator
+    role: suman
+  jarvis:
+    adapter: runtime.agent
+    role: fallback_review_runner
+
+stages:
+  - id: publish_attention
+    type: system_action
+    adapter: host.openclaw.blackboard_decision_loop
+    inputs:
+      mode: input.mode
+    outputs:
+      receipt_kind: blackboard_attention_publish.v1
+      outcome_schema: openclaw_blackboard_publish_result.v1
+      fields:
+        - published
+        - review_note
+    policy:
+      class: internal_state
+      writes_operator_surface: true
+      external_effects: false
+      external_send_allowed: launchd_receipts_only
+    outcomes:
+      - published_review_note
+      - noop
+      - blocked
+
+  - id: ingest_decisions_dry_run
+    type: system_action
+    adapter: host.openclaw.blackboard_decision_loop
+    inputs:
+      mode: input.mode
+    outputs:
+      receipt_kind: blackboard_decision_ingest_plan.v1
+      outcome_schema: openclaw_blackboard_decision_ingest_plan.v1
+    policy:
+      class: read_only
+      apply_decisions: false
+      external_effects: false
+    outcomes:
+      - planned
+      - blocked
+
+  - id: plan_review_runner
+    type: system_action
+    adapter: host.openclaw.blackboard_decision_loop
+    inputs:
+      ingest_receipt: receipts.ingest_decisions_dry_run
+    outputs:
+      receipt_kind: blackboard_review_runner_plan.v1
+      outcome_schema: openclaw_blackboard_review_runner_plan.v1
+    policy:
+      class: read_only
+      external_effects: false
+    outcomes:
+      - planned
+      - blocked
+
+  - id: run_decision_loop
+    type: system_action
+    adapter: host.openclaw.blackboard_decision_loop
+    actors:
+      jarvis: actors.jarvis
+    inputs:
+      mode: input.mode
+    outputs:
+      receipt_kind: blackboard_decision_loop.v1
+      outcome_schema: openclaw_blackboard_decision_loop_result.v1
+    policy:
+      class: internal_state
+      requires_explicit_adapter_allow: true
+      can_route_already_approved_handoff: true
+      public_publish_allowed: false
+      external_effects: false
+      external_send_allowed: launchd_receipts_only
+    outcomes:
+      - completed
+      - noop
+      - published_review_note
+      - blocked
+
+transitions:
+  - from: publish_attention
+    "on": published_review_note
+    terminal: done
+  - from: publish_attention
+    "on": noop
+    terminal: done
+  - from: publish_attention
+    "on": blocked
+    terminal: blocked
+  - from: ingest_decisions_dry_run
+    "on": planned
+    to: plan_review_runner
+  - from: ingest_decisions_dry_run
+    "on": blocked
+    terminal: blocked
+  - from: plan_review_runner
+    "on": planned
+    terminal: done
+  - from: plan_review_runner
+    "on": blocked
+    terminal: blocked
+  - from: run_decision_loop
+    "on": completed
+    terminal: done
+  - from: run_decision_loop
+    "on": noop
+    terminal: done
+  - from: run_decision_loop
+    "on": published_review_note
+    terminal: done
+  - from: run_decision_loop
+    "on": blocked
+    terminal: blocked
+
+compatibility:
+  cargo:
+    - scripts/legacy/run_blackboard_decision_ingester.openclaw_direct_legacy.sh
+    - workspace-main/scripts/ingest_agent_reviews.py
+    - workspace-main/scripts/agent_review_runner.py
+    - workspace-main/scripts/publish_or_research_attention.py
+    - workspace-main/scripts/update_review_inbox.py
+  portability_note: OpenClaw host mapping stays inside the OpenClaw adapter; kernel semantics are review-board publish, decision ingest, routing, and terminal receipt.

@@ -1,13 +1,14 @@
 {
   "schema": "workflow.kernel.validation-report.v1",
-  "summary": "Six portable workflow fixtures mapped to the kernel capabilities they prove.",
+  "summary": "Seven portable workflow fixtures mapped to the kernel capabilities they prove.",
   "workflow_ids": [
     "bumblebee_quality_review",
     "jarvis_weekly_update_shadow",
     "ivy_jonah_editorial",
     "trading_research_gate",
     "radhe_review_pipeline",
-    "deterministic_system_action"
+    "deterministic_system_action",
+    "openclaw_blackboard_bus"
   ],
   "core_capabilities": [
     "versioned_workflow_def",
@@ -141,6 +142,27 @@
         "apply follows exact human approval",
         "approval binds to dry-run plan hash",
         "done requires readback verification"
+      ]
+    },
+    {
+      "workflow_id": "openclaw_blackboard_bus",
+      "proves": [
+        "system_action",
+        "surface_adapter",
+        "host_runtime_adapter",
+        "immutable_receipts",
+        "policy_gates"
+      ],
+      "must_not_depend_on": [
+        "specific_host_path",
+        "telegram_send",
+        "public_publish",
+        "ungated_runtime_mutation"
+      ],
+      "acceptance_checks": [
+        "Blackboard publisher and decision ingester are explicit stages",
+        "dry-run paths do not write operator surfaces",
+        "legacy OpenClaw scripts are compatibility cargo behind an adapter"
       ]
     }
   ]

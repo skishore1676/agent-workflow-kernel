@@ -46,6 +46,7 @@ class OpenClawBlackboardDecisionLoopAdapter:
     family = AdapterFamily.HOST
     operations = (
         "refresh_blackboard",
+        "publish_attention",
         "ingest_decisions",
         "plan_review_runner",
         "run_decision_loop",
@@ -64,9 +65,18 @@ class OpenClawBlackboardDecisionLoopAdapter:
         self.workspace_main = self.openclaw_root / "workspace-main"
         self.vault_root = Path(vault_root).expanduser().resolve() if vault_root is not None else None
         self.update_script = self.workspace_main / "scripts" / "update_review_inbox.py"
+        self.publisher_script = self.workspace_main / "scripts" / "publish_or_research_attention.py"
         self.ingest_script = self.workspace_main / "scripts" / "ingest_agent_reviews.py"
         self.runner_script = self.workspace_main / "scripts" / "agent_review_runner.py"
-        self.direct_loop_script = self.openclaw_root / "scripts" / "run_blackboard_decision_ingester.sh"
+        legacy_loop_script = (
+            self.openclaw_root
+            / "scripts"
+            / "legacy"
+            / "run_blackboard_decision_ingester.openclaw_direct_legacy.sh"
+        )
+        self.direct_loop_script = (
+            legacy_loop_script if legacy_loop_script.exists() else self.openclaw_root / "scripts" / "run_blackboard_decision_ingester.sh"
+        )
         self.created_at = created_at or _now_iso()
         self.timeout_seconds = timeout_seconds
         self._runner = runner or subprocess.run
@@ -78,6 +88,7 @@ class OpenClawBlackboardDecisionLoopAdapter:
             operations=self.operations,
             features=(
                 "blackboard_refresh",
+                "attention_handoff_publish",
                 "checked_decision_ingest",
                 "agent_review_runner_plan",
                 "direct_openclaw_decision_loop",
@@ -104,6 +115,38 @@ class OpenClawBlackboardDecisionLoopAdapter:
             success_summary="OpenClaw Blackboard refreshed.",
             blocked_summary="OpenClaw Blackboard refresh failed.",
             checks_run=("validate_openclaw_paths", "run_update_review_inbox"),
+        )
+
+    def publish_attention(
+        self,
+        invocation: AdapterInvocation,
+        *,
+        if_present: bool = True,
+        validate: bool = True,
+        force: bool = False,
+    ) -> Receipt:
+        validation = self._validate_common(required=(self.publisher_script,))
+        if validation is not None:
+            return self._blocked(invocation, validation, checks_run=("validate_openclaw_paths",))
+        cmd = [sys.executable, str(self.publisher_script.name)]
+        if if_present:
+            cmd.append("--if-present")
+        if validate:
+            cmd.append("--validate")
+        if force:
+            cmd.append("--force")
+        result = self._run(cmd, cwd=self.publisher_script.parent)
+        return self._command_receipt(
+            invocation,
+            result=result,
+            success_summary="OpenClaw Blackboard attention handoff publisher completed.",
+            blocked_summary="OpenClaw Blackboard attention handoff publisher failed.",
+            checks_run=("validate_openclaw_paths", "run_publish_or_research_attention"),
+            policy_snapshot={
+                "writes_operator_surface": True,
+                "external_publish_allowed": False,
+                "telegram_send_allowed": False,
+            },
         )
 
     def ingest_decisions(
@@ -183,6 +226,8 @@ class OpenClawBlackboardDecisionLoopAdapter:
             )
         env = self._env()
         env["BLACKBOARD_REVIEW_RUNNER_DISPATCH"] = review_runner_dispatch
+        env["BLACKBOARD_LEGACY_SUPPRESS_LAUNCHD_EVENT"] = "1"
+        env["BLACKBOARD_LEGACY_SUPPRESS_TELEGRAM"] = "1"
         if telegram_target:
             env["BLACKBOARD_INGESTER_TELEGRAM_TARGET"] = telegram_target
         if telegram_account:
