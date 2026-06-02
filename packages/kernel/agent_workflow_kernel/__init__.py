@@ -33,6 +33,7 @@ from .contracts import (
     PolicyGate,
     PromptRef,
     Receipt,
+    ResolvedLeasePolicy,
     RiskClass,
     StageDef,
     StageRun,
@@ -127,6 +128,15 @@ from .reviewers import (
     AutomatedSumanReviewer,
 )
 from .runner import OwnedRunSummary, RunnerResult, RunnerStep, WorkflowRunner
+from .sessions import (
+    ACTOR_SESSION_KEY_PREFIX,
+    ACTOR_SESSION_KEY_SCHEMA_VERSION,
+    ActorSessionBinding,
+    ActorSessionScope,
+    canonical_actor_session_binding,
+    canonical_actor_session_key,
+    digest_actor_session_profile,
+)
 from .kernel import (
     HumanGateSurfaceResult,
     KernelDecisionResult,
@@ -134,12 +144,15 @@ from .kernel import (
     KernelStep,
     WorkflowKernel,
 )
+from .lease import resolved_lease_policy_from_stage_run, resolve_stage_lease_policy
 from .storage import LedgerConflict, RecoveryAction, WorkflowLedger
 from .validation import WorkflowValidationError, validate_workflow_def, validate_workflow_mapping
 
 __all__ = [
     "ActionRequest",
     "ALLOWED_TRANSITION_GUARDS",
+    "ACTOR_SESSION_KEY_PREFIX",
+    "ACTOR_SESSION_KEY_SCHEMA_VERSION",
     "AdapterError",
     "AdapterFamily",
     "AdapterInvocation",
@@ -147,6 +160,8 @@ __all__ = [
     "AdapterResult",
     "AdapterRegistry",
     "AdapterRegistryError",
+    "ActorSessionBinding",
+    "ActorSessionScope",
     "AUTOMATED_SUMAN_REVIEWER_HUMAN_REF",
     "AUTOMATED_SUMAN_REVIEWER_ID",
     "AUTOMATED_SUMAN_REVIEWER_SCHEMA",
@@ -205,6 +220,7 @@ __all__ = [
     "RecoveryAction",
     "RenderedContext",
     "ResolvedPrompt",
+    "ResolvedLeasePolicy",
     "RiskClass",
     "RunnerResult",
     "RunnerStep",
@@ -234,8 +250,11 @@ __all__ = [
     "build_receipt",
     "build_runtime_provenance",
     "build_test_only_suman_approval",
+    "canonical_actor_session_binding",
+    "canonical_actor_session_key",
     "canonical_json",
     "compare_receipts",
+    "digest_actor_session_profile",
     "digest_data",
     "ensure_invocation_family",
     "fingerprint_request",
@@ -249,6 +268,8 @@ __all__ = [
     "report_from_fixture",
     "result_from_receipt",
     "run_local_workflow",
+    "resolved_lease_policy_from_stage_run",
+    "resolve_stage_lease_policy",
     "to_plain_data",
     "unsupported_operation_result",
     "validate_approval",

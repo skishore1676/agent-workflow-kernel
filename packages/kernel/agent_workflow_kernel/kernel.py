@@ -10,7 +10,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from .adapter_registry import AdapterRegistration, AdapterRegistry, AdapterRegistryError
+from .adapter_registry import (
+    AdapterRegistration,
+    AdapterRegistry,
+    AdapterRegistryError,
+    adapter_family_for_stage,
+)
 from .adapters import (
     ADAPTER_STATUS_SUCCEEDED,
     make_adapter_receipt,
@@ -19,6 +24,7 @@ from .contracts import (
     AdapterFamily,
     AdapterInvocation,
     AdapterResult,
+    ArtifactRef,
     FailureClass,
     Receipt,
     RiskClass,
@@ -33,6 +39,7 @@ from .contracts import (
     to_plain_data,
 )
 from .dsl import workflow_to_canonical_json
+from .lease import resolved_lease_policy_from_stage_run, resolve_stage_lease_policy
 from .policy import (
     ALLOWED_TRANSITION_GUARDS,
     FAIL_CLOSED_TRANSITION_GUARDS,
@@ -266,13 +273,23 @@ class WorkflowKernel:
         )
         return instance
 
-    def run_once(self, *, instance_id: str | None = None, now: Any = None) -> KernelStep:
+    def run_once(
+        self,
+        *,
+        instance_id: str | None = None,
+        lease_seconds: int | None = None,
+        now: Any = None,
+    ) -> KernelStep:
         runner = WorkflowRunner(self.ledger, owner_id=self.config.owner_id)
         state: dict[str, Any] = {}
         step = runner.run_once(
             self._handle_stage(state, now=now),
             instance_id=instance_id,
-            lease_seconds=self.config.default_lease_seconds,
+            lease_seconds=None,
+            lease_resolver=lambda run: self._resolve_lease_for_run(
+                run,
+                explicit_lease_seconds=lease_seconds,
+            ),
             now=now,
         )
         if step.stage_run is None:
@@ -601,6 +618,7 @@ class WorkflowKernel:
             residual_risk=adapter_result.residual_risk,
             next_action=adapter_result.next_hint,
             rendered_context=None,
+            lease_policy=resolved_lease_policy_from_stage_run(run),
         )
         self.ledger.record_receipt(receipt)
         surface_ref = _surface_ref_from_outputs(adapter_result.outputs)
@@ -698,6 +716,7 @@ class WorkflowKernel:
             residual_risk=adapter_receipt.residual_risk,
             next_action=adapter_receipt.next_action,
             rendered_context=None,
+            lease_policy=resolved_lease_policy_from_stage_run(run),
         )
         self.ledger.record_receipt(receipt)
         self.ledger.append_event(
@@ -836,6 +855,7 @@ class WorkflowKernel:
             residual_risk=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else failure_summary,
             next_action=None if ingest_status == ADAPTER_STATUS_SUCCEEDED else "Fix the surface decision and retry from a fresh waiting gate.",
             rendered_context=None,
+            lease_policy=resolved_lease_policy_from_stage_run(run),
         )
         self.ledger.record_receipt(receipt)
         self.ledger.append_event(
@@ -907,7 +927,10 @@ class WorkflowKernel:
                     approval_required=True,
                 )
 
-            operation = _operation_for_stage(stage)
+            operation = _operation_for_stage(
+                stage,
+                adapter_family=adapter_family_for_stage(stage.type, stage.adapter),
+            )
             try:
                 registration = self.config.adapter_registry.resolve(
                     stage.adapter,
@@ -915,10 +938,10 @@ class WorkflowKernel:
                 )
             except AdapterRegistryError as exc:
                 return self._blocked(state, str(exc), FailureClass.ADAPTER_UNAVAILABLE)
-            if registration.family != AdapterFamily.RUNTIME:
+            if registration.family not in {AdapterFamily.RUNTIME, AdapterFamily.LANE}:
                 return self._blocked(
                     state,
-                    "Only runtime adapter invocation is implemented in the initial kernel slice.",
+                    "Only runtime and lane adapter invocation is implemented in this kernel slice.",
                     FailureClass.ADAPTER_UNAVAILABLE,
                 )
             if not registration.supports(operation):
@@ -1060,7 +1083,15 @@ class WorkflowKernel:
                 started_at=created_at,
             )
             try:
-                adapter_result = registration.adapter.invoke(invocation, runtime_input)
+                adapter_result = _invoke_registered_stage_adapter(
+                    registration,
+                    invocation=invocation,
+                    workflow=self.workflow,
+                    stage=stage,
+                    run=run,
+                    stage_input=runtime_input,
+                    created_at=created_at,
+                )
             except Exception as exc:
                 error_summary = str(exc)
                 response_hash = digest_data({"adapter_exception": error_summary})
@@ -1096,6 +1127,7 @@ class WorkflowKernel:
                     residual_risk=adapter_result.residual_risk,
                     next_action=adapter_result.next_hint,
                     rendered_context=rendered_context,
+                    lease_policy=resolved_lease_policy_from_stage_run(run),
                 )
                 state["adapter_result"] = adapter_result
                 state["receipt_id"] = receipt.receipt_id
@@ -1142,6 +1174,7 @@ class WorkflowKernel:
                 residual_risk=adapter_result.residual_risk,
                 next_action=adapter_result.next_hint,
                 rendered_context=rendered_context,
+                lease_policy=resolved_lease_policy_from_stage_run(run),
             )
             state["adapter_result"] = adapter_result
             state["receipt_id"] = receipt.receipt_id
@@ -1172,6 +1205,7 @@ class WorkflowKernel:
                         residual_risk=summary,
                         next_action="Fix adapter output or stage contract before retrying.",
                         rendered_context=rendered_context,
+                        lease_policy=resolved_lease_policy_from_stage_run(run),
                     )
                     state["receipt_id"] = invalid_receipt.receipt_id
                     state["failure_summary"] = summary
@@ -1220,6 +1254,7 @@ class WorkflowKernel:
         effective_policy: _EffectivePolicy,
         summary: str,
     ) -> Receipt:
+        lease_policy = resolved_lease_policy_from_stage_run(run)
         return Receipt(
             receipt_id=f"receipt:kernel:{run.stage_run_id}:policy_preflight_blocked",
             kind="kernel.policy_preflight",
@@ -1240,6 +1275,7 @@ class WorkflowKernel:
                     "effective_policy_compiled",
                     "policy_preflight",
                 ],
+                **({"lease": to_plain_data(lease_policy)} if lease_policy else {}),
             },
             policy_snapshot=_policy_snapshot(gate, effective_policy),
             residual_risk=summary,
@@ -1315,6 +1351,7 @@ class WorkflowKernel:
         gate: Any,
         failure_class: FailureClass,
     ):
+        lease_policy = resolved_lease_policy_from_stage_run(run)
         return Receipt(
             receipt_id=f"receipt:kernel:{run.stage_run_id}:prompt_context_blocked",
             kind="kernel.prompt_context",
@@ -1335,6 +1372,7 @@ class WorkflowKernel:
             runtime_provenance={
                 "actor": self.config.owner_id,
                 "checks_run": ["prompt_registry_resolution_failed"],
+                **({"lease": to_plain_data(lease_policy)} if lease_policy else {}),
             },
             policy_snapshot=to_plain_data(gate),
             next_action="Fix prompt registry configuration before retrying the stage.",
@@ -2041,6 +2079,33 @@ class WorkflowKernel:
             created_at=created_at,
         )
 
+    def _resolve_lease_for_run(
+        self,
+        run: StageRun,
+        *,
+        explicit_lease_seconds: int | None,
+    ):
+        stage = self._stage_by_id.get(run.stage_id)
+        if stage is None:
+            return resolve_stage_lease_policy(
+                self.workflow,
+                StageDef(
+                    id=run.stage_id,
+                    type=StageType.BLOCKED,
+                    adapter=run.adapter_id or "unknown",
+                    outcomes=("blocked",),
+                    actors={"actor": run.actor_ref} if run.actor_ref else {},
+                ),
+                runtime_default_seconds=self.config.default_lease_seconds,
+                explicit_lease_seconds=explicit_lease_seconds,
+            )
+        return resolve_stage_lease_policy(
+            self.workflow,
+            stage,
+            runtime_default_seconds=self.config.default_lease_seconds,
+            explicit_lease_seconds=explicit_lease_seconds,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class _PolicyComponents:
@@ -2587,10 +2652,16 @@ _HARD_GATE_RISK_MAP: dict[HardGate, tuple[RiskClass, ...]] = {
 }
 
 
-def _operation_for_stage(stage: StageDef) -> str:
+def _operation_for_stage(stage: StageDef, *, adapter_family: AdapterFamily) -> str:
     operation = stage.inputs.get("operation")
     if operation is not None:
         return str(operation)
+    if adapter_family == AdapterFamily.LANE:
+        return "build_stage_input"
+    if adapter_family == AdapterFamily.SURFACE:
+        return "publish"
+    if adapter_family == AdapterFamily.HOST:
+        return "resolve"
     return "invoke"
 
 
@@ -2748,6 +2819,163 @@ def _output_path_exists(outputs: Mapping[str, Any], field_path: str) -> bool:
             return False
         current = current[part]
     return current not in (None, "")
+
+
+def _invoke_registered_stage_adapter(
+    registration: AdapterRegistration,
+    *,
+    invocation: AdapterInvocation,
+    workflow: WorkflowDef,
+    stage: StageDef,
+    run: StageRun,
+    stage_input: Mapping[str, Any],
+    created_at: str,
+) -> AdapterResult:
+    if registration.family == AdapterFamily.RUNTIME:
+        return registration.adapter.invoke(invocation, stage_input)
+    if registration.family == AdapterFamily.LANE:
+        return _invoke_lane_stage_adapter(
+            registration,
+            invocation=invocation,
+            workflow=workflow,
+            stage=stage,
+            run=run,
+            stage_input=stage_input,
+            created_at=created_at,
+        )
+    raise ValueError(
+        f"adapter family {registration.family.value!r} is not supported for owned stage invocation"
+    )
+
+
+def _invoke_lane_stage_adapter(
+    registration: AdapterRegistration,
+    *,
+    invocation: AdapterInvocation,
+    workflow: WorkflowDef,
+    stage: StageDef,
+    run: StageRun,
+    stage_input: Mapping[str, Any],
+    created_at: str,
+) -> AdapterResult:
+    adapter = registration.adapter
+    operation = invocation.operation
+    if operation == "open_work":
+        outputs = dict(adapter.open_work(stage_input))
+        artifact_refs: tuple[ArtifactRef, ...] = ()
+    elif operation == "build_stage_input":
+        outputs = dict(adapter.build_stage_input(run, stage_input))
+        artifact_refs = ()
+    elif operation == "prepare_human_gate":
+        outputs = dict(adapter.prepare_human_gate(run, stage_input))
+        artifact_refs = ()
+    elif operation == "validate_artifacts":
+        artifact_refs = _artifact_refs_from_stage_input(stage_input)
+        receipt = adapter.validate_artifacts(run, artifact_refs)
+        outputs = {
+            "lane_receipt_ref": receipt.receipt_id,
+            "lane_receipt": to_plain_data(receipt),
+            "artifact_count": len(artifact_refs),
+        }
+        return AdapterResult(
+            invocation_id=invocation.invocation_id,
+            status=receipt.status,
+            outputs=_with_default_lane_outcome(stage, outputs),
+            artifact_refs=receipt.artifact_refs,
+            receipt_ref=receipt.receipt_id,
+            residual_risk=receipt.residual_risk,
+            next_hint=receipt.next_action,
+        )
+    else:
+        raise ValueError(
+            f"{registration.adapter_id} does not implement owned lane operation {operation!r}"
+        )
+
+    plain_outputs = _with_default_lane_outcome(stage, outputs)
+    receipt = make_adapter_receipt(
+        invocation,
+        status=ADAPTER_STATUS_SUCCEEDED,
+        summary=(
+            f"Kernel invoked lane adapter {registration.adapter_id}.{operation} "
+            f"for workflow {workflow.id}."
+        ),
+        created_at=created_at,
+        stage_id=stage.id,
+        artifact_refs=artifact_refs,
+        outputs=plain_outputs,
+        checks_run=("lane_adapter_registered", "owned_lane_operation_supported"),
+    )
+    return AdapterResult(
+        invocation_id=invocation.invocation_id,
+        status=ADAPTER_STATUS_SUCCEEDED,
+        outputs=plain_outputs,
+        artifact_refs=receipt.artifact_refs,
+        receipt_ref=receipt.receipt_id,
+        residual_risk=receipt.residual_risk,
+        next_hint=receipt.next_action,
+    )
+
+
+def _artifact_refs_from_stage_input(stage_input: Mapping[str, Any]) -> tuple[ArtifactRef, ...]:
+    raw_refs = stage_input.get("artifact_refs")
+    if not isinstance(raw_refs, (list, tuple)):
+        return ()
+    refs: list[ArtifactRef] = []
+    for raw in raw_refs:
+        if isinstance(raw, ArtifactRef):
+            refs.append(raw)
+        elif isinstance(raw, Mapping):
+            try:
+                refs.append(
+                    ArtifactRef(
+                        artifact_id=str(raw["artifact_id"]),
+                        role=str(raw["role"]),
+                        uri=str(raw["uri"]),
+                        content_hash=str(raw["content_hash"]),
+                        mime_type=str(raw.get("mime_type", "text/plain")),
+                        size_bytes=raw.get("size_bytes"),
+                        created_by=raw.get("created_by"),
+                        visibility=str(raw.get("visibility", "internal")),
+                    )
+                )
+            except KeyError:
+                continue
+    return tuple(refs)
+
+
+def _with_default_lane_outcome(stage: StageDef, outputs: Mapping[str, Any]) -> dict[str, Any]:
+    plain_outputs = dict(outputs)
+    if not isinstance(plain_outputs.get("outcome"), str) or not plain_outputs.get("outcome"):
+        plain_outputs["outcome"] = _default_success_outcome_for_stage(stage)
+    return plain_outputs
+
+
+def _default_success_outcome_for_stage(stage: StageDef) -> str:
+    preferred_by_type = {
+        StageType.AGENT_WORK: ("ready", "revised", "done"),
+        StageType.AGENT_GATE: ("approved_for_generation", "support", "accepted", "pass"),
+        StageType.A2A_REVIEW_LOOP: ("pass", "accepted"),
+        StageType.SYSTEM_ACTION: (
+            "ready",
+            "valid",
+            "ready_for_approval",
+            "package_ready",
+            "approval_needed",
+            "surfaced",
+            "verified",
+            "applied",
+            "done_without_publish",
+            "done",
+        ),
+        StageType.WAIT_SCHEDULE: ("ready", "skipped"),
+        StageType.RECOVERY: ("still_running", "resumed"),
+    }
+    for outcome in preferred_by_type.get(stage.type, ()):
+        if outcome in stage.outcomes:
+            return outcome
+    if len(stage.outcomes) == 1:
+        return stage.outcomes[0]
+    return ADAPTER_STATUS_SUCCEEDED
 
 
 def _retry_result_for_adapter_failure(
@@ -3068,9 +3296,28 @@ def _make_kernel_adapter_receipt(
     invocation: AdapterInvocation,
     *,
     rendered_context: RenderedContext | None,
+    lease_policy: Any | None = None,
     **kwargs: Any,
 ):
     receipt = make_adapter_receipt(invocation, **kwargs)
+    outputs = kwargs.get("outputs")
+    usage = _usage_from_outputs(outputs if isinstance(outputs, Mapping) else {})
+    if usage:
+        receipt = replace(
+            receipt,
+            runtime_provenance={
+                **receipt.runtime_provenance,
+                "usage": usage,
+            },
+        )
+    if lease_policy is not None:
+        receipt = replace(
+            receipt,
+            runtime_provenance={
+                **receipt.runtime_provenance,
+                "lease": to_plain_data(lease_policy),
+            },
+        )
     if rendered_context is None:
         return receipt
     return replace(
@@ -3078,6 +3325,25 @@ def _make_kernel_adapter_receipt(
         context_packet_ref=rendered_context.packet.context_id,
         prompt_provenance=build_prompt_provenance(rendered_context),
     )
+
+
+def _usage_from_outputs(outputs: Mapping[str, Any]) -> dict[str, Any]:
+    usage = outputs.get("usage")
+    if not isinstance(usage, Mapping):
+        return {}
+    allowed = {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cached_input_tokens",
+        "reasoning_tokens",
+        "wall_time_ms",
+        "cold_start",
+        "session_id",
+        "model",
+        "source",
+    }
+    return {str(key): to_plain_data(value) for key, value in usage.items() if str(key) in allowed}
 
 
 def _prior_receipts(ledger: WorkflowLedger, instance_id: str) -> tuple[Mapping[str, Any], ...]:

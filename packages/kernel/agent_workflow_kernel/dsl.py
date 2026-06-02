@@ -96,6 +96,7 @@ def _stage_from_mapping(data: Any) -> StageDef:
         policy=dict(stage.get("policy") or {}),
         budget=dict(stage.get("budget") or {}),
         retry=dict(stage.get("retry") or {}),
+        lease=dict(stage.get("lease") or {}),
         timeout_seconds=_optional_int(stage.get("timeout_seconds")),
         surface=dict(stage.get("surface") or {}),
     )
