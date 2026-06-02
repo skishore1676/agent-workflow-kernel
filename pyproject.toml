@@ -20,12 +20,15 @@ dev = [
 where = [
   "packages/kernel",
   "packages/adapters/openclaw",
+  "packages/adapters/codex_cli",
 ]
 include = [
   "agent_workflow_kernel",
   "agent_workflow_kernel.*",
   "agent_workflow_kernel_openclaw",
   "agent_workflow_kernel_openclaw.*",
+  "agent_workflow_kernel_codex_cli",
+  "agent_workflow_kernel_codex_cli.*",
 ]
 
 [tool.pytest.ini_options]
