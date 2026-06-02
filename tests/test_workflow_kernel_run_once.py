@@ -1554,6 +1554,101 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         events = [event["event_type"] for event in self.ledger.list_events()]
         self.assertNotIn("human_gate_surface_published", events)
 
+    def test_prompt_backed_choice_gate_routes_selected_option_to_downstream(self) -> None:
+        class CapturingRuntimeAdapter(LocalFakeRuntimeAdapter):
+            def __init__(self, *, created_at: str) -> None:
+                super().__init__(created_at=created_at)
+                self.inputs_by_stage: dict[str, list[dict]] = {}
+
+            def invoke(self, invocation, runtime_input):
+                stage_id = str(runtime_input["stage"]["id"])
+                self.inputs_by_stage.setdefault(stage_id, []).append(dict(runtime_input))
+                return super().invoke(invocation, runtime_input)
+
+        with tempfile.TemporaryDirectory() as notes_dir:
+            runtime = CapturingRuntimeAdapter(created_at=self.now.isoformat())
+            surface = LocalMarkdownHumanReviewSurfaceAdapter(
+                notes_dir,
+                created_at=self.now.isoformat(),
+            )
+            registry = AdapterRegistry(
+                (
+                    AdapterRegistration.from_runtime_adapter(runtime),
+                    AdapterRegistration.from_surface_adapter(surface),
+                )
+            )
+            workflow = self.workflow_with_prompt_backed_choice_gate(surface.adapter_id)
+            kernel = WorkflowKernel(
+                self.ledger,
+                workflow,
+                KernelRuntimeConfig(
+                    owner_id="kernel-test",
+                    adapter_registry=registry,
+                    prompt_registry=PromptRegistry.load(ROOT / "prompts"),
+                ),
+            )
+            kernel.start(instance_id="instance-choice", inputs={}, now=self.now)
+            propose = kernel.run_once(now=self.now)
+            wait = kernel.run_once(now=self.now)
+
+            self.assertEqual(propose.decision, "succeeded")
+            self.assertEqual(wait.decision, "waiting_on_human")
+            prompt_row = self.ledger.connection.execute(
+                """
+                SELECT prompt_hash, context_packet_ref, rendered_context_hash
+                FROM stage_runs
+                WHERE stage_run_id = ?
+                """,
+                ("instance-choice:choose:1",),
+            ).fetchone()
+            self.assertIsNotNone(prompt_row)
+            assert prompt_row is not None
+            self.assertTrue(prompt_row["prompt_hash"].startswith("sha256:"))
+            self.assertTrue(prompt_row["context_packet_ref"])
+            self.assertTrue(prompt_row["rendered_context_hash"].startswith("sha256:"))
+
+            publish = kernel.publish_waiting_human_gate(
+                instance_id="instance-choice",
+                test_only=True,
+                non_live=True,
+                now=self.now,
+            )
+            note_path = Path(publish.outputs["note_path"])
+            note_text = note_path.read_text(encoding="utf-8")
+            note_path.write_text(
+                note_text.replace("- [ ] `option_2`", "- [x] `option_2`"),
+                encoding="utf-8",
+            )
+            ingest = kernel.ingest_human_gate_surface_decision(
+                instance_id="instance-choice",
+                now=self.now,
+            )
+            apply = kernel.run_once(now=self.now)
+
+        self.assertEqual(publish.status, "succeeded")
+        self.assertEqual(publish.outputs["choice_options"][1]["id"], "option_2")
+        self.assertTrue(publish.outputs["choice_manifest_hash"].startswith("sha256:"))
+        self.assertEqual(
+            publish.outputs["prompt_provenance"]["refs"][0]["id"],
+            "stage.choice_gate",
+        )
+        self.assertEqual(ingest.status, "succeeded")
+        self.assertIsNotNone(ingest.decision_result)
+        assert ingest.decision_result is not None
+        self.assertEqual(ingest.decision_result.outcome, "option_2")
+        self.assertEqual(apply.decision, "succeeded")
+        apply_input = runtime.inputs_by_stage["apply"][-1]
+        latest_decision = apply_input["latest_human_decision"]
+        self.assertEqual(latest_decision["decision"], "option_2")
+        self.assertEqual(latest_decision["action_fingerprint"], publish.outputs["action_fingerprint"])
+        self.assertEqual(latest_decision["choice_manifest_hash"], publish.outputs["choice_manifest_hash"])
+        self.assertEqual(latest_decision["selected_option"]["id"], "option_2")
+        self.assertEqual(latest_decision["selected_option"]["budget_profile"], "balanced")
+        stored = self.ledger.get_workflow_instance("instance-choice")
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.status, WorkflowStatus.DONE)
+
     def kernel_for(
         self,
         workflow: WorkflowDef,
@@ -1924,6 +2019,81 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
                 Transition(from_stage="approve", on="approved", to_stage="apply"),
                 Transition(from_stage="approve", on="rejected", terminal="policy_denied"),
                 Transition(from_stage="approve", on="revise", to_stage="draft"),
+                Transition(from_stage="apply", on="applied", terminal="done"),
+            ),
+        )
+
+    def workflow_with_prompt_backed_choice_gate(self, surface_adapter: str) -> WorkflowDef:
+        return WorkflowDef(
+            id="toy-choice-gate",
+            version="0.1.0",
+            name="Toy prompt-backed choice gate workflow",
+            stages=(
+                StageDef(
+                    id="propose_options",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("options_ready",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+                StageDef(
+                    id="choose",
+                    type=StageType.HUMAN_GATE,
+                    adapter=surface_adapter,
+                    outcomes=("option_1", "option_2", "option_3", "ignore"),
+                    inputs={"decision_action": "choose_token_optimization_option"},
+                    actors={"operator": "Suman(test)"},
+                    prompt_refs=(
+                        PromptRef(id="stage.choice_gate", kind="stage", version="1.0.0"),
+                    ),
+                    surface={
+                        "title": "Token optimizer safe-choice gate",
+                        "human_ask": "Select exactly one local fixture option.",
+                        "evidence_refs": ("fixture://token-optimizer/options",),
+                        "choice_options": (
+                            {
+                                "id": "option_1",
+                                "label": "Conservative",
+                                "budget_profile": "low",
+                                "summary": "Use the smallest token budget.",
+                            },
+                            {
+                                "id": "option_2",
+                                "label": "Balanced",
+                                "budget_profile": "balanced",
+                                "summary": "Use a moderate token budget.",
+                            },
+                            {
+                                "id": "option_3",
+                                "label": "Deep",
+                                "budget_profile": "high",
+                                "summary": "Use the largest local fixture budget.",
+                            },
+                            {
+                                "id": "ignore",
+                                "label": "Ignore",
+                                "budget_profile": "none",
+                                "summary": "Do not route optimization work.",
+                            },
+                        ),
+                    },
+                ),
+                StageDef(
+                    id="apply",
+                    type=StageType.AGENT_WORK,
+                    adapter="runtime.local_fake",
+                    outcomes=("applied",),
+                    inputs={"operation": "invoke"},
+                    actors={"worker": "kernel-test"},
+                ),
+            ),
+            transitions=(
+                Transition(from_stage="propose_options", on="options_ready", to_stage="choose"),
+                Transition(from_stage="choose", on="option_1", terminal="final_approval_required"),
+                Transition(from_stage="choose", on="option_2", to_stage="apply"),
+                Transition(from_stage="choose", on="option_3", terminal="final_approval_required"),
+                Transition(from_stage="choose", on="ignore", terminal="cancelled"),
                 Transition(from_stage="apply", on="applied", terminal="done"),
             ),
         )

@@ -522,6 +522,8 @@ class DryRunSurfaceAdapter:
             surface_query.get("decision") or surface_query.get("synthetic_decision") or ""
         ).strip()
         allowed_decisions = _string_tuple(surface_query.get("allowed_decisions", ()))
+        choice_options = _choice_options_from_packet(surface_query)
+        selected_option = _selected_choice_option(decision, choice_options)
         error: dict[str, Any] | None = live_error
         if error is None and not decision:
             error = {
@@ -558,6 +560,9 @@ class DryRunSurfaceAdapter:
             ),
             "evidence_refs": list(_string_tuple(surface_query.get("evidence_refs", ()))),
             "allowed_decisions": list(allowed_decisions),
+            "selected_option": selected_option,
+            "choice_options": list(choice_options),
+            "choice_manifest_hash": surface_query.get("choice_manifest_hash"),
             "test_only": bool(surface_query.get("test_only", True)),
             "non_live": bool(surface_query.get("non_live", True)),
             "dry_run": True,
@@ -895,6 +900,8 @@ class SandboxObsidianMarkdownSurfaceAdapter:
         artifact_review = _artifact_review_from_packet(packet)
         prompt_provenance = _prompt_provenance_from_packet(packet)
         operator_brief = _operator_brief_from_packet(packet)
+        choice_options = _choice_options_from_packet(packet)
+        choice_manifest_hash = str(packet.get("choice_manifest_hash") or "")
         note_text = _render_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -911,6 +918,8 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             artifact_review=artifact_review,
             prompt_provenance=prompt_provenance,
             operator_brief=operator_brief,
+            choice_options=choice_options,
+            choice_manifest_hash=choice_manifest_hash,
             test_only=bool(packet.get("test_only", True)),
             non_live=True,
             created_at=self.created_at,
@@ -987,6 +996,8 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             "artifact_review": artifact_review,
             "prompt_provenance": prompt_provenance,
             "operator_brief": operator_brief,
+            "choice_options": list(choice_options),
+            "choice_manifest_hash": choice_manifest_hash or None,
             "mutation_mode": self.mutation_mode,
             "write_class": "sandbox",
             "test_only": bool(packet.get("test_only", True)),
@@ -2199,6 +2210,8 @@ class LiveObsidianMarkdownSurfaceAdapter:
         artifact_review = _artifact_review_from_packet(packet)
         prompt_provenance = _prompt_provenance_from_packet(packet)
         operator_brief = _operator_brief_from_packet(packet)
+        choice_options = _choice_options_from_packet(packet)
+        choice_manifest_hash = str(packet.get("choice_manifest_hash") or "")
         note_text = _render_live_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -2215,6 +2228,8 @@ class LiveObsidianMarkdownSurfaceAdapter:
             artifact_review=artifact_review,
             prompt_provenance=prompt_provenance,
             operator_brief=operator_brief,
+            choice_options=choice_options,
+            choice_manifest_hash=choice_manifest_hash,
             created_at=self.created_at,
         )
         idempotency_replayed = False
@@ -2292,6 +2307,8 @@ class LiveObsidianMarkdownSurfaceAdapter:
             "artifact_review": artifact_review,
             "prompt_provenance": prompt_provenance,
             "operator_brief": operator_brief,
+            "choice_options": list(choice_options),
+            "choice_manifest_hash": choice_manifest_hash or None,
             "mutation_mode": "live",
             "write_class": "live_operator_surface",
             "live_operator_surface_allowed": True,
@@ -2790,6 +2807,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         artifact_review = _artifact_review_from_packet(packet)
         prompt_provenance = _prompt_provenance_from_packet(packet)
         operator_brief = _operator_brief_from_packet(packet)
+        choice_options = _choice_options_from_packet(packet)
+        choice_manifest_hash = str(packet.get("choice_manifest_hash") or "")
 
         safety_error = _non_live_safety_error(packet, require_test_only=False)
         if safety_error is not None:
@@ -2860,6 +2879,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             artifact_review=artifact_review,
             prompt_provenance=prompt_provenance,
             operator_brief=operator_brief,
+            choice_options=choice_options,
+            choice_manifest_hash=choice_manifest_hash,
             test_only=test_only,
             non_live=non_live,
             created_at=self.created_at,
@@ -2894,6 +2915,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             "artifact_review": artifact_review,
             "prompt_provenance": prompt_provenance,
             "operator_brief": operator_brief,
+            "choice_options": list(choice_options),
+            "choice_manifest_hash": choice_manifest_hash or None,
             "test_only": test_only,
             "non_live": non_live,
         }
@@ -2977,6 +3000,8 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         expected_gate_id = str(surface_query.get("gate_id") or "").strip()
         requested_action = str(surface_query.get("requested_action") or exact_action).strip()
         allowed_decisions = _string_tuple(surface_query.get("allowed_decisions", ()))
+        choice_options = _choice_options_from_packet(surface_query)
+        choice_manifest_hash = str(surface_query.get("choice_manifest_hash") or "")
         evidence_refs = _string_tuple(surface_query.get("evidence_refs", ()))
         human_ref = str(surface_query.get("human_ref") or "Suman(test)")
         if not note_path.exists():
@@ -3016,6 +3041,10 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             expected_gate_id = note_gate_id
         if not evidence_refs:
             evidence_refs = _string_tuple(note_metadata.get("evidence_refs", ()))
+        if not choice_options:
+            choice_options = _choice_options_from_packet(note_metadata)
+        if not choice_manifest_hash:
+            choice_manifest_hash = str(note_metadata.get("choice_manifest_hash") or "")
 
         block_reason: str | None = None
         error_class: str | None = None
@@ -3072,6 +3101,9 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             checked_decisions=checked_decisions,
             allowed_decisions=allowed_decisions,
             note_action_fingerprint=note_fingerprint,
+            selected_option=_selected_choice_option(decision, choice_options),
+            choice_options=choice_options,
+            choice_manifest_hash=choice_manifest_hash,
         )
         return [receipt]
 
@@ -3135,6 +3167,9 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
         checked_decisions: tuple[str, ...] = (),
         allowed_decisions: tuple[str, ...] = (),
         note_action_fingerprint: str | None = None,
+        selected_option: Mapping[str, Any] | None = None,
+        choice_options: tuple[dict[str, Any], ...] = (),
+        choice_manifest_hash: str | None = None,
         error_class: str | None = None,
         next_action: str | None = None,
     ) -> Receipt:
@@ -3152,6 +3187,9 @@ class LocalMarkdownHumanReviewSurfaceAdapter:
             "source_note_path": str(note_path),
             "checked_decisions": list(checked_decisions),
             "allowed_decisions": list(allowed_decisions),
+            "selected_option": dict(selected_option or {}),
+            "choice_options": list(choice_options),
+            "choice_manifest_hash": choice_manifest_hash,
             "test_only": True,
             "non_live": True,
         }
@@ -3340,6 +3378,72 @@ def _prompt_provenance_metadata(prompt_provenance: Mapping[str, Any]) -> dict[st
     }
 
 
+def _choice_options_from_packet(packet: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    raw_options = packet.get("choice_options")
+    if not raw_options and isinstance(packet.get("choice_manifest"), Mapping):
+        raw_options = packet["choice_manifest"].get("options")
+    if not raw_options:
+        return ()
+    if isinstance(raw_options, Mapping):
+        raw_options = [
+            {"id": key, **(value if isinstance(value, Mapping) else {"label": value})}
+            for key, value in raw_options.items()
+        ]
+    if isinstance(raw_options, str):
+        raw_options = (raw_options,)
+    options: list[dict[str, Any]] = []
+    for index, raw_option in enumerate(raw_options, start=1):
+        if isinstance(raw_option, Mapping):
+            option = {str(key): raw_option[key] for key in sorted(raw_option, key=str)}
+            option_id = (
+                option.get("id")
+                or option.get("decision")
+                or option.get("value")
+                or option.get("label")
+                or f"option_{index}"
+            )
+            option["id"] = str(option_id)
+            option.setdefault("label", str(option_id))
+            options.append(option)
+        else:
+            option_id = str(raw_option)
+            options.append({"id": option_id, "label": option_id})
+    return tuple(options)
+
+
+def _selected_choice_option(
+    decision: str | None,
+    choice_options: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    if decision is None:
+        return {}
+    for option in choice_options:
+        if str(option.get("id") or "") == decision:
+            return dict(option)
+    return {}
+
+
+def _render_choice_options_section(
+    choice_options: tuple[dict[str, Any], ...],
+    choice_manifest_hash: str,
+) -> list[str]:
+    if not choice_options:
+        return []
+    lines = ["### Choice Options"]
+    if choice_manifest_hash:
+        lines.append(f"- Manifest hash: `{choice_manifest_hash}`")
+    for option in choice_options:
+        option_id = str(option.get("id") or "")
+        label = str(option.get("label") or option_id)
+        summary = str(option.get("summary") or option.get("description") or "").strip()
+        line = f"- `{option_id}`: {label}"
+        if summary:
+            line = f"{line} - {summary}"
+        lines.append(line)
+    lines.append("")
+    return lines
+
+
 def _render_review_card(
     *,
     invocation: AdapterInvocation,
@@ -3357,6 +3461,8 @@ def _render_review_card(
     artifact_review: Mapping[str, Any],
     prompt_provenance: Mapping[str, Any],
     operator_brief: Mapping[str, str],
+    choice_options: tuple[dict[str, Any], ...],
+    choice_manifest_hash: str,
     test_only: bool,
     non_live: bool,
     created_at: str,
@@ -3374,6 +3480,8 @@ def _render_review_card(
         "requested_action": requested_action,
         "exact_action": exact_action,
         "evidence_refs": list(evidence_refs),
+        "choice_options": list(choice_options),
+        "choice_manifest_hash": choice_manifest_hash or None,
         "test_only": test_only,
         "non_live": non_live,
         "created_at": created_at,
@@ -3395,6 +3503,7 @@ def _render_review_card(
         artifact_review=artifact_review,
     )
     artifact_lines = _render_artifact_review_section(artifact_review, default_display_mode="details")
+    choice_lines = _render_choice_options_section(choice_options, choice_manifest_hash)
     decision_lines = "\n".join(f"- [ ] `{decision}`" for decision in allowed_decisions)
     label = "TEST ONLY - NON-LIVE LOCAL REVIEW PACKET" if test_only else "LOCAL REVIEW PACKET - NON-LIVE"
     return "\n".join(
@@ -3415,6 +3524,7 @@ def _render_review_card(
             "- Comments are context only and do not authorize any live, external, destructive, auth, money, deploy, publish, Telegram, OpenClaw, oldmac, or trading action.",
             "",
             *artifact_lines,
+            *choice_lines,
             "<details>",
             "<summary>Evidence and provenance for audit/ingest</summary>",
             "",
@@ -3461,6 +3571,8 @@ def _render_live_review_card(
     artifact_review: Mapping[str, Any],
     prompt_provenance: Mapping[str, Any],
     operator_brief: Mapping[str, str],
+    choice_options: tuple[dict[str, Any], ...],
+    choice_manifest_hash: str,
     created_at: str,
 ) -> str:
     metadata = {
@@ -3476,6 +3588,8 @@ def _render_live_review_card(
         "requested_action": requested_action,
         "exact_action": exact_action,
         "evidence_refs": list(evidence_refs),
+        "choice_options": list(choice_options),
+        "choice_manifest_hash": choice_manifest_hash or None,
         "live_operator_surface_allowed": True,
         "public_publish_blocked": True,
         "created_at": created_at,
@@ -3497,6 +3611,7 @@ def _render_live_review_card(
         artifact_review=artifact_review,
     )
     artifact_lines = _render_artifact_review_section(artifact_review, default_display_mode="details")
+    choice_lines = _render_choice_options_section(choice_options, choice_manifest_hash)
     decision_lines = "\n".join(f"- [ ] `{decision}`" for decision in allowed_decisions)
     return "\n".join(
         [
@@ -3516,6 +3631,7 @@ def _render_live_review_card(
             "- Comments are context only and do not authorize public publish, deploy, trading, money movement, auth, secrets, destructive changes, or unscoped live mutation.",
             "",
             *artifact_lines,
+            *choice_lines,
             "<details>",
             "<summary>Evidence and provenance for audit/ingest</summary>",
             "",
@@ -3773,6 +3889,11 @@ def _decision_outputs(
     resolved_allowed = allowed_decisions or _string_tuple(
         payload.get("allowed_decisions", surface_query.get("allowed_decisions", ()))
     )
+    choice_options = _choice_options_from_packet(surface_query) or _choice_options_from_packet(payload)
+    selected_option = _selected_choice_option(decision, choice_options)
+    choice_manifest_hash = str(
+        payload.get("choice_manifest_hash") or surface_query.get("choice_manifest_hash") or ""
+    )
     return {
         "schema": schema,
         "canonical_surface": canonical_surface,
@@ -3789,6 +3910,9 @@ def _decision_outputs(
         "transcript_or_message_ref": transcript_or_message_ref,
         "checked_decisions": list(checked_decisions),
         "allowed_decisions": list(resolved_allowed),
+        "selected_option": selected_option,
+        "choice_options": list(choice_options),
+        "choice_manifest_hash": choice_manifest_hash or None,
         "decision_payload": _redact_sensitive_mapping(payload),
         "test_only": test_only,
         "non_live": non_live,
