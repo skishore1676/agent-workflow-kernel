@@ -16,6 +16,9 @@ workflow control.
 | Runner | Can the runner pick up, resume, retry, and stop at gates without manual babysitting? | Local/host command shows `done`, `waiting_on_human`, or named `blocked` state. |
 | Surface adapters | Do human gates appear on the intended surface and ingest exact decisions safely? | Obsidian/Telegram/Sheets/local readback shows link, choices, and decision receipt. |
 | Policy layer | Are publish, deploy, trade, auth, external-send, and destructive actions blocked unless explicitly approved? | Policy receipt or test proves risky actions fail closed. |
+| Scheduler entrypoint | If the lane is recurring or event-triggered, does the installed launchd/cron/runner/ingester path invoke AWK? | Live host readback shows the installed label, arguments, schedule, and working directory. |
+| Legacy retirement | Are old routes disabled, guarded, archived, or intentionally retained as named compatibility adapters? | Old live labels are absent or old scripts fail closed unless an explicit emergency override is set. |
+| Operator packet quality | Is the review card readable as an executive decision packet, not a machine log? | Card has a quick read, artifact links, evidence summary, exact choices, and explains what each click will do. |
 
 ## Surface Posture
 
@@ -39,6 +42,23 @@ A lane is not cut over until:
 - launchd/cron/runner/ingester entrypoints point to AWK;
 - source branches are merged/pushed and local/live machines are clean or explained;
 - first real run produces reviewable artifacts and durable AWK receipts.
+- recurring/event-driven lanes have live scheduler readback captured;
+- active operator surfaces are cleaned of obsolete proof cards from earlier runs;
+- the live card is good enough for Suman to decide without opening raw logs.
+
+Do not count a lane as `cutover` just because AWK has a shadow adapter,
+fixture, prompt profile, or Obsidian card. `cutover` means the production
+entrypoint for that lane now rides AWK, or the lane is explicitly documented as
+non-AWK production with AWK used only for observation.
+
+## Status Snapshot
+
+When reporting adoption status, use this shape so shadow work is not confused
+with production cutover:
+
+| Lane | Readiness | Production entrypoint | Legacy status | Latest live proof | Known gap |
+| --- | --- | --- | --- | --- | --- |
+| Example lane | `cutover` / `owned_execution` / `live_readonly` | launchd/cron/runner label and script | disabled / guarded / compatibility / retained | receipt, artifact, or readback path | one sentence |
 
 ## Readiness Labels
 
