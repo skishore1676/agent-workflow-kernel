@@ -291,6 +291,8 @@ def _split_yaml_pair(text: str) -> tuple[str, str]:
         raise ValueError(f"expected YAML mapping pair: {text}")
     key, raw_value = text.split(":", 1)
     key = key.strip()
+    if key.startswith(("'", '"')) and key.endswith(("'", '"')):
+        key = key[1:-1]
     if not key:
         raise ValueError(f"expected YAML mapping key: {text}")
     return key, raw_value.strip()

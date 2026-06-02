@@ -8,7 +8,9 @@ sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 
 from agent_workflow_kernel import StageType  # noqa: E402
 from agent_workflow_kernel.dsl import (  # noqa: E402
+    _load_simple_yaml,
     load_workflow_yaml,
+    workflow_from_mapping,
     workflow_to_canonical_json,
     workflow_to_canonical_json_bytes,
 )
@@ -119,6 +121,15 @@ class CoreSchemaDslTest(unittest.TestCase):
         self.assertEqual(workflow.stages[1].adapter, "runtime.a2a")
         self.assertEqual(workflow.transitions[3].guard, "within_revision_budget")
         self.assertEqual(workflow.transitions[-1].terminal, "policy_denied")
+
+    def test_stdlib_yaml_fallback_strips_quoted_mapping_keys(self) -> None:
+        quoted = VALID_WORKFLOW_YAML.replace("    on:", '    "on":')
+
+        parsed = _load_simple_yaml(quoted)
+        workflow = workflow_from_mapping(parsed)
+
+        self.assertEqual(workflow.transitions[0].on, "ready")
+        self.assertEqual(workflow.transitions[-1].on, "approval_denied")
 
     def test_rejects_unknown_stage_type(self) -> None:
         invalid = VALID_WORKFLOW_YAML.replace("type: system_action", "type: bespoke_magic")
