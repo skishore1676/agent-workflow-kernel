@@ -1,0 +1,26 @@
+schema_version: policy-envelope.v1
+id: policy.openclaw.review_only_human_gate
+version: 1.0.0
+risk_class: review_only
+approval_required_for:
+  - any_state_transition_after_gate
+  - public_publish
+  - external_send
+  - telegram_send
+  - obsidian_write
+  - live_runtime_mutation
+tool_permissions:
+  shell:
+    allowed: false
+    network: false
+  browser:
+    allowed: false
+  connectors:
+    allowed: []
+gate_rules:
+  explicit_decision_required: true
+  checkbox_read_clear_is_not_publish_approval: true
+  comments_are_evidence_not_commands: true
+redaction:
+  secrets: block
+  receipts: summarize_sensitive_values

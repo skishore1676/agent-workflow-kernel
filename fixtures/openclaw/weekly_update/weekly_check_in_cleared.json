@@ -1,0 +1,28 @@
+{
+  "schema": "openclaw.weekly-update-fixture.v1",
+  "fixture_id": "weekly-check-in-cleared-2026-w21",
+  "created_at": "2026-05-24T10:00:00Z",
+  "weekly_update": {
+    "mode": "weekly-personal",
+    "title": "Suman + Jarvis Weekly Check-in - 2026-W21",
+    "note_path": "05 Knowledge Vault/Fast Memory/Personal/Weekly/Suman Jarvis Improvement Loop/2026-W21.md",
+    "item_id": "vault-intelligence-weekly-personal-2026-w21",
+    "source_artifact": "vault://05 Knowledge Vault/Fast Memory/Personal/Weekly/Suman Jarvis Improvement Loop/2026-W21.md",
+    "blackboard_bucket": "Read / Clear",
+    "owner": "Suman",
+    "from_agent": "Jarvis / weekly_check_in",
+    "evidence_link": "[Suman + Jarvis Weekly Check-in - 2026-W21](<05 Knowledge Vault/Fast Memory/Personal/Weekly/Suman Jarvis Improvement Loop/2026-W21.md>)",
+    "checked": true,
+    "details": {
+      "bottom_line": "Weekly check-in was already read and cleared.",
+      "pattern": "No current action remains after Blackboard read/clear.",
+      "move": "Keep the checked item out of active review and do not create follow-up work."
+    }
+  },
+  "read_state": {
+    "checked": true,
+    "state": "read_clear",
+    "checked_at": "2026-05-24T12:00:00-05:00"
+  },
+  "residual_risk": "Fixture is modeled from OpenClaw source behavior; live Northstar card state may drift."
+}

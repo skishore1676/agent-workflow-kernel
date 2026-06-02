@@ -1,0 +1,113 @@
+{
+  "schema": "workflow.kernel.parity-fixture.v1",
+  "name": "Human gate surface readback parity",
+  "expected_label": "openclaw_surface_readback_receipt",
+  "actual_label": "kernel_surface_readback_receipt",
+  "metadata": {
+    "slice": "human_gate_surface_readback",
+    "source": "fixture",
+    "purpose": "Compare a human-gate surface publication and readback shape without making live surface calls."
+  },
+  "ignored_fields": {
+    "$.runtime_provenance.metadata.host_surface_ref": "Host-specific surface address is adapter-local.",
+    "$.runtime_provenance.metadata.kernel_surface_ref": "Kernel fixture surface reference is adapter-local."
+  },
+  "expected_host_receipt": {
+    "receipt_id": "receipt-human-gate-readback-001",
+    "kind": "surface_readback.v1",
+    "workflow_id": "deterministic_system_action",
+    "instance_id": "fixture-human-gate-001",
+    "stage_id": "readback_gate_surface",
+    "stage_run_id": "stage-run-human-gate-readback-001",
+    "status": "succeeded",
+    "summary": "Human approval card was published and read back from the surface.",
+    "created_at": "2026-05-31T12:05:00Z",
+    "artifact_refs": [
+      {
+        "artifact_id": "artifact-human-gate-card-001",
+        "role": "human_gate_card",
+        "uri": "artifact://fixture/human-gate/card.md",
+        "content_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "mime_type": "text/markdown",
+        "visibility": "operator"
+      }
+    ],
+    "context_packet_ref": "context-human-gate-readback-001",
+    "runtime_provenance": {
+      "adapter_id": "openclaw.surface.review_inbox",
+      "model": "deterministic",
+      "metadata": {
+        "allowed_decisions": [
+          "approve",
+          "reject",
+          "request_changes"
+        ],
+        "approval_fingerprint": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "host_surface_ref": "review-inbox://fixture-human-gate-001",
+        "readback_required": true
+      }
+    },
+    "policy_snapshot": {
+      "approval_binds_to": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "denied": [
+        "apply_without_approval"
+      ],
+      "granted": [
+        "surface_publish",
+        "surface_readback"
+      ],
+      "human_gate_required": true
+    },
+    "residual_risk": "No mutation is authorized until a matching approval receipt exists.",
+    "next_action": "Wait for exact human approval."
+  },
+  "actual_kernel_receipt": {
+    "receipt_id": "receipt-human-gate-readback-001",
+    "kind": "surface_readback.v1",
+    "workflow_id": "deterministic_system_action",
+    "instance_id": "fixture-human-gate-001",
+    "stage_id": "readback_gate_surface",
+    "stage_run_id": "stage-run-human-gate-readback-001",
+    "status": "succeeded",
+    "summary": "Human approval card was published and read back from the surface.",
+    "created_at": "2026-05-31T12:05:00Z",
+    "artifact_refs": [
+      {
+        "artifact_id": "artifact-human-gate-card-001",
+        "role": "human_gate_card",
+        "uri": "artifact://fixture/human-gate/card.md",
+        "content_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "mime_type": "text/markdown",
+        "visibility": "operator"
+      }
+    ],
+    "context_packet_ref": "context-human-gate-readback-001",
+    "runtime_provenance": {
+      "adapter_id": "openclaw.surface.review_inbox",
+      "model": "deterministic",
+      "metadata": {
+        "allowed_decisions": [
+          "approve",
+          "reject",
+          "request_changes"
+        ],
+        "approval_fingerprint": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "kernel_surface_ref": "surface://fixture-human-gate-001",
+        "readback_required": true
+      }
+    },
+    "policy_snapshot": {
+      "approval_binds_to": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "denied": [
+        "apply_without_approval"
+      ],
+      "granted": [
+        "surface_publish",
+        "surface_readback"
+      ],
+      "human_gate_required": true
+    },
+    "residual_risk": "No mutation is authorized until a matching approval receipt exists.",
+    "next_action": "Wait for exact human approval."
+  }
+}

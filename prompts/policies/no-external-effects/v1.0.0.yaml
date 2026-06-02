@@ -1,0 +1,22 @@
+schema_version: policy-envelope.v1
+id: policy.no_external_effects
+version: 1.0.0
+risk_class: local_draft
+approval_required_for:
+  - public_publish
+  - external_send
+  - auth_change
+  - live_trade
+  - money_movement
+  - destructive_change
+tool_permissions:
+  shell:
+    allowed: true
+    network: false
+  browser:
+    allowed: false
+  connectors:
+    allowed: []
+redaction:
+  secrets: block
+  receipts: summarize_sensitive_values

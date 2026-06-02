@@ -1,0 +1,214 @@
+schema: workflow.kernel.v1
+workflow:
+  id: trading_research_gate
+  version: 0.1.0
+  name: Trading Research Gate Without Execution
+  owner: research_lane_adapter
+  description: Read-only research and risk review that cannot execute broker actions.
+
+inputs:
+  required:
+    - research_question
+    - candidate_instruments
+  optional:
+    - prior_research_refs
+    - operator_surface
+
+defaults:
+  policy_class: read_only_review
+  capability_policy:
+    allowed:
+      - read_market_data
+      - read_research_docs
+      - write_research_receipts
+    forbidden:
+      - place_order
+      - cancel_order
+      - modify_order
+      - transfer_money
+      - change_broker_auth
+      - enable_live_strategy
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: retry
+      invalid_output: block
+
+actors:
+  researcher:
+    adapter: runtime.agent
+    role: research_writer
+  reviewer:
+    adapter: runtime.agent
+    role: risk_reviewer
+  operator:
+    adapter: human.operator
+    role: research_decider
+
+stages:
+  - id: normalize_hypothesis
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      researcher: actors.researcher
+    policy:
+      class: read_only_review
+      forbidden_actions: policy.capability_policy.forbidden
+    inputs:
+      research_question: input.research_question
+      candidate_instruments: input.candidate_instruments
+    outputs:
+      artifacts:
+        - role: hypothesis_packet
+          required: true
+      receipt_kind: hypothesis_packet.v1
+      outcome_schema: hypothesis_result.v1
+    outcomes:
+      - ready
+      - blocked
+
+  - id: gather_read_only_evidence
+    type: system_action
+    adapter: lane.read_only_evidence_collector
+    policy:
+      class: read_only_review
+      allowed_actions:
+        - read_market_data
+        - read_research_docs
+        - write_research_receipts
+      forbidden_actions: policy.capability_policy.forbidden
+    inputs:
+      hypothesis_packet: artifacts.normalize_hypothesis.hypothesis_packet
+      prior_research_refs: input.prior_research_refs
+    outputs:
+      artifacts:
+        - role: evidence_packet
+          required: true
+      receipt_kind: read_only_evidence.v1
+      outcome_schema: evidence_collection_result.v1
+    outcomes:
+      - ready
+      - stale_data
+      - blocked
+
+  - id: deterministic_risk_checks
+    type: system_action
+    adapter: lane.read_only_risk_checker
+    policy:
+      class: read_only_review
+      forbidden_actions: policy.capability_policy.forbidden
+    inputs:
+      hypothesis_packet: artifacts.normalize_hypothesis.hypothesis_packet
+      evidence_packet: artifacts.gather_read_only_evidence.evidence_packet
+    outputs:
+      artifacts:
+        - role: risk_memo
+          required: true
+      receipt_kind: read_only_risk_check.v1
+      outcome_schema: risk_check_result.v1
+    outcomes:
+      - pass
+      - caution
+      - block
+
+  - id: challenge_thesis
+    type: agent_gate
+    adapter: runtime.agent
+    actors:
+      reviewer: actors.reviewer
+    policy:
+      class: read_only_review
+      forbidden_actions: policy.capability_policy.forbidden
+    inputs:
+      hypothesis_packet: artifacts.normalize_hypothesis.hypothesis_packet
+      evidence_packet: artifacts.gather_read_only_evidence.evidence_packet
+      risk_memo: artifacts.deterministic_risk_checks.risk_memo
+    outputs:
+      artifacts:
+        - role: thesis_challenge
+          required: true
+      receipt_kind: thesis_challenge.v1
+      outcome_schema: thesis_challenge_result.v1
+    outcomes:
+      - support
+      - needs_more_research
+      - reject
+      - needs_human
+
+  - id: human_research_decision
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: read_only_review
+      requires_explicit_approval: true
+      binds_to: artifacts.challenge_thesis.thesis_challenge
+      execution_requires_separate_workflow: true
+    inputs:
+      thesis_challenge: artifacts.challenge_thesis.thesis_challenge
+      risk_memo: artifacts.deterministic_risk_checks.risk_memo
+    outputs:
+      receipt_kind: research_decision.v1
+      outcome_schema: research_decision_result.v1
+    outcomes:
+      - approve_more_research
+      - route_to_execution_workflow
+      - park
+      - reject
+
+transitions:
+  - from: normalize_hypothesis
+    "on": ready
+    to: gather_read_only_evidence
+  - from: normalize_hypothesis
+    "on": blocked
+    terminal: blocked
+  - from: gather_read_only_evidence
+    "on": ready
+    to: deterministic_risk_checks
+  - from: gather_read_only_evidence
+    "on": stale_data
+    terminal: blocked
+  - from: gather_read_only_evidence
+    "on": blocked
+    terminal: blocked
+  - from: deterministic_risk_checks
+    "on": pass
+    to: challenge_thesis
+  - from: deterministic_risk_checks
+    "on": caution
+    to: challenge_thesis
+  - from: deterministic_risk_checks
+    "on": block
+    terminal: blocked
+  - from: challenge_thesis
+    "on": support
+    to: human_research_decision
+  - from: challenge_thesis
+    "on": needs_more_research
+    to: gather_read_only_evidence
+    guard: within_research_iteration_budget
+  - from: challenge_thesis
+    "on": reject
+    terminal: done
+  - from: challenge_thesis
+    "on": needs_human
+    to: human_research_decision
+  - from: human_research_decision
+    "on": approve_more_research
+    to: gather_read_only_evidence
+    guard: within_research_iteration_budget
+  - from: human_research_decision
+    "on": route_to_execution_workflow
+    terminal: done
+  - from: human_research_decision
+    "on": park
+    terminal: blocked
+  - from: human_research_decision
+    "on": reject
+    terminal: policy_denied
+
+compatibility:
+  fixture_id: example.trading_research_gate.v1
+  portability_note: Broker execution is forbidden here and must be modeled by a separate approved workflow.

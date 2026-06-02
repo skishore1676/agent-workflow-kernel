@@ -1,0 +1,276 @@
+schema: workflow.kernel.v1
+workflow:
+  id: jarvis_weekly_update_shadow
+  version: 0.1.0
+  name: Jarvis Weekly Update Shadow
+  owner: openclaw_weekly_update_adapter
+  description: Shadow reader for the Suman and Jarvis weekly check-in Blackboard lane.
+
+inputs:
+  required:
+    - weekly_update_fixture
+  optional:
+    - blackboard_snapshot
+    - checked_archive_snapshot
+
+defaults:
+  policy_class: read_only_review
+  timeout_seconds: 600
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: block
+      invalid_output: block
+  capability_policy:
+    allowed:
+      - inspect_fixture
+      - readback_reference_card
+      - shadow_route_follow_up
+    forbidden:
+      - write_obsidian
+      - send_telegram
+      - mutate_openclaw_runtime
+      - change_cron
+      - touch_credentials
+
+actors:
+  jarvis:
+    adapter: runtime.agent
+    role: weekly_check_in_owner
+  operator:
+    adapter: human.operator
+    role: suman
+
+stages:
+  - id: discover_weekly_artifact
+    type: system_action
+    adapter: lane.openclaw.weekly_update_discovery
+    prompt_refs:
+      - id: policy.openclaw.read_only_shadow
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.discover_artifact
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      weekly_update_fixture: input.weekly_update_fixture
+    outputs:
+      receipt_kind: weekly_update_discovery.v1
+      outcome_schema: weekly_update_discovery_result.v1
+      fields:
+        - mode
+        - note_path
+        - source_artifact
+    policy:
+      class: read_only
+      external_effects: false
+    outcomes:
+      - found
+      - no_artifact
+      - blocked
+
+  - id: readback_blackboard_card
+    type: system_action
+    adapter: surface.openclaw.blackboard_readback
+    prompt_refs:
+      - id: policy.openclaw.read_only_shadow
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.blackboard_readback
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      discovered_artifact: receipts.discover_weekly_artifact
+      blackboard_snapshot: input.blackboard_snapshot
+      checked_archive_snapshot: input.checked_archive_snapshot
+    outputs:
+      receipt_kind: weekly_update_blackboard_readback.v1
+      outcome_schema: weekly_update_readback_result.v1
+      fields:
+        - item_id
+        - blackboard_bucket
+        - owner
+        - evidence_link
+        - checked
+        - read_state
+    policy:
+      class: read_only
+      external_effects: false
+      preserve_blackboard_behavior: true
+    outcomes:
+      - needs_review
+      - read_clear
+      - missing_card
+      - blocked
+
+  - id: suman_review_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.suman_review_gate
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      weekly_update_card: receipts.readback_blackboard_card
+    outputs:
+      receipt_kind: weekly_update_human_decision.v1
+      outcome_schema: weekly_update_human_decision.v1
+    policy:
+      class: review_only
+      requires_explicit_approval: true
+      binds_to: receipts.readback_blackboard_card
+      allowed_decisions:
+        - read_clear
+        - follow_up_requested
+        - defer
+        - blocked
+      external_effects: false
+    outcomes:
+      - read_clear
+      - follow_up_requested
+      - defer
+      - blocked
+
+  - id: route_follow_up
+    type: system_action
+    adapter: lane.openclaw.weekly_followup_router
+    actors:
+      jarvis: actors.jarvis
+    prompt_refs:
+      - id: identity.jarvis_weekly_shadow_worker
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.openclaw.read_only_shadow
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.jarvis_weekly_update_shadow
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.jarvis_weekly.route_follow_up
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      weekly_update_card: receipts.readback_blackboard_card
+      human_decision: receipts.suman_review_gate
+    outputs:
+      receipt_kind: weekly_update_shadow_route.v1
+      outcome_schema: weekly_update_route_result.v1
+    policy:
+      class: read_only
+      external_effects: false
+      shadow_only: true
+      no_runtime_writes: true
+    outcomes:
+      - no_follow_up
+      - routed_to_jarvis
+      - routed_to_owner
+      - needs_suman
+      - blocked
+
+transitions:
+  - from: discover_weekly_artifact
+    "on": found
+    to: readback_blackboard_card
+  - from: discover_weekly_artifact
+    "on": no_artifact
+    terminal: done
+  - from: discover_weekly_artifact
+    "on": blocked
+    terminal: blocked
+  - from: readback_blackboard_card
+    "on": needs_review
+    to: suman_review_gate
+  - from: readback_blackboard_card
+    "on": read_clear
+    to: route_follow_up
+  - from: readback_blackboard_card
+    "on": missing_card
+    terminal: blocked
+  - from: readback_blackboard_card
+    "on": blocked
+    terminal: blocked
+  - from: suman_review_gate
+    "on": read_clear
+    to: route_follow_up
+  - from: suman_review_gate
+    "on": follow_up_requested
+    to: route_follow_up
+  - from: suman_review_gate
+    "on": defer
+    terminal: blocked
+  - from: suman_review_gate
+    "on": blocked
+    terminal: blocked
+  - from: route_follow_up
+    "on": no_follow_up
+    terminal: done
+  - from: route_follow_up
+    "on": routed_to_jarvis
+    terminal: done
+  - from: route_follow_up
+    "on": routed_to_owner
+    terminal: done
+  - from: route_follow_up
+    "on": needs_suman
+    terminal: final_approval_required
+  - from: route_follow_up
+    "on": blocked
+    terminal: blocked
+
+compatibility:
+  fixture_id: openclaw.jarvis_weekly_update_shadow.v1
+  reference_host: OpenClaw Review Inbox and Northstar Blackboard
+  portability_note: Weekly check-in discovery and Blackboard state are mapped by the OpenClaw adapter; the portable kernel only sees read-only receipts and an explicit human gate.
