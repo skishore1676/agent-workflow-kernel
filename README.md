@@ -33,6 +33,8 @@ Implemented so far:
 - SQLite ledger and adapter-neutral runner skeleton;
 - prompt registry, context packets, and receipt provenance helpers;
 - policy engine with hard human gates;
+- generic optioned human gates with choice manifests, selected-option receipts,
+  action fingerprints, and prompt-backed local proof support;
 - runtime, surface, host, and lane adapter interfaces plus local fakes;
 - five example workflow fixtures;
 - operator CLI commands for validating, compiling, and locally running workflow

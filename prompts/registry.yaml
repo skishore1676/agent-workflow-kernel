@@ -64,6 +64,11 @@ prompts:
     version: 1.0.0
     path: stages/review/v1.0.0.md
     status: active
+  - id: stage.choice_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/choice-gate/v1.0.0.md
+    status: active
   - id: stage.ivy_jonah.accept_source_approval
     kind: stage
     version: 1.0.0

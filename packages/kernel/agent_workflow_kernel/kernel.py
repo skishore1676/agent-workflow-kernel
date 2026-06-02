@@ -918,6 +918,60 @@ class WorkflowKernel:
             if mismatch is not None:
                 return self._blocked(state, mismatch, FailureClass.DOMAIN_BLOCKED)
             if stage.type == StageType.HUMAN_GATE:
+                effective_policy = _effective_policy_for_stage(self.workflow, stage, registration=None)
+                gate = self.config.policy_engine.evaluate(
+                    _stage_action_request(
+                        self.workflow,
+                        stage,
+                        run,
+                        registration=None,
+                        operation=_human_decision_action(stage),
+                        effective_policy=effective_policy,
+                        target_ref=stage.adapter,
+                        extra_arguments=_human_gate_action_arguments(stage),
+                        evidence_refs=_human_gate_evidence_refs(stage, None),
+                    ),
+                    now=now,
+                )
+                if stage.prompt_refs:
+                    try:
+                        rendered_context = self._render_stage_context(
+                            stage=stage,
+                            run=run,
+                            registration=None,
+                            gate=gate,
+                            effective_policy=effective_policy,
+                        )
+                    except PromptRegistryError as exc:
+                        failure_class = (
+                            FailureClass.INVALID_OUTPUT
+                            if isinstance(exc, PromptHashMismatchError)
+                            else FailureClass.MISSING_DEPENDENCY
+                        )
+                        receipt = self._prompt_failure_receipt(
+                            stage=stage,
+                            run=run,
+                            summary=str(exc),
+                            created_at=created_at,
+                            gate=gate,
+                            failure_class=failure_class,
+                        )
+                        state["failure_summary"] = str(exc)
+                        state["receipt_id"] = receipt.receipt_id
+                        return RunnerResult(
+                            decision="blocked",
+                            receipt=receipt,
+                            output_hash=digest_data(receipt),
+                            failure_class=failure_class,
+                            failure_summary=str(exc),
+                        )
+                    self.ledger.record_stage_run_prompt_context(
+                        stage_run_id=run.stage_run_id,
+                        prompt_hash=rendered_context.prompt_bundle.prompt_bundle_digest,
+                        context_packet_ref=rendered_context.packet.context_id,
+                        context_packet_hash=rendered_context.packet_digest,
+                        rendered_context_hash=rendered_context.rendered_input_digest,
+                    )
                 summary = "Human gate reached; waiting for explicit decision ingestion."
                 state["failure_summary"] = summary
                 return RunnerResult(
@@ -1066,7 +1120,13 @@ class WorkflowKernel:
                 ),
                 idempotency_key=run.idempotency_key or f"{run.instance_id}:{stage.id}:{run.attempt}",
             )
-            runtime_input = _runtime_input(self.workflow, stage, run, rendered_context)
+            runtime_input = _runtime_input(
+                self.workflow,
+                stage,
+                run,
+                rendered_context,
+                ledger=self.ledger,
+            )
             request_hash = digest_data(
                 {
                     "invocation": invocation,
@@ -1287,7 +1347,7 @@ class WorkflowKernel:
         *,
         stage: StageDef,
         run: StageRun,
-        registration: AdapterRegistration,
+        registration: AdapterRegistration | None,
         gate: Any,
         effective_policy: _EffectivePolicy,
     ) -> RenderedContext:
@@ -1303,9 +1363,17 @@ class WorkflowKernel:
         }
         permissions = {
             "policy_gate": to_plain_data(gate),
-            "adapter_side_effects": [risk.value for risk in registration.side_effects],
+            "adapter_side_effects": [
+                risk.value for risk in (registration.side_effects if registration else ())
+            ],
             "effective_policy": to_plain_data(effective_policy),
         }
+        adapter_ref = registration.adapter_id if registration is not None else stage.adapter
+        adapter_family = (
+            registration.family.value
+            if registration is not None
+            else adapter_family_for_stage(stage.type, stage.adapter).value
+        )
         return render_context_packet(
             prompt_bundle=bundle,
             workflow_id=self.workflow.id,
@@ -1318,8 +1386,8 @@ class WorkflowKernel:
             workflow_state=workflow_state,
             actor={
                 "actor_ref": run.actor_ref,
-                "runtime_target": registration.adapter_id,
-                "adapter_family": registration.family.value,
+                "runtime_target": adapter_ref,
+                "adapter_family": adapter_family,
             },
             inputs={
                 "workflow": self.ledger.get_workflow_input_snapshot(run.instance_id)
@@ -1505,6 +1573,13 @@ class WorkflowKernel:
     ) -> dict[str, Any]:
         decisions = allowed_decisions or _human_gate_allowed_decisions(stage)
         evidence = evidence_refs or _human_gate_evidence_refs(stage, gate)
+        choice_manifest = _human_gate_choice_manifest(stage)
+        choice_manifest_hash = digest_data(choice_manifest) if choice_manifest else None
+        prompt_provenance = _stage_run_prompt_provenance(
+            self.ledger,
+            stage=stage,
+            stage_run_id=run.stage_run_id,
+        )
         packet = dict(stage.surface)
         packet.update(
             {
@@ -1521,6 +1596,10 @@ class WorkflowKernel:
                 "action_fingerprint": gate.action_fingerprint,
                 "allowed_decisions": decisions,
                 "evidence_refs": evidence,
+                "choice_options": choice_manifest.get("options", ()),
+                "choice_manifest": choice_manifest,
+                "choice_manifest_hash": choice_manifest_hash,
+                "prompt_provenance": prompt_provenance,
                 "policy_gate": to_plain_data(gate),
                 "readback_required": True,
                 "test_only": test_only,
@@ -1546,6 +1625,13 @@ class WorkflowKernel:
         evidence_refs: tuple[str, ...] | None,
         human_ref: str | None,
     ) -> dict[str, Any]:
+        choice_manifest = _human_gate_choice_manifest(stage)
+        choice_manifest_hash = digest_data(choice_manifest) if choice_manifest else None
+        prompt_provenance = _stage_run_prompt_provenance(
+            self.ledger,
+            stage=stage,
+            stage_run_id=run.stage_run_id,
+        )
         return {
             "query_id": f"{run.stage_run_id}:human_gate_surface_decision",
             "workflow_id": self.workflow.id,
@@ -1561,6 +1647,10 @@ class WorkflowKernel:
             "action_fingerprint": gate.action_fingerprint,
             "allowed_decisions": allowed_decisions or _human_gate_allowed_decisions(stage),
             "evidence_refs": evidence_refs or _human_gate_evidence_refs(stage, gate),
+            "choice_options": choice_manifest.get("options", ()),
+            "choice_manifest": choice_manifest,
+            "choice_manifest_hash": choice_manifest_hash,
+            "prompt_provenance": prompt_provenance,
             "human_ref": human_ref or _human_ref(stage),
             "surface_ref": dict(surface_ref),
             "policy_gate": to_plain_data(gate),
@@ -1598,7 +1688,7 @@ class WorkflowKernel:
                 operation=_human_decision_action(stage),
                 effective_policy=effective_policy,
                 target_ref=stage.adapter,
-                extra_arguments={"outcomes": list(stage.outcomes)},
+                extra_arguments=_human_gate_action_arguments(stage),
                 evidence_refs=_human_gate_evidence_refs(stage, None),
             )
         )
@@ -2676,6 +2766,9 @@ def _human_gate_allowed_decisions(stage: StageDef) -> tuple[str, ...]:
     configured = stage.surface.get("allowed_decisions", stage.inputs.get("allowed_decisions"))
     if configured is not None:
         return _string_tuple(configured)
+    choice_options = _human_gate_choice_options(stage)
+    if choice_options:
+        return tuple(str(option["id"]) for option in choice_options)
     if stage.outcomes:
         return tuple(stage.outcomes)
     return (
@@ -2693,6 +2786,67 @@ def _human_gate_evidence_refs(stage: StageDef, gate: Any | None) -> tuple[str, .
     if gate is not None:
         return _string_tuple(getattr(gate, "evidence_refs", ()))
     return ()
+
+
+def _human_gate_action_arguments(stage: StageDef) -> dict[str, Any]:
+    arguments: dict[str, Any] = {"outcomes": list(stage.outcomes)}
+    choice_manifest = _human_gate_choice_manifest(stage)
+    if choice_manifest:
+        arguments["choice_option_ids"] = [
+            str(option["id"]) for option in choice_manifest.get("options", ())
+        ]
+        arguments["choice_manifest_hash"] = digest_data(choice_manifest)
+    return arguments
+
+
+def _human_gate_choice_manifest(stage: StageDef) -> dict[str, Any]:
+    options = _human_gate_choice_options(stage)
+    if not options:
+        return {}
+    return {
+        "schema": "human_gate_choice_manifest.v1",
+        "stage_id": stage.id,
+        "options": list(options),
+    }
+
+
+def _human_gate_choice_options(stage: StageDef) -> tuple[dict[str, Any], ...]:
+    configured = (
+        stage.surface.get("choice_options")
+        or stage.inputs.get("choice_options")
+        or stage.surface.get("options")
+        or stage.inputs.get("options")
+    )
+    if configured is None:
+        return ()
+    if isinstance(configured, Mapping):
+        configured = [
+            {"id": key, **(value if isinstance(value, Mapping) else {"label": value})}
+            for key, value in configured.items()
+        ]
+    if isinstance(configured, str):
+        configured = (configured,)
+    options: list[dict[str, Any]] = []
+    for index, raw_option in enumerate(configured, start=1):
+        if isinstance(raw_option, Mapping):
+            option = to_plain_data(raw_option)
+            if not isinstance(option, Mapping):
+                continue
+            option_id = (
+                option.get("id")
+                or option.get("decision")
+                or option.get("value")
+                or option.get("label")
+                or f"option_{index}"
+            )
+            normalized = {str(key): option[key] for key in sorted(option, key=str)}
+            normalized["id"] = str(option_id)
+            normalized.setdefault("label", str(option_id))
+            options.append(normalized)
+        else:
+            option_id = str(raw_option)
+            options.append({"id": option_id, "label": option_id})
+    return tuple(options)
 
 
 def _human_ref(stage: StageDef) -> str:
@@ -3159,17 +3313,86 @@ def _runtime_input(
     stage: StageDef,
     run: StageRun,
     rendered_context: RenderedContext | None = None,
+    *,
+    ledger: WorkflowLedger | None = None,
 ) -> dict[str, Any]:
     payload = {
         "workflow": {"id": workflow.id, "version": workflow.version},
         "stage": to_plain_data(stage),
         "stage_run": to_plain_data(run),
     }
+    if ledger is not None:
+        human_decisions = _prior_human_decisions(ledger, run.instance_id)
+        if human_decisions:
+            payload["prior_human_decisions"] = human_decisions
+            payload["latest_human_decision"] = human_decisions[-1]
     if rendered_context is not None:
         payload["context_packet"] = rendered_context.packet_data
         payload["rendered_input"] = rendered_context.rendered_input
         payload["rendered_input_digest"] = rendered_context.rendered_input_digest
     return payload
+
+
+def _prior_human_decisions(ledger: WorkflowLedger, instance_id: str) -> list[dict[str, Any]]:
+    rows = ledger.connection.execute(
+        """
+        SELECT decision_id, stage_run_id, gate_id, decision, human_ref,
+               canonical_surface, action_fingerprint, receipt_json, created_at
+        FROM human_decisions
+        WHERE instance_id = ?
+        ORDER BY created_at ASC, decision_id ASC
+        """,
+        (instance_id,),
+    ).fetchall()
+    decisions: list[dict[str, Any]] = []
+    for row in rows:
+        receipt = json.loads(row["receipt_json"])
+        constraints = receipt.get("constraints", {}) if isinstance(receipt, Mapping) else {}
+        decisions.append(
+            {
+                "decision_id": row["decision_id"],
+                "stage_run_id": row["stage_run_id"],
+                "gate_id": row["gate_id"],
+                "decision": row["decision"],
+                "human_ref": row["human_ref"],
+                "canonical_surface": row["canonical_surface"],
+                "action_fingerprint": row["action_fingerprint"],
+                "selected_option": constraints.get("selected_option")
+                if isinstance(constraints, Mapping)
+                else None,
+                "choice_manifest_hash": constraints.get("choice_manifest_hash")
+                if isinstance(constraints, Mapping)
+                else None,
+                "receipt": receipt,
+                "created_at": row["created_at"],
+            }
+        )
+    return decisions
+
+
+def _stage_run_prompt_provenance(
+    ledger: WorkflowLedger,
+    *,
+    stage: StageDef,
+    stage_run_id: str,
+) -> dict[str, Any]:
+    row = ledger.connection.execute(
+        """
+        SELECT prompt_hash, context_packet_ref, context_packet_hash, rendered_context_hash
+        FROM stage_runs
+        WHERE stage_run_id = ?
+        """,
+        (stage_run_id,),
+    ).fetchone()
+    if row is None or not row["prompt_hash"]:
+        return {}
+    return {
+        "prompt_bundle_digest": row["prompt_hash"],
+        "context_packet_ref": row["context_packet_ref"],
+        "context_packet_hash": row["context_packet_hash"],
+        "rendered_input_digest": row["rendered_context_hash"],
+        "refs": [to_plain_data(ref) for ref in stage.prompt_refs],
+    }
 
 
 def _actor_ref(stage: StageDef) -> str | None:
@@ -3254,6 +3477,9 @@ def _human_approval_from_surface_receipt(
     for flag in ("test_only", "non_live"):
         if flag in outputs:
             constraints[flag] = bool(outputs[flag])
+    for key in ("selected_option", "choice_manifest", "choice_manifest_hash"):
+        if key in outputs:
+            constraints[key] = to_plain_data(outputs[key])
     return (
         HumanApprovalReceipt(
             approval_id=str(outputs.get("approval_id") or receipt.receipt_id),
