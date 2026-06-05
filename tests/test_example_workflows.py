@@ -33,6 +33,8 @@ EXPECTED_WORKFLOWS = {
     "radhe_review_pipeline",
     "deterministic_system_action",
     "openclaw_blackboard_bus",
+    "openclaw_supercharge_idea_lifecycle",
+    "safe_token_optimizer_review",
 }
 
 CORE_CAPABILITIES = {
@@ -293,6 +295,13 @@ class ExampleWorkflowFixtureTest(unittest.TestCase):
         }
         self.assertTrue({"waiting_on_schedule", "blocked"}.issubset(recovery_terminals))
 
+        human_gate = stages["human_publish_gate"]
+        self.assertEqual(
+            human_gate["outcomes"],
+            ["publish_radhe_approved_run", "record_radhe_feedback", "skip_radhe_run", "blocked"],
+        )
+        self.assertEqual(human_gate["policy"]["binds_to"], "artifacts.qa_and_package_review.publish_packet")
+
     def test_deterministic_apply_is_between_exact_approval_and_readback(self) -> None:
         workflow = self.workflows["deterministic_system_action"]
         stages = stage_by_id(workflow)
@@ -330,6 +339,51 @@ class ExampleWorkflowFixtureTest(unittest.TestCase):
             if transition["on"] == "verified"
         ]
         self.assertEqual(verified_done, [{"from": "readback_verify", "on": "verified", "terminal": "done"}])
+
+    def test_supercharge_graph_keeps_obsidian_closeout_as_terminal_gate(self) -> None:
+        workflow = self.workflows["openclaw_supercharge_idea_lifecycle"]
+        stages = stage_by_id(workflow)
+
+        self.assertEqual(stages["idea_review_gate"]["type"], StageType.HUMAN_GATE.value)
+        self.assertEqual(stages["idea_review_gate"]["policy"]["canonical_surface"], "obsidian")
+        self.assertTrue(stages["idea_review_gate"]["policy"]["telegram_is_notification_only"])
+        self.assertEqual(
+            stages["idea_review_gate"]["outcomes"],
+            ["handoff_to_jarvis", "handled_manually", "park", "blocked"],
+        )
+
+        closeout_gate = stages["closeout_gate"]
+        self.assertEqual(closeout_gate["type"], StageType.HUMAN_GATE.value)
+        self.assertTrue(closeout_gate["policy"]["terminalizes_only_after_checked_closeout"])
+        self.assertEqual(closeout_gate["outcomes"], ["close_done", "needs_follow_up", "park", "blocked"])
+
+        transitions = {
+            (transition["from"], transition["on"]): transition
+            for transition in workflow["transitions"]
+        }
+        self.assertEqual(transitions[("route_codex_implementation", "awaiting_close")]["to"], "publish_runner_closeout")
+        self.assertEqual(transitions[("closeout_gate", "close_done")]["terminal"], "done")
+        self.assertEqual(transitions[("closeout_gate", "needs_follow_up")]["to"], "route_codex_implementation")
+
+    def test_safe_token_optimizer_graph_has_two_human_gates_and_terminal_choices(self) -> None:
+        workflow = self.workflows["safe_token_optimizer_review"]
+        stages = stage_by_id(workflow)
+
+        self.assertEqual(stages["option_review_gate"]["type"], StageType.HUMAN_GATE.value)
+        self.assertEqual(stages["final_prompt_gate"]["type"], StageType.HUMAN_GATE.value)
+        self.assertEqual(
+            stages["final_prompt_gate"]["outcomes"],
+            ["handoff_to_jarvis", "handled_manually", "park", "blocked"],
+        )
+
+        transitions = {
+            (transition["from"], transition["on"]): transition
+            for transition in workflow["transitions"]
+        }
+        self.assertEqual(transitions[("option_review_gate", "generate_final_prompt")]["to"], "publish_final_prompt_card")
+        self.assertEqual(transitions[("final_prompt_gate", "handoff_to_jarvis")]["to"], "route_final_prompt_handoff")
+        self.assertEqual(transitions[("final_prompt_gate", "handled_manually")]["terminal"], "done")
+        self.assertEqual(transitions[("final_prompt_gate", "park")]["terminal"], "done")
 
 
 if __name__ == "__main__":

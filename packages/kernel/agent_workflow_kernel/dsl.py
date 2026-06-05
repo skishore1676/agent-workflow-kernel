@@ -93,6 +93,7 @@ def _stage_from_mapping(data: Any) -> StageDef:
         inputs=dict(stage.get("inputs") or {}),
         outputs=dict(stage.get("outputs") or {}),
         prompt_refs=tuple(_prompt_ref_from_mapping(item) for item in stage.get("prompt_refs") or ()),
+        no_prompt_reason=_optional_str(stage.get("no_prompt_reason")),
         policy=dict(stage.get("policy") or {}),
         budget=dict(stage.get("budget") or {}),
         retry=dict(stage.get("retry") or {}),

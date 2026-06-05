@@ -1,6 +1,6 @@
 {
   "schema": "workflow.kernel.validation-report.v1",
-  "summary": "Seven portable workflow fixtures mapped to the kernel capabilities they prove.",
+  "summary": "Nine portable workflow fixtures mapped to the kernel capabilities they prove.",
   "workflow_ids": [
     "bumblebee_quality_review",
     "jarvis_weekly_update_shadow",
@@ -8,7 +8,9 @@
     "trading_research_gate",
     "radhe_review_pipeline",
     "deterministic_system_action",
-    "openclaw_blackboard_bus"
+    "openclaw_blackboard_bus",
+    "openclaw_supercharge_idea_lifecycle",
+    "safe_token_optimizer_review"
   ],
   "core_capabilities": [
     "versioned_workflow_def",
@@ -163,6 +165,47 @@
         "Blackboard publisher and decision ingester are explicit stages",
         "dry-run paths do not write operator surfaces",
         "legacy OpenClaw scripts are compatibility cargo behind an adapter"
+      ]
+    },
+    {
+      "workflow_id": "openclaw_supercharge_idea_lifecycle",
+      "proves": [
+        "system_action",
+        "agent_work",
+        "human_gate",
+        "surface_adapter",
+        "policy_gates",
+        "prompt_context_refs"
+      ],
+      "must_not_depend_on": [
+        "telegram_as_final_ledger",
+        "public_publish",
+        "ungated_runtime_mutation"
+      ],
+      "acceptance_checks": [
+        "Obsidian idea approval is the canonical handoff",
+        "Codex implementation stops in awaiting-close",
+        "Obsidian closeout is required before terminal state"
+      ]
+    },
+    {
+      "workflow_id": "safe_token_optimizer_review",
+      "proves": [
+        "choice_gate",
+        "human_gate",
+        "surface_adapter",
+        "policy_gates",
+        "prompt_context_refs"
+      ],
+      "must_not_depend_on": [
+        "historical_terminal_state_names",
+        "chat_only_completion",
+        "ungated_runtime_mutation"
+      ],
+      "acceptance_checks": [
+        "option decision generates or closes the final prompt card",
+        "final prompt card offers handoff, manual handling, or park",
+        "terminal Obsidian decisions do not resurface as active cards"
       ]
     }
   ]

@@ -158,8 +158,8 @@ def run_decision_ingest(args: argparse.Namespace) -> dict[str, Any]:
         ledger_path=args.ledger,
         compatibility_cargo=(
             "scripts/legacy/run_blackboard_decision_ingester.openclaw_direct_legacy.sh, "
-            "workspace-main/scripts/ingest_agent_reviews.py, "
-            "workspace-main/scripts/agent_review_runner.py"
+            "workspace-main/scripts/surfaces/ingest_agent_reviews.py, "
+            "workspace-main/scripts/programs/agent_review_runner.py"
         ),
     )
 
@@ -251,7 +251,15 @@ def summary_payload(
 ) -> dict[str, Any]:
     receipt_data = [to_plain_data(receipt) for receipt in receipts]
     ok = all(receipt.get("status") == "succeeded" for receipt in receipt_data)
-    terminal = action in {"noop", "planned", "completed", "published_review_note"} or not ok
+    terminal = action in {
+        "noop",
+        "planned",
+        "completed",
+        "completed_jarvis_review_runner",
+        "handled_ivy_writing_ops_review_handoff",
+        "prepared_ivy_writing_ops_publish_packet",
+        "published_review_note",
+    } or not ok
     status = "done" if ok else "blocked"
     return {
         "schema": SCHEMA,

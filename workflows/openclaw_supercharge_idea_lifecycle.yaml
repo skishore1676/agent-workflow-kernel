@@ -1,0 +1,274 @@
+schema: workflow.kernel.v1
+workflow:
+  id: openclaw_supercharge_idea_lifecycle
+  version: 0.1.0
+  name: OpenClaw Supercharge Idea Lifecycle
+  owner: openclaw_blackboard_bus_adapter
+  description: Obsidian-reviewed Supercharge idea handoff, Codex implementation, and durable closeout.
+
+inputs:
+  required:
+    - supercharge_receipt
+  optional:
+    - obsidian_note
+    - blackboard_snapshot
+
+defaults:
+  policy_class: internal_state
+  timeout_seconds: 2700
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: block
+      invalid_output: block
+      unknown_side_effect_state: block
+  capability_policy:
+    allowed:
+      - publish_obsidian_review_note
+      - ingest_checked_review_decision
+      - delegate_codex_internal_work
+      - send_telegram_status_notice
+      - write_runner_closeout
+      - record_receipt
+    forbidden:
+      - public_publish
+      - trade
+      - mutate_auth
+      - deploy
+      - destructive_cleanup
+
+actors:
+  operator:
+    adapter: human.operator
+    role: suman
+  jarvis:
+    adapter: runtime.agent
+    role: router_and_status_reporter
+  codex:
+    adapter: runtime.agent
+    role: default_implementation_worker
+
+stages:
+  - id: publish_supercharge_note
+    type: system_action
+    adapter: surface.obsidian_review_note
+    no_prompt_reason: deterministic_supercharge_note_writer
+    inputs:
+      supercharge_receipt: input.supercharge_receipt
+      obsidian_note: input.obsidian_note
+    outputs:
+      receipt_kind: supercharge_obsidian_note.v1
+      outcome_schema: supercharge_note_publish_result.v1
+    policy:
+      class: internal_state
+      writes_operator_surface: true
+      external_effects: false
+    outcomes:
+      - surfaced
+      - already_surfaced
+      - blocked
+
+  - id: idea_review_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.openclaw_supercharge
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.openclaw.supercharge.idea_review_gate
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      review_note: receipts.publish_supercharge_note
+    outputs:
+      receipt_kind: supercharge_human_decision.v1
+      outcome_schema: supercharge_decision.v1
+    policy:
+      class: review_only
+      requires_explicit_approval: true
+      binds_to: receipts.publish_supercharge_note
+      canonical_surface: obsidian
+      telegram_is_notification_only: true
+    outcomes:
+      - handoff_to_jarvis
+      - handled_manually
+      - park
+      - blocked
+
+  - id: route_codex_implementation
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      jarvis: actors.jarvis
+      codex: actors.codex
+    prompt_refs:
+      - id: identity.portable_worker
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.openclaw_supercharge
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.openclaw.supercharge.codex_implementation
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      decision_receipt: receipts.idea_review_gate
+      supercharge_receipt: input.supercharge_receipt
+    outputs:
+      receipt_kind: supercharge_codex_handoff.v1
+      outcome_schema: supercharge_implementation_result.v1
+    policy:
+      class: internal_state
+      codex_default_implementer: true
+      telegram_start_notice: idempotent
+      telegram_completion_notice: idempotent
+      public_publish_allowed: false
+      external_effects: false
+    outcomes:
+      - awaiting_close
+      - needs_follow_up
+      - blocked
+
+  - id: publish_runner_closeout
+    type: system_action
+    adapter: surface.obsidian_review_note
+    no_prompt_reason: deterministic_runner_closeout_block_writer
+    inputs:
+      implementation_receipt: receipts.route_codex_implementation
+      obsidian_note: input.obsidian_note
+    outputs:
+      receipt_kind: supercharge_runner_closeout_surface.v1
+      outcome_schema: supercharge_closeout_surface_result.v1
+    policy:
+      class: internal_state
+      writes_operator_surface: true
+      external_effects: false
+    outcomes:
+      - surfaced
+      - blocked
+
+  - id: closeout_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.openclaw_supercharge
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.openclaw.supercharge.closeout_gate
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      closeout_surface: receipts.publish_runner_closeout
+      implementation_receipt: receipts.route_codex_implementation
+    outputs:
+      receipt_kind: supercharge_closeout_decision.v1
+      outcome_schema: supercharge_closeout_decision.v1
+    policy:
+      class: review_only
+      requires_explicit_approval: true
+      canonical_surface: obsidian
+      terminalizes_only_after_checked_closeout: true
+    outcomes:
+      - close_done
+      - needs_follow_up
+      - park
+      - blocked
+
+transitions:
+  - from: publish_supercharge_note
+    "on": surfaced
+    to: idea_review_gate
+  - from: publish_supercharge_note
+    "on": already_surfaced
+    to: idea_review_gate
+  - from: publish_supercharge_note
+    "on": blocked
+    terminal: blocked
+  - from: idea_review_gate
+    "on": handoff_to_jarvis
+    to: route_codex_implementation
+  - from: idea_review_gate
+    "on": handled_manually
+    terminal: done
+  - from: idea_review_gate
+    "on": park
+    terminal: done
+  - from: idea_review_gate
+    "on": blocked
+    terminal: blocked
+  - from: route_codex_implementation
+    "on": awaiting_close
+    to: publish_runner_closeout
+  - from: route_codex_implementation
+    "on": needs_follow_up
+    to: route_codex_implementation
+    guard: within_revision_budget
+  - from: route_codex_implementation
+    "on": blocked
+    terminal: blocked
+  - from: publish_runner_closeout
+    "on": surfaced
+    to: closeout_gate
+  - from: publish_runner_closeout
+    "on": blocked
+    terminal: blocked
+  - from: closeout_gate
+    "on": close_done
+    terminal: done
+  - from: closeout_gate
+    "on": needs_follow_up
+    to: route_codex_implementation
+    guard: within_revision_budget
+  - from: closeout_gate
+    "on": park
+    terminal: done
+  - from: closeout_gate
+    "on": blocked
+    terminal: blocked
+
+compatibility:
+  fixture_id: example.openclaw_supercharge_idea_lifecycle.v1
+  portability_note: Blackboard carries visibility; Obsidian is the final decision and closeout ledger.

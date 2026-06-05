@@ -1,0 +1,270 @@
+schema: workflow.kernel.v1
+workflow:
+  id: safe_token_optimizer_review
+  version: 0.1.0
+  name: Safe Token Optimizer Review Lifecycle
+  owner: work_ledger_adapter
+  description: Option review, final prompt card, and terminal Obsidian decision lifecycle for token optimizer proposals.
+
+inputs:
+  required:
+    - option_manifest
+  optional:
+    - final_prompt_record
+    - prior_terminal_receipt
+
+defaults:
+  policy_class: internal_state
+  timeout_seconds: 1800
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: block
+      invalid_output: block
+  capability_policy:
+    allowed:
+      - publish_obsidian_review_card
+      - ingest_checked_review_decision
+      - generate_final_codex_prompt
+      - route_already_approved_handoff
+      - record_terminal_receipt
+    forbidden:
+      - deploy
+      - public_publish
+      - mutate_auth
+      - destructive_cleanup
+
+actors:
+  operator:
+    adapter: human.operator
+    role: suman
+  jarvis:
+    adapter: runtime.agent
+    role: router
+
+stages:
+  - id: publish_option_review
+    type: system_action
+    adapter: surface.obsidian_review_note
+    no_prompt_reason: deterministic_option_manifest_card_writer
+    inputs:
+      option_manifest: input.option_manifest
+    outputs:
+      receipt_kind: safe_token_optimizer_option_card.v1
+      outcome_schema: safe_token_optimizer_option_card_result.v1
+    policy:
+      class: internal_state
+      writes_operator_surface: true
+      external_effects: false
+    outcomes:
+      - surfaced
+      - already_terminal
+      - blocked
+
+  - id: option_review_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.safe_token_optimizer
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.safe_token_optimizer.option_review_gate
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      option_card: receipts.publish_option_review
+    outputs:
+      receipt_kind: safe_token_optimizer_option_decision.v1
+      outcome_schema: safe_token_optimizer_option_decision.v1
+    policy:
+      class: review_only
+      requires_explicit_approval: true
+      binds_to: input.option_manifest
+      canonical_surface: obsidian
+    outcomes:
+      - generate_final_prompt
+      - token_optimizer_ignore
+      - blocked
+
+  - id: publish_final_prompt_card
+    type: system_action
+    adapter: surface.obsidian_review_note
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.safe_token_optimizer
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.safe_token_optimizer.final_prompt_card
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      option_decision: receipts.option_review_gate
+      final_prompt_record: input.final_prompt_record
+    outputs:
+      receipt_kind: safe_token_optimizer_final_prompt_card.v1
+      outcome_schema: safe_token_optimizer_final_prompt_card_result.v1
+    policy:
+      class: internal_state
+      writes_operator_surface: true
+      external_effects: false
+    outcomes:
+      - surfaced
+      - blocked
+
+  - id: final_prompt_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.safe_token_optimizer
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.safe_token_optimizer.final_prompt_gate
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      final_prompt_card: receipts.publish_final_prompt_card
+    outputs:
+      receipt_kind: safe_token_optimizer_final_prompt_decision.v1
+      outcome_schema: safe_token_optimizer_final_prompt_decision.v1
+    policy:
+      class: review_only
+      requires_explicit_approval: true
+      canonical_surface: obsidian
+      terminalizes_card_when_not_handoff: true
+    outcomes:
+      - handoff_to_jarvis
+      - handled_manually
+      - park
+      - blocked
+
+  - id: route_final_prompt_handoff
+    type: system_action
+    adapter: host.openclaw.blackboard_decision_loop
+    actors:
+      jarvis: actors.jarvis
+    prompt_refs:
+      - id: identity.portable_worker
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.safe_token_optimizer
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.safe_token_optimizer.handoff_route
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+    inputs:
+      final_prompt_decision: receipts.final_prompt_gate
+      final_prompt_record: input.final_prompt_record
+    outputs:
+      receipt_kind: safe_token_optimizer_handoff_route.v1
+      outcome_schema: safe_token_optimizer_handoff_route_result.v1
+    policy:
+      class: internal_state
+      public_publish_allowed: false
+      external_effects: false
+      risky_mutation_requires_later_approval: true
+    outcomes:
+      - routed
+      - blocked
+
+transitions:
+  - from: publish_option_review
+    "on": surfaced
+    to: option_review_gate
+  - from: publish_option_review
+    "on": already_terminal
+    terminal: done
+  - from: publish_option_review
+    "on": blocked
+    terminal: blocked
+  - from: option_review_gate
+    "on": generate_final_prompt
+    to: publish_final_prompt_card
+  - from: option_review_gate
+    "on": token_optimizer_ignore
+    terminal: done
+  - from: option_review_gate
+    "on": blocked
+    terminal: blocked
+  - from: publish_final_prompt_card
+    "on": surfaced
+    to: final_prompt_gate
+  - from: publish_final_prompt_card
+    "on": blocked
+    terminal: blocked
+  - from: final_prompt_gate
+    "on": handoff_to_jarvis
+    to: route_final_prompt_handoff
+  - from: final_prompt_gate
+    "on": handled_manually
+    terminal: done
+  - from: final_prompt_gate
+    "on": park
+    terminal: done
+  - from: final_prompt_gate
+    "on": blocked
+    terminal: blocked
+  - from: route_final_prompt_handoff
+    "on": routed
+    terminal: done
+  - from: route_final_prompt_handoff
+    "on": blocked
+    terminal: blocked
+
+compatibility:
+  fixture_id: example.safe_token_optimizer_review.v1
+  portability_note: The reusable primitive is choice_gate; this workflow owns the token optimizer's two-card lifecycle and terminal Obsidian decisions.

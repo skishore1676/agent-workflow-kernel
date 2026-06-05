@@ -35,3 +35,21 @@ sources:
       - stage.jarvis_weekly.blackboard_readback@1.0.0
       - stage.jarvis_weekly.suman_review_gate@1.0.0
       - stage.jarvis_weekly.route_follow_up@1.0.0
+  - source_uri: openclaw://workspace-main/prompts/registry/openclaw/blackboard/agent_review_runner/v1.md
+    source_hash: sha256:60a56eda3292b0e106745a14bd8e8acace2f039a8049e94f9a6a5dc10a0ddeb3
+    mapped_prompt_ids:
+      - identity.portable_worker@1.0.0
+      - lane.openclaw_blackboard_bus@1.0.0
+      - lane.openclaw_supercharge@1.0.0
+      - lane.radhe_review_pipeline@1.0.0
+      - lane.safe_token_optimizer@1.0.0
+      - stage.openclaw.blackboard.agent_review_runner@1.0.0
+      - stage.openclaw.supercharge.idea_review_gate@1.0.0
+      - stage.openclaw.supercharge.codex_implementation@1.0.0
+      - stage.openclaw.supercharge.closeout_gate@1.0.0
+      - stage.radhe.message_review@1.0.0
+      - stage.radhe.publish_decision_gate@1.0.0
+      - stage.safe_token_optimizer.option_review_gate@1.0.0
+      - stage.safe_token_optimizer.final_prompt_card@1.0.0
+      - stage.safe_token_optimizer.final_prompt_gate@1.0.0
+      - stage.safe_token_optimizer.handoff_route@1.0.0

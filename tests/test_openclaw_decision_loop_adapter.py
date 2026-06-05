@@ -34,11 +34,11 @@ def write_script(path: Path, body: str) -> None:
 def scaffold_openclaw(root: Path) -> None:
     workspace_scripts = root / "workspace-main" / "scripts"
     write_script(
-        workspace_scripts / "update_review_inbox.py",
+        workspace_scripts / "surfaces" / "update_review_inbox.py",
         "import json\nprint(json.dumps({'ok': True, 'script': 'update_review_inbox'}))\n",
     )
     write_script(
-        workspace_scripts / "ingest_agent_reviews.py",
+        workspace_scripts / "surfaces" / "ingest_agent_reviews.py",
         "\n".join(
             [
                 "import json, sys",
@@ -47,7 +47,7 @@ def scaffold_openclaw(root: Path) -> None:
         ),
     )
     write_script(
-        workspace_scripts / "agent_review_runner.py",
+        workspace_scripts / "programs" / "agent_review_runner.py",
         "\n".join(
             [
                 "import json, sys",
@@ -56,7 +56,7 @@ def scaffold_openclaw(root: Path) -> None:
         ),
     )
     write_script(
-        workspace_scripts / "publish_or_research_attention.py",
+        workspace_scripts / "surfaces" / "publish_or_research_attention.py",
         "\n".join(
             [
                 "import json, sys",

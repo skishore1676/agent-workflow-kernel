@@ -180,6 +180,38 @@ class OpenClawBlackboardBusRunnerTest(unittest.TestCase):
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["action"], "handled_or_research_review_handoff")
 
+    def test_completed_jarvis_review_runner_is_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            scaffold_openclaw(
+                openclaw,
+                direct_loop_body=(
+                    "#!/usr/bin/env bash\n"
+                    "printf '{\"ok\": true, \"action\": \"completed_jarvis_review_runner\"}\\n'\n"
+                ),
+            )
+            summary_path = root / "summary.json"
+
+            with redirect_stdout(io.StringIO()):
+                exit_code = script.main(
+                    [
+                        "decision-ingest",
+                        "--openclaw-root",
+                        str(openclaw),
+                        "--allow-agent-dispatch",
+                        "--summary-json",
+                        str(summary_path),
+                        "--instance-id",
+                        "blackboard-bus-jarvis-terminal",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["action"], "completed_jarvis_review_runner")
+            self.assertTrue(summary["terminal"])
+
     def test_repeated_runs_can_share_the_same_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -223,18 +255,18 @@ def scaffold_openclaw(
     direct_loop_body: str | None = None,
 ) -> None:
     scripts = openclaw / "workspace-main" / "scripts"
-    write_script(scripts / "update_review_inbox.py", "import json\nprint(json.dumps({'ok': True}))\n")
+    write_script(scripts / "surfaces" / "update_review_inbox.py", "import json\nprint(json.dumps({'ok': True}))\n")
     write_script(
-        scripts / "ingest_agent_reviews.py",
+        scripts / "surfaces" / "ingest_agent_reviews.py",
         "import json, sys\nprint(json.dumps({'ok': True, 'applied': '--apply' in sys.argv, 'argv': sys.argv[1:]}))\n",
     )
     write_script(
-        scripts / "agent_review_runner.py",
+        scripts / "programs" / "agent_review_runner.py",
         "import json, sys\nprint(json.dumps({'ok': True, 'candidate': None, 'argv': sys.argv[1:]}))\n",
     )
     payload = publisher_payload or {"ok": True, "published": False}
     write_script(
-        scripts / "publish_or_research_attention.py",
+        scripts / "surfaces" / "publish_or_research_attention.py",
         f"import json\nprint(json.dumps({payload!r}))\n",
     )
     write_script(

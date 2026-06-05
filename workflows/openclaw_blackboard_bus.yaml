@@ -52,6 +52,7 @@ stages:
   - id: publish_attention
     type: system_action
     adapter: host.openclaw.blackboard_decision_loop
+    no_prompt_reason: deterministic_blackboard_surface_refresh
     inputs:
       mode: input.mode
     outputs:
@@ -73,6 +74,7 @@ stages:
   - id: ingest_decisions_dry_run
     type: system_action
     adapter: host.openclaw.blackboard_decision_loop
+    no_prompt_reason: deterministic_checked_obsidian_scan
     inputs:
       mode: input.mode
     outputs:
@@ -89,6 +91,7 @@ stages:
   - id: plan_review_runner
     type: system_action
     adapter: host.openclaw.blackboard_decision_loop
+    no_prompt_reason: deterministic_handoff_inventory
     inputs:
       ingest_receipt: receipts.ingest_decisions_dry_run
     outputs:
@@ -106,6 +109,31 @@ stages:
     adapter: host.openclaw.blackboard_decision_loop
     actors:
       jarvis: actors.jarvis
+    prompt_refs:
+      - id: identity.portable_worker
+        kind: identity
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+        registry: local
+        render_mode: yaml
+        required: true
+      - id: lane.openclaw_blackboard_bus
+        kind: lane
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
+      - id: stage.openclaw.blackboard.agent_review_runner
+        kind: stage
+        version: 1.0.0
+        registry: local
+        render_mode: markdown
+        required: true
     inputs:
       mode: input.mode
     outputs:
@@ -122,6 +150,8 @@ stages:
       - completed
       - noop
       - published_review_note
+      - awaiting_human_closeout
+      - runner_reopened
       - blocked
 
 transitions:
@@ -155,6 +185,12 @@ transitions:
   - from: run_decision_loop
     "on": published_review_note
     terminal: done
+  - from: run_decision_loop
+    "on": awaiting_human_closeout
+    terminal: waiting_on_human
+  - from: run_decision_loop
+    "on": runner_reopened
+    terminal: running
   - from: run_decision_loop
     "on": blocked
     terminal: blocked

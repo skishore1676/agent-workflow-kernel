@@ -59,6 +59,26 @@ prompts:
     version: 1.0.0
     path: lanes/jarvis-weekly-update-shadow/v1.0.0.md
     status: active
+  - id: lane.openclaw_blackboard_bus
+    kind: lane
+    version: 1.0.0
+    path: lanes/openclaw-blackboard-bus/v1.0.0.md
+    status: active
+  - id: lane.openclaw_supercharge
+    kind: lane
+    version: 1.0.0
+    path: lanes/openclaw-supercharge/v1.0.0.md
+    status: active
+  - id: lane.radhe_review_pipeline
+    kind: lane
+    version: 1.0.0
+    path: lanes/radhe-review-pipeline/v1.0.0.md
+    status: active
+  - id: lane.safe_token_optimizer
+    kind: lane
+    version: 1.0.0
+    path: lanes/safe-token-optimizer/v1.0.0.md
+    status: active
   - id: stage.review
     kind: stage
     version: 1.0.0
@@ -128,6 +148,56 @@ prompts:
     kind: stage
     version: 1.0.0
     path: stages/openclaw-cutover/review-artifact/v1.0.0.md
+    status: active
+  - id: stage.openclaw.blackboard.agent_review_runner
+    kind: stage
+    version: 1.0.0
+    path: stages/openclaw-blackboard/agent-review-runner/v1.0.0.md
+    status: active
+  - id: stage.openclaw.supercharge.idea_review_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/openclaw-supercharge/idea-review-gate/v1.0.0.md
+    status: active
+  - id: stage.openclaw.supercharge.codex_implementation
+    kind: stage
+    version: 1.0.0
+    path: stages/openclaw-supercharge/codex-implementation/v1.0.0.md
+    status: active
+  - id: stage.openclaw.supercharge.closeout_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/openclaw-supercharge/closeout-gate/v1.0.0.md
+    status: active
+  - id: stage.radhe.message_review
+    kind: stage
+    version: 1.0.0
+    path: stages/radhe/message-review/v1.0.0.md
+    status: active
+  - id: stage.radhe.publish_decision_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/radhe/publish-decision-gate/v1.0.0.md
+    status: active
+  - id: stage.safe_token_optimizer.option_review_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/safe-token-optimizer/option-review-gate/v1.0.0.md
+    status: active
+  - id: stage.safe_token_optimizer.final_prompt_card
+    kind: stage
+    version: 1.0.0
+    path: stages/safe-token-optimizer/final-prompt-card/v1.0.0.md
+    status: active
+  - id: stage.safe_token_optimizer.final_prompt_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/safe-token-optimizer/final-prompt-gate/v1.0.0.md
+    status: active
+  - id: stage.safe_token_optimizer.handoff_route
+    kind: stage
+    version: 1.0.0
+    path: stages/safe-token-optimizer/handoff-route/v1.0.0.md
     status: active
   - id: adapter_source.openclaw.imported_sources
     kind: adapter_source

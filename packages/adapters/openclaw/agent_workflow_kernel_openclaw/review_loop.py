@@ -64,10 +64,10 @@ class OpenClawBlackboardDecisionLoopAdapter:
         self.openclaw_root = Path(openclaw_root).expanduser().resolve()
         self.workspace_main = self.openclaw_root / "workspace-main"
         self.vault_root = Path(vault_root).expanduser().resolve() if vault_root is not None else None
-        self.update_script = self.workspace_main / "scripts" / "update_review_inbox.py"
-        self.publisher_script = self.workspace_main / "scripts" / "publish_or_research_attention.py"
-        self.ingest_script = self.workspace_main / "scripts" / "ingest_agent_reviews.py"
-        self.runner_script = self.workspace_main / "scripts" / "agent_review_runner.py"
+        self.update_script = self.workspace_main / "scripts" / "surfaces" / "update_review_inbox.py"
+        self.publisher_script = self.workspace_main / "scripts" / "surfaces" / "publish_or_research_attention.py"
+        self.ingest_script = self.workspace_main / "scripts" / "surfaces" / "ingest_agent_reviews.py"
+        self.runner_script = self.workspace_main / "scripts" / "programs" / "agent_review_runner.py"
         legacy_loop_script = (
             self.openclaw_root
             / "scripts"

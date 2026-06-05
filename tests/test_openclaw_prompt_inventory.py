@@ -12,6 +12,68 @@ from agent_workflow_kernel import PromptRegistry, StageType, load_workflow_file 
 
 
 WORKFLOW_EXPECTATIONS = {
+    "openclaw_blackboard_bus.yaml": {
+        "run_decision_loop": {
+            "identity.portable_worker",
+            "policy.openclaw.review_only_human_gate",
+            "lane.openclaw_blackboard_bus",
+            "stage.openclaw.blackboard.agent_review_runner",
+        },
+    },
+    "openclaw_supercharge_idea_lifecycle.yaml": {
+        "idea_review_gate": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.openclaw_supercharge",
+            "stage.openclaw.supercharge.idea_review_gate",
+        },
+        "route_codex_implementation": {
+            "identity.portable_worker",
+            "policy.openclaw.review_only_human_gate",
+            "lane.openclaw_supercharge",
+            "stage.openclaw.supercharge.codex_implementation",
+        },
+        "closeout_gate": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.openclaw_supercharge",
+            "stage.openclaw.supercharge.closeout_gate",
+        },
+    },
+    "radhe_review_pipeline.yaml": {
+        "pre_generation_message_review": {
+            "identity.portable_worker",
+            "policy.openclaw.review_only_human_gate",
+            "lane.radhe_review_pipeline",
+            "stage.radhe.message_review",
+        },
+        "human_publish_gate": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.radhe_review_pipeline",
+            "stage.radhe.publish_decision_gate",
+        },
+    },
+    "safe_token_optimizer_review.yaml": {
+        "option_review_gate": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.safe_token_optimizer",
+            "stage.safe_token_optimizer.option_review_gate",
+        },
+        "publish_final_prompt_card": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.safe_token_optimizer",
+            "stage.safe_token_optimizer.final_prompt_card",
+        },
+        "final_prompt_gate": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.safe_token_optimizer",
+            "stage.safe_token_optimizer.final_prompt_gate",
+        },
+        "route_final_prompt_handoff": {
+            "identity.portable_worker",
+            "policy.openclaw.review_only_human_gate",
+            "lane.safe_token_optimizer",
+            "stage.safe_token_optimizer.handoff_route",
+        },
+    },
     "ivy_jonah_editorial.yaml": {
         "accept_source_approval": {
             "policy.openclaw.review_only_human_gate",
@@ -81,7 +143,7 @@ class OpenClawPromptInventoryTest(unittest.TestCase):
         for workflow_name, expected_by_stage in WORKFLOW_EXPECTATIONS.items():
             workflow = load_workflow_file(ROOT / "workflows" / workflow_name)
             stages = {stage.id: stage for stage in workflow.stages}
-            self.assertEqual(set(stages), set(expected_by_stage))
+            self.assertTrue(set(expected_by_stage).issubset(stages))
 
             for stage_id, expected_prompt_ids in expected_by_stage.items():
                 with self.subTest(workflow=workflow.id, stage_id=stage_id):
@@ -116,8 +178,33 @@ class OpenClawPromptInventoryTest(unittest.TestCase):
             for stage in workflow.stages:
                 if stage.type in target_types:
                     with self.subTest(workflow=workflow.id, stage_id=stage.id):
-                        self.assertTrue(stage.prompt_refs)
+                        self.assertTrue(
+                            stage.prompt_refs or stage.no_prompt_reason,
+                            f"{stage.id} needs prompt_refs or no_prompt_reason",
+                        )
                         self.assertNotIn("prompt_context_exempt", stage.policy.keys() | stage.inputs.keys())
+
+    def test_adopted_openclaw_workflow_stages_have_prompt_or_no_prompt_provenance(self) -> None:
+        registry = PromptRegistry.load(ROOT / "prompts")
+
+        for workflow_name in WORKFLOW_EXPECTATIONS:
+            workflow = load_workflow_file(ROOT / "workflows" / workflow_name)
+            for stage in workflow.stages:
+                with self.subTest(workflow=workflow.id, stage_id=stage.id):
+                    has_prompt_refs = bool(stage.prompt_refs)
+                    has_no_prompt_reason = bool(stage.no_prompt_reason)
+                    self.assertNotEqual(
+                        has_prompt_refs,
+                        has_no_prompt_reason,
+                        f"{stage.id} must declare exactly one prompt provenance mode",
+                    )
+                    if stage.type in (StageType.AGENT_WORK, StageType.AGENT_GATE, StageType.HUMAN_GATE):
+                        self.assertTrue(stage.prompt_refs, f"{stage.id} must be prompt-backed")
+                    if stage.prompt_refs:
+                        bundle = registry.resolve(stage.prompt_refs)
+                        self.assertTrue(all(prompt.content_hash.startswith("sha256:") for prompt in bundle.prompts))
+                    else:
+                        self.assertGreaterEqual(len(stage.no_prompt_reason or ""), 12)
 
     def test_workflows_do_not_embed_local_openclaw_paths(self) -> None:
         for workflow_name in WORKFLOW_EXPECTATIONS:

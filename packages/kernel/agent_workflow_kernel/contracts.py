@@ -175,6 +175,7 @@ class StageDef:
     inputs: dict[str, Any] = field(default_factory=dict)
     outputs: dict[str, Any] = field(default_factory=dict)
     prompt_refs: tuple[PromptRef, ...] = ()
+    no_prompt_reason: str | None = None
     policy: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
     retry: dict[str, Any] = field(default_factory=dict)
