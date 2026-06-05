@@ -97,7 +97,7 @@ class OpenClawIvyJonahCompatibilityAdapter(LocalFakeRuntimeAdapter):
             return self._run_command(
                 [
                     sys.executable,
-                    "workspace-main/scripts/work_ledger/cli.py",
+                    "scripts/lib/work_ledger/cli.py",
                     "audit-editorial-path",
                     "--handoff-root",
                     "workspace/agents/or_research/handoffs/review_decisions",
@@ -121,7 +121,7 @@ class OpenClawIvyJonahCompatibilityAdapter(LocalFakeRuntimeAdapter):
             result = self._run_command(
                 [
                     sys.executable,
-                    "workspace-main/scripts/work_ledger/cli.py",
+                    "scripts/lib/work_ledger/cli.py",
                     "run-next-or-review-handoff",
                     "--handoff-root",
                     "workspace/agents/or_research/handoffs/review_decisions",
@@ -153,7 +153,7 @@ class OpenClawIvyJonahCompatibilityAdapter(LocalFakeRuntimeAdapter):
             return self._run_command(
                 [
                     sys.executable,
-                    "workspace-main/scripts/update_review_inbox.py",
+                    "workspace-main/scripts/surfaces/update_review_inbox.py",
                     "--validate",
                 ],
                 success_outcome="refreshed",

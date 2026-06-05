@@ -130,8 +130,8 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
 
 
 def write_fake_openclaw_scripts(openclaw: Path, *, action: str) -> None:
-    cli = openclaw / "workspace-main" / "scripts" / "work_ledger" / "cli.py"
-    refresh = openclaw / "workspace-main" / "scripts" / "update_review_inbox.py"
+    cli = openclaw / "scripts" / "lib" / "work_ledger" / "cli.py"
+    refresh = openclaw / "workspace-main" / "scripts" / "surfaces" / "update_review_inbox.py"
     cli.parent.mkdir(parents=True, exist_ok=True)
     refresh.parent.mkdir(parents=True, exist_ok=True)
     (openclaw / "workspace" / "agents" / "or_research" / "handoffs" / "review_decisions").mkdir(
@@ -172,7 +172,7 @@ def write_fake_openclaw_scripts(openclaw: Path, *, action: str) -> None:
         "\n".join(
             [
                 "from pathlib import Path",
-                "root = Path(__file__).resolve().parents[2]",
+                "root = Path(__file__).resolve().parents[3]",
                 "(root / 'blackboard-refreshed.txt').write_text('ok\\n')",
                 "print('review-inbox validation: OK')",
             ]
