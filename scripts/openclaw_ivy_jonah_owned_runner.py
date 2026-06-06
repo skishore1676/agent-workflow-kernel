@@ -669,6 +669,8 @@ def _summary(
         "artifact_record",
         "from_gate",
         "to_gate",
+        "advanced_from_gate",
+        "advanced_to_gate",
         "gate",
         "next_action",
         "owner",

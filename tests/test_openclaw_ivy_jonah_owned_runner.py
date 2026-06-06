@@ -87,7 +87,7 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
             ])
             self.assertFalse((openclaw / "blackboard-refreshed.txt").exists())
 
-    def test_noop_handoff_advances_one_machine_owned_ivy_project_gate(self) -> None:
+    def test_noop_handoff_advances_p2_then_publishes_p3_human_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             openclaw = root / "openclaw"
@@ -102,15 +102,16 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
             )
 
             self.assertTrue(summary["ok"])
-            self.assertEqual(summary["action"], "advanced_ivy_lifecycle_project")
+            self.assertEqual(summary["action"], "published_ivy_human_gate")
             self.assertEqual(summary["project_id"], "flowr")
-            self.assertEqual(summary["from_gate"], "P2")
-            self.assertEqual(summary["to_gate"], "P3")
-            self.assertEqual(summary["owner"], "machine")
+            self.assertEqual(summary["gate"], "P3")
+            self.assertEqual(summary["advanced_from_gate"], "P2")
+            self.assertEqual(summary["advanced_to_gate"], "P3")
+            self.assertEqual(summary["owner"], "human")
             project = json.loads((openclaw / "workspace/agents/ivy_writing_ops/projects/flowr/project.json").read_text())
             self.assertEqual(project["gate"], "P3")
-            self.assertEqual(project["status"], "active")
-            self.assertFalse((openclaw / "blackboard-refreshed.txt").exists())
+            self.assertEqual(project["status"], "needs_suman")
+            self.assertTrue((openclaw / "blackboard-refreshed.txt").exists())
 
     def test_noop_handoff_publishes_existing_human_owned_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -247,9 +248,9 @@ def write_fake_openclaw_scripts(openclaw: Path, *, action: str) -> None:
                 "    path = root / 'projects' / project / 'project.json'",
                 "    data = json.loads(path.read_text())",
                 "    data['gate'] = to_gate",
-                "    data['status'] = 'needs_suman' if to_gate == 'P5' else 'active'",
-                "    data['needs_suman'] = to_gate == 'P5'",
-                "    data['next_action'] = 'Suman final review / publish decision' if to_gate == 'P5' else 'next machine step'",
+                "    data['status'] = 'needs_suman' if to_gate in {'P3', 'P5'} else 'active'",
+                "    data['needs_suman'] = to_gate in {'P3', 'P5'}",
+                "    data['next_action'] = 'Suman P3 spine review before P4 draft package' if to_gate == 'P3' else ('Suman final review / publish decision' if to_gate == 'P5' else 'next machine step')",
                 "    path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\\n')",
                 "    artifact = root / 'projects' / project / ('p' + to_gate[1:] + '_artifact.md')",
                 "    artifact.write_text('# artifact\\n')",
