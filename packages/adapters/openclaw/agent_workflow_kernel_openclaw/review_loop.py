@@ -68,15 +68,7 @@ class OpenClawBlackboardDecisionLoopAdapter:
         self.publisher_script = self.workspace_main / "scripts" / "surfaces" / "publish_or_research_attention.py"
         self.ingest_script = self.workspace_main / "scripts" / "surfaces" / "ingest_agent_reviews.py"
         self.runner_script = self.workspace_main / "scripts" / "programs" / "agent_review_runner.py"
-        legacy_loop_script = (
-            self.openclaw_root
-            / "scripts"
-            / "legacy"
-            / "run_blackboard_decision_ingester.openclaw_direct_legacy.sh"
-        )
-        self.direct_loop_script = (
-            legacy_loop_script if legacy_loop_script.exists() else self.openclaw_root / "scripts" / "run_blackboard_decision_ingester.sh"
-        )
+        self.direct_loop_script = self.openclaw_root / "scripts" / "lanes" / "run_blackboard_decision_loop_direct.sh"
         self.created_at = created_at or _now_iso()
         self.timeout_seconds = timeout_seconds
         self._runner = runner or subprocess.run
@@ -225,9 +217,8 @@ class OpenClawBlackboardDecisionLoopAdapter:
                 next_action="Use ingest_decisions/apply plus plan_review_runner for inspection, or explicitly allow the direct OpenClaw runner loop.",
             )
         env = self._env()
-        env["BLACKBOARD_REVIEW_RUNNER_DISPATCH"] = review_runner_dispatch
-        env["BLACKBOARD_LEGACY_SUPPRESS_LAUNCHD_EVENT"] = "1"
-        env["BLACKBOARD_LEGACY_SUPPRESS_TELEGRAM"] = "1"
+        env["BLACKBOARD_DECISION_LOOP_SUPPRESS_LAUNCHD_EVENT"] = "1"
+        env["BLACKBOARD_DECISION_LOOP_SUPPRESS_TELEGRAM"] = "1"
         if telegram_target:
             env["BLACKBOARD_INGESTER_TELEGRAM_TARGET"] = telegram_target
         if telegram_account:

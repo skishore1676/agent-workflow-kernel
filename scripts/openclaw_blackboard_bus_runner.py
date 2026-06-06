@@ -156,8 +156,8 @@ def run_decision_ingest(args: argparse.Namespace) -> dict[str, Any]:
         action=action,
         receipts=receipts,
         ledger_path=args.ledger,
-        compatibility_cargo=(
-            "scripts/legacy/run_blackboard_decision_ingester.openclaw_direct_legacy.sh, "
+        implementation_refs=(
+            "scripts/lanes/run_blackboard_decision_loop_direct.sh, "
             "workspace-main/scripts/surfaces/ingest_agent_reviews.py, "
             "workspace-main/scripts/programs/agent_review_runner.py"
         ),
@@ -217,7 +217,7 @@ def run_publisher(args: argparse.Namespace) -> dict[str, Any]:
         action=action,
         receipts=(receipt,),
         ledger_path=args.ledger,
-        compatibility_cargo="workspace-main/scripts/surfaces/publish_or_research_attention.py",
+        implementation_refs="workspace-main/scripts/surfaces/publish_or_research_attention.py",
         surface_ref=(
             parsed.get("review_note") or parsed.get("review_note_path") or parsed.get("review_note_rel")
             if action == "published_review_note"
@@ -246,7 +246,7 @@ def summary_payload(
     action: str,
     receipts: Sequence[Any],
     ledger_path: Path | None,
-    compatibility_cargo: str,
+    implementation_refs: str,
     surface_ref: str | None = None,
 ) -> dict[str, Any]:
     receipt_data = [to_plain_data(receipt) for receipt in receipts]
@@ -307,7 +307,7 @@ def summary_payload(
             "Must not publish publicly, trade, mutate auth/secrets, deploy, or perform "
             "destructive cleanup."
         ),
-        "compatibility_cargo": compatibility_cargo,
+        "implementation_refs": implementation_refs,
         "written_at": now_iso(),
     }
 
