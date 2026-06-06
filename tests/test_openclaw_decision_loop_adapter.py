@@ -65,7 +65,7 @@ def scaffold_openclaw(root: Path) -> None:
         ),
     )
     write_script(
-        root / "scripts" / "run_blackboard_decision_ingester.sh",
+        root / "scripts" / "lanes" / "run_blackboard_decision_loop_direct.sh",
         "#!/usr/bin/env bash\nprintf '{\"ok\": true, \"direct_loop\": true}\\n'\n",
     )
 

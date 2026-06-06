@@ -44,6 +44,12 @@ SCHEMA = "openclaw.awk_ivy_jonah_owned_runner.v1"
 WORKFLOW_ID = "openclaw_ivy_jonah_owned_cutover"
 WORKFLOW_VERSION = "1.0.0"
 OWNER_ID = "awk-ivy-jonah-owned-runner"
+IVY_RUNTIME_REL = "workspace/agents/ivy_writing_ops"
+IVY_REVIEW_HANDOFF_REL = f"{IVY_RUNTIME_REL}/handoffs/review_decisions"
+DETERMINISTIC_COMPAT_NO_PROMPT_REASON = (
+    "Deterministic AWK compatibility wrapper stage; it invokes OpenClaw "
+    "Work Ledger cargo and does not render model prompts."
+)
 
 
 class OpenClawIvyJonahCompatibilityAdapter(LocalFakeRuntimeAdapter):
@@ -100,9 +106,9 @@ class OpenClawIvyJonahCompatibilityAdapter(LocalFakeRuntimeAdapter):
                     "scripts/lib/work_ledger/cli.py",
                     "audit-editorial-path",
                     "--handoff-root",
-                    "workspace/agents/or_research/handoffs/review_decisions",
+                    IVY_REVIEW_HANDOFF_REL,
                     "--runtime-root",
-                    "workspace/agents/or_research",
+                    IVY_RUNTIME_REL,
                     "--stale-minutes",
                     str(self.stale_minutes),
                 ],
@@ -124,9 +130,9 @@ class OpenClawIvyJonahCompatibilityAdapter(LocalFakeRuntimeAdapter):
                     "scripts/lib/work_ledger/cli.py",
                     "run-next-or-review-handoff",
                     "--handoff-root",
-                    "workspace/agents/or_research/handoffs/review_decisions",
+                    IVY_REVIEW_HANDOFF_REL,
                     "--runtime-root",
-                    "workspace/agents/or_research",
+                    IVY_RUNTIME_REL,
                 ],
                 success_outcome="handled",
                 blocked_outcome="blocked",
@@ -227,6 +233,7 @@ def ivy_jonah_owned_workflow() -> WorkflowDef:
                 outcomes=("ok", "blocked"),
                 inputs={"operation": "invoke"},
                 actors={"runner": OWNER_ID},
+                no_prompt_reason=DETERMINISTIC_COMPAT_NO_PROMPT_REASON,
                 policy={"class": "read_only"},
             ),
             StageDef(
@@ -236,6 +243,7 @@ def ivy_jonah_owned_workflow() -> WorkflowDef:
                 outcomes=("handled", "noop", "blocked"),
                 inputs={"operation": "invoke"},
                 actors={"runner": OWNER_ID},
+                no_prompt_reason=DETERMINISTIC_COMPAT_NO_PROMPT_REASON,
                 policy={
                     "class": "internal_generation",
                     "forbidden_actions": (
@@ -253,6 +261,7 @@ def ivy_jonah_owned_workflow() -> WorkflowDef:
                 outcomes=("refreshed", "blocked"),
                 inputs={"operation": "invoke"},
                 actors={"runner": OWNER_ID},
+                no_prompt_reason=DETERMINISTIC_COMPAT_NO_PROMPT_REASON,
                 policy={"class": "internal_state"},
             ),
         ),

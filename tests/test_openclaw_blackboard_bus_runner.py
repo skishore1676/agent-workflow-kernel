@@ -270,7 +270,7 @@ def scaffold_openclaw(
         f"import json\nprint(json.dumps({payload!r}))\n",
     )
     write_script(
-        openclaw / "scripts" / "run_blackboard_decision_ingester.sh",
+        openclaw / "scripts" / "lanes" / "run_blackboard_decision_loop_direct.sh",
         direct_loop_body or "#!/usr/bin/env bash\nprintf '{\"ok\": true, \"direct_loop\": true}\\n'\n",
     )
 

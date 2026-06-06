@@ -12,7 +12,7 @@
     "target_channel": "substack_medium"
   },
   "handoff": {
-    "handoff_type": "or_research_m5_publish_decision",
+    "handoff_type": "ivy_writing_ops_m5_publish_decision",
     "action": "prepare_publish_bundle",
     "p_stage": "P5",
     "source": "obsidian_p5_publish_decision",
@@ -21,7 +21,7 @@
   "actors": {
     "ivy": {
       "name": "Ivy",
-      "agent_id": "or_research",
+      "agent_id": "ivy_writing_ops",
       "role": "editorial_writer"
     },
     "jonah": {
@@ -35,21 +35,21 @@
     }
   },
   "mapping": {
-    "lane_id": "or_research",
-    "agent_id": "or_research",
+    "lane_id": "ivy_writing_ops",
+    "agent_id": "ivy_writing_ops",
     "host_ref": "openclaw-core:workspace-main",
     "work_ledger": {
       "work_item_id": "work_shadow_publish_packet",
       "handoff_id": "handoff_shadow_publish_decision",
       "receipt_ids": [
-        "receipt:or_research_publish_packet_ready"
+        "receipt:ivy_writing_ops_publish_packet_ready"
       ]
     },
     "surface_refs": [
       {
         "surface_id": "surface:publish-review-decision-shadow",
         "kind": "obsidian_review_note",
-        "external_id": "03 Agent Org/or_research/Reviews/2026-05-31-agent-to-agent-communication-p5.md",
+        "external_id": "03 Agent Org/ivy_writing_ops/Reviews/2026-05-31-agent-to-agent-communication-p5.md",
         "title": "Agent-to-Agent Communication - P5 Review",
         "readback_required": true,
         "status": "approval_required"
@@ -59,9 +59,9 @@
       {
         "runtime_id": "runtime:publish-control-shadow",
         "kind": "script",
-        "external_id": "or_research_publish_control.py prepare-bundle browser-plan",
+        "external_id": "ivy_writing_ops_publish_control.py prepare-bundle browser-plan",
         "host_ref": "openclaw-core:workspace-main",
-        "redacted_locator": "script:or_research_publish_control",
+        "redacted_locator": "script:ivy_writing_ops_publish_control",
         "status": "completed"
       }
     ]

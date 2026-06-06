@@ -12,18 +12,18 @@
     "target_channel": "substack_medium"
   },
   "handoff": {
-    "handoff_type": "or_research_p3_approved_to_p4",
+    "handoff_type": "ivy_writing_ops_p3_approved_to_p4",
     "action": "advance_to_p4",
     "p_stage": "P3",
-    "source": "or_research_p3_approved_review_handoff",
+    "source": "ivy_writing_ops_p3_approved_review_handoff",
     "phase": "p4_editor_review"
   },
   "actors": {
     "ivy": {
       "name": "Ivy",
-      "agent_id": "or_research",
+      "agent_id": "ivy_writing_ops",
       "role": "editorial_writer",
-      "session_key": "agent:or_research:work-ledger:work_shadow-ivy-a2a"
+      "session_key": "agent:ivy_writing_ops:work-ledger:work_shadow-ivy-a2a"
     },
     "jonah": {
       "name": "Jonah",
@@ -37,17 +37,17 @@
     }
   },
   "mapping": {
-    "lane_id": "or_research",
-    "agent_id": "or_research",
+    "lane_id": "ivy_writing_ops",
+    "agent_id": "ivy_writing_ops",
     "host_ref": "openclaw-core:workspace-main",
     "work_ledger": {
       "work_item_id": "work_shadow_p3_to_p5",
       "handoff_id": "handoff_shadow_p4_editor",
       "receipt_ids": [
         "receipt:p3_review_selected",
-        "receipt:or_research_p4_ready",
+        "receipt:ivy_writing_ops_p4_ready",
         "receipt:artifact_review_verdict",
-        "receipt:or_research_p5_ready"
+        "receipt:ivy_writing_ops_p5_ready"
       ],
       "interaction_id": "interaction_shadow_native_a2a",
       "turn_id": "turn_shadow_jonah_verdict"
@@ -56,7 +56,7 @@
       {
         "surface_id": "surface:p5-review-note-shadow",
         "kind": "obsidian_review_note",
-        "external_id": "03 Agent Org/or_research/Reviews/2026-05-31-agent-to-agent-communication-p5.md",
+        "external_id": "03 Agent Org/ivy_writing_ops/Reviews/2026-05-31-agent-to-agent-communication-p5.md",
         "title": "Agent-to-Agent Communication - P5 Review",
         "readback_required": true,
         "status": "approval_required"
@@ -66,7 +66,7 @@
       {
         "runtime_id": "runtime:ivy-native-a2a-shadow",
         "kind": "native_session",
-        "external_id": "agent:or_research:work-ledger:work_shadow-ivy-a2a",
+        "external_id": "agent:ivy_writing_ops:work-ledger:work_shadow-ivy-a2a",
         "host_ref": "openclaw-core:workspace-main",
         "redacted_locator": "openclaw-session:ivy-a2a-shadow",
         "status": "completed"

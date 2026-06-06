@@ -67,18 +67,19 @@ with production cutover:
 | --- | --- | --- | --- | --- | --- |
 | Example lane | `cutover` / `owned_execution` / `live_readonly` | launchd/cron/runner label and script | disabled / guarded / compatibility / retained | receipt, artifact, or readback path | one sentence |
 
-Current OpenClaw Blackboard adoption snapshot, updated 2026-06-05:
+Current OpenClaw Blackboard adoption snapshot, updated 2026-06-06:
 
 | Lane | Readiness | Production entrypoint | Legacy status | Latest live proof | Known gap |
 | --- | --- | --- | --- | --- | --- |
 | Blackboard decision ingester | `owned_execution` | `scripts/lanes/run_awk_blackboard_decision_ingester.sh` via OpenClaw/AWK runner; graph `openclaw_blackboard_bus` | direct legacy script retained as compatibility cargo | oldmac dry-run returned `noop` with valid ingestion scan; graph has prompt/no-prompt provenance | needs first real post-hardening decision receipt after this lifecycle pass |
+| Ivy/Jonah editorial | `owned_execution` / `compatibility_wrapper` | `scripts/lanes/run_awk_ivy_jonah_editorial_lane.sh` -> `scripts/openclaw_ivy_jonah_owned_runner.py`; wrapper graph `openclaw_ivy_jonah_owned_cutover`; target graph `ivy_jonah_editorial` | OpenClaw Work Ledger Ivy/Jonah handler retained as named deterministic compatibility cargo | local runner tests cover current `ivy_writing_ops` handoff/runtime paths and no-prompt wrapper provenance | full `ivy_jonah_editorial.yaml` execution and AWK-native P3/P5 surface lifecycle still need cutover proof |
 | Radhe publish review | `owned_execution` | Obsidian owner brief -> `radhe_publish_review/approved/*.json` -> deterministic Radhe control; graph `radhe_review_pipeline` | Telegram approval parser fails closed; Telegram is notify/conversation only | oldmac dry-run planned `radhe_control.py approve --source obsidian --publish --dry-run`; graph names publish/skip/feedback outcomes | needs live non-publish proof for `skip_radhe_run` and `record_radhe_feedback` after next reviewed video |
 | Supercharge ideas | `owned_execution` | Obsidian Supercharge note -> Jarvis route -> Codex implementation -> Obsidian Runner Closeout; graph `openclaw_supercharge_idea_lifecycle` | no direct terminal chat-only requirement; closeout can be ingested from Obsidian | local tests cover `awaiting_close` closeout block and ingestion; graph makes closeout the terminal human gate | needs first live `awaiting_close` closeout readback after a real Codex implementation |
 | Safe Token Optimizer | `owned_execution` | option card -> final prompt card -> `handoff_to_jarvis` / `handled_manually` / `park`; graph `safe_token_optimizer_review` | old `implemented` / `parked` states suppressed as historical terminals | local/oldmac focused suites pass prompt-card and handoff tests; graph has two human gates and terminal choices | needs cleanup of old resurfaced cards only if new cards still repeat after terminal decision |
 
 Checklist audit verdict:
 
-- Completed: single durable Obsidian decision source for Radhe, Supercharge, and token optimizer gates; adopted-lane workflow graphs with prompt refs or documented no-prompt reasons; prompt registry-backed Blackboard/Radhe/Supercharge/Safe Token prompt cards; deterministic Radhe publish/skip/feedback commands; `awaiting_close` visibility; AWK/OpenClaw runner tests on local and oldmac.
+- Completed: single durable Obsidian decision source for Radhe, Supercharge, Ivy/Jonah, and token optimizer gates; adopted-lane workflow graphs with prompt refs or documented no-prompt reasons; prompt registry-backed Blackboard/Radhe/Supercharge/Safe Token prompt cards; deterministic Radhe publish/skip/feedback commands; `awaiting_close` visibility; AWK/OpenClaw runner tests on local and oldmac.
 - Still to observe: first real live lifecycle receipts after these changes for Radhe non-publish decisions and Supercharge closeout terminalization.
 - Not done by design: Telegram inline approval buttons. If added later, they should update or link to Obsidian rather than becoming a second approval ledger.
 

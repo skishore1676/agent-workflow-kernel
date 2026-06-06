@@ -29,7 +29,7 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             openclaw = root / "openclaw"
-            write_fake_openclaw_scripts(openclaw, action="prepared_or_research_publish_packet")
+            write_fake_openclaw_scripts(openclaw, action="prepared_ivy_writing_ops_publish_packet")
 
             summary = script.run_owned_ivy_jonah(
                 openclaw_root=openclaw,
@@ -41,13 +41,13 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
 
             self.assertTrue(summary["ok"])
             self.assertEqual(summary["workflow_status"], "done")
-            self.assertEqual(summary["action"], "prepared_or_research_publish_packet")
+            self.assertEqual(summary["action"], "prepared_ivy_writing_ops_publish_packet")
             self.assertEqual(summary["compatibility_action"], "handled")
             self.assertEqual(summary["project_id"], "nvidia-test")
             self.assertEqual(summary["publish_ready_path"], "publish.md")
             self.assertEqual(summary["browser_plan_path"], "browser.md")
             self.assertEqual(summary["publish_staging_path"], "staging.md")
-            self.assertEqual(summary["runner_result"]["action"], "prepared_or_research_publish_packet")
+            self.assertEqual(summary["runner_result"]["action"], "prepared_ivy_writing_ops_publish_packet")
             self.assertEqual([row["stage_id"] for row in summary["stage_runs"]], [
                 "audit_editorial_path",
                 "run_review_handoff",
@@ -55,6 +55,14 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
             ])
             self.assertTrue((openclaw / "blackboard-refreshed.txt").exists())
             self.assertTrue(all(receipt["legacy_compatibility_adapter"] for receipt in summary["receipts"]))
+
+    def test_wrapper_stages_document_deterministic_no_prompt_reason(self) -> None:
+        workflow = script.ivy_jonah_owned_workflow()
+
+        self.assertEqual(
+            [stage.no_prompt_reason for stage in workflow.stages],
+            [script.DETERMINISTIC_COMPAT_NO_PROMPT_REASON] * 3,
+        )
 
     def test_noop_handoff_reaches_done_without_refreshing_blackboard(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -104,7 +112,7 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             openclaw = root / "openclaw"
-            write_fake_openclaw_scripts(openclaw, action="prepared_or_research_publish_packet")
+            write_fake_openclaw_scripts(openclaw, action="prepared_ivy_writing_ops_publish_packet")
             summary_path = root / "summary.json"
 
             with redirect_stdout(io.StringIO()):
@@ -134,11 +142,11 @@ def write_fake_openclaw_scripts(openclaw: Path, *, action: str) -> None:
     refresh = openclaw / "workspace-main" / "scripts" / "surfaces" / "update_review_inbox.py"
     cli.parent.mkdir(parents=True, exist_ok=True)
     refresh.parent.mkdir(parents=True, exist_ok=True)
-    (openclaw / "workspace" / "agents" / "or_research" / "handoffs" / "review_decisions").mkdir(
+    (openclaw / "workspace" / "agents" / "ivy_writing_ops" / "handoffs" / "review_decisions").mkdir(
         parents=True,
         exist_ok=True,
     )
-    (openclaw / "workspace" / "agents" / "or_research").mkdir(parents=True, exist_ok=True)
+    (openclaw / "workspace" / "agents" / "ivy_writing_ops").mkdir(parents=True, exist_ok=True)
     cli.write_text(
         "\n".join(
             [

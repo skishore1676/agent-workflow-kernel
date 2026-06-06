@@ -37,6 +37,16 @@ PUBLIC_PUBLISH_FORBIDDEN_ACTIONS = (
     "linkedin_post",
     "browser_publish",
 )
+P3_TO_P4_HANDOFF_TYPES = {
+    "ivy_writing_ops_p3_approved_to_p4",
+    "or_research_p3_approved_to_p4",  # Legacy fixture/export name from before Ivy was renamed.
+}
+P5_PUBLISH_HANDOFF_TYPES = {
+    "ivy_writing_ops_m5_publish_decision",
+    "ivy_writing_ops_p5_publish_decision",
+    "or_research_m5_publish_decision",  # Legacy fixture/export name from before Ivy was renamed.
+    "or_research_p5_publish_decision",
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -231,9 +241,9 @@ def stage_observations_from_fixture(fixture: IvyJonahFixture) -> tuple[IvyJonahS
     action = fixture.action
     p_stage = fixture.p_stage
 
-    if handoff_type == "or_research_p3_approved_to_p4" and action == "advance_to_p4":
+    if handoff_type in P3_TO_P4_HANDOFF_TYPES and action == "advance_to_p4":
         observations.extend(_p3_to_p5_shadow_path(fixture))
-    elif handoff_type in {"or_research_m5_publish_decision", "or_research_p5_publish_decision"}:
+    elif handoff_type in P5_PUBLISH_HANDOFF_TYPES:
         observations.extend(_p5_publish_decision_path(fixture))
     else:
         observations.append(
@@ -389,7 +399,7 @@ def _p3_to_p5_shadow_path(fixture: IvyJonahFixture) -> list[IvyJonahStageObserva
             summary="Ivy advances the approved P3 into a P4 draft package for Jonah review.",
             artifact_roles=("draft_package", "source_trail"),
             public_publish_blocked=True,
-            source="or_research_p4_ready",
+            source="ivy_writing_ops_p4_ready",
         ),
         IvyJonahStageObservation(
             stage_id="editor_review",
@@ -415,7 +425,7 @@ def _p3_to_p5_shadow_path(fixture: IvyJonahFixture) -> list[IvyJonahStageObserva
             summary="Shadow mapping treats the Jonah-cleared P4 and transcript refs as the validation boundary.",
             artifact_roles=("editor_verdict", "draft_package"),
             public_publish_blocked=True,
-            source="or_research_p5_ready",
+            source="ivy_writing_ops_p5_ready",
         ),
         IvyJonahStageObservation(
             stage_id="p5_final_approval",
@@ -429,7 +439,7 @@ def _p3_to_p5_shadow_path(fixture: IvyJonahFixture) -> list[IvyJonahStageObserva
             artifact_roles=("p5_review_surface",),
             requires_human_gate=True,
             public_publish_blocked=True,
-            source="or_research_p5_ready",
+            source="ivy_writing_ops_p5_ready",
         ),
     ]
 
@@ -464,7 +474,7 @@ def _adapter_family_for_observation(observation: IvyJonahStageObservation) -> Ad
 
 
 def _required_stage_ids_for_fixture(fixture: IvyJonahFixture) -> set[str]:
-    if fixture.handoff_type == "or_research_p3_approved_to_p4":
+    if fixture.handoff_type in P3_TO_P4_HANDOFF_TYPES:
         return {
             "accept_source_approval",
             "build_draft_package",
@@ -472,7 +482,7 @@ def _required_stage_ids_for_fixture(fixture: IvyJonahFixture) -> set[str]:
             "validate_editorial_state",
             "p5_final_approval",
         }
-    if fixture.handoff_type in {"or_research_m5_publish_decision", "or_research_p5_publish_decision"}:
+    if fixture.handoff_type in P5_PUBLISH_HANDOFF_TYPES:
         return {"p5_final_approval"}
     return {"accept_source_approval"}
 
@@ -505,7 +515,7 @@ def _residual_risk(fixture: IvyJonahFixture, observation: IvyJonahStageObservati
 
 
 def _report_residual_risk(fixture: IvyJonahFixture) -> str:
-    if fixture.handoff_type in {"or_research_m5_publish_decision", "or_research_p5_publish_decision"}:
+    if fixture.handoff_type in P5_PUBLISH_HANDOFF_TYPES:
         return "Shadow adoption covers local publish packet preparation only; browser/public publishing stays out of scope."
     return "Shadow adoption still needs live dual-run evidence before replacing OpenClaw orchestration."
 
@@ -528,7 +538,7 @@ def _normalize_exported_ivy_fixture(data: Mapping[str, Any]) -> Mapping[str, Any
     actors = _mapping(ivy.get("actors"))
     p3_stage = _stage_by_name(ivy.get("stages"), "P3")
     p5_stage = _stage_by_name(ivy.get("stages"), "P5")
-    handoff_type = str(ivy.get("handoff_type") or "or_research_p3_approved_to_p4")
+    handoff_type = str(ivy.get("handoff_type") or "ivy_writing_ops_p3_approved_to_p4")
     action = str(p3_stage.get("next_action") or "advance_to_p4")
 
     normalized = dict(data)
@@ -546,7 +556,7 @@ def _normalize_exported_ivy_fixture(data: Mapping[str, Any]) -> Mapping[str, Any
         "action": action,
         "p_stage": str(p3_stage.get("stage") or project.get("gate") or "P3"),
         "source": "openclaw_lane_fixture_exporter",
-        "phase": "p4_editor_review" if handoff_type == "or_research_p3_approved_to_p4" else "publish_packet",
+        "phase": "p4_editor_review" if handoff_type in P3_TO_P4_HANDOFF_TYPES else "publish_packet",
     }
     normalized["actors"] = {
         "ivy": _exported_actor(actors, "ivy", "ivy_agent_id", "Ivy", "editorial_writer"),

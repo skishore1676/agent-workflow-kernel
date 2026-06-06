@@ -29,8 +29,8 @@ class OpenClawIvyLaneAdoptionTest(unittest.TestCase):
         report = adoption.report.to_data()
 
         self.assertEqual(fixture.project_id, "agent-to-agent-communication-live")
-        self.assertEqual(fixture.handoff_type, "or_research_p3_approved_to_p4")
-        self.assertEqual(fixture.ivy_actor.agent_id, "or_research")
+        self.assertEqual(fixture.handoff_type, "ivy_writing_ops_p3_approved_to_p4")
+        self.assertEqual(fixture.ivy_actor.agent_id, "ivy_writing_ops")
         self.assertEqual(fixture.jonah_actor.agent_id, "jonah_editor")
         self.assertEqual(fixture.mapping.work_ledger_ids.handoff_id, "handoff_shadow_p4_editor")
         self.assertEqual(
@@ -131,7 +131,7 @@ class OpenClawIvyLaneAdoptionTest(unittest.TestCase):
                 },
                 "review_surfaces": [
                     {
-                        "surface_id": "or_research_review_notes",
+                        "surface_id": "ivy_writing_ops_review_notes",
                         "kind": "obsidian_review_surface",
                         "status": "observable",
                     }
@@ -139,13 +139,13 @@ class OpenClawIvyLaneAdoptionTest(unittest.TestCase):
                 "transcript_refs": [
                     {
                         "kind": "transcript",
-                        "path": "workspace/agents/or_research/work_ledger_transcripts/work_6101-native-ivy-jonah-a2a.md",
-                        "resolved_path": "/Users/sunny/.openclaw/workspace/agents/or_research/work_ledger_transcripts/work_6101-native-ivy-jonah-a2a.md",
+                        "path": "workspace/agents/ivy_writing_ops/work_ledger_transcripts/work_6101-native-ivy-jonah-a2a.md",
+                        "resolved_path": "/Users/sunny/.openclaw/workspace/agents/ivy_writing_ops/work_ledger_transcripts/work_6101-native-ivy-jonah-a2a.md",
                         "status": "observed",
                     }
                 ],
                 "publish_packet_refs": [
-                    "/Users/sunny/.openclaw/workspace/agents/or_research/projects/agent-to-agent-communication-live-6/published.json"
+                    "/Users/sunny/.openclaw/workspace/agents/ivy_writing_ops/projects/agent-to-agent-communication-live-6/published.json"
                 ],
                 "publish_gate": {
                     "external_publish_allowed_in_source": True,
@@ -154,12 +154,12 @@ class OpenClawIvyLaneAdoptionTest(unittest.TestCase):
                 },
             },
             "mapping": {
-                "lane_id": "or_research",
-                "agent_id": "or_research",
+                "lane_id": "ivy_writing_ops",
+                "agent_id": "ivy_writing_ops",
                 "host_ref": "oldmac",
                 "work_ledger": {
                     "work_item_id": "work_6101b6f3049f4e24",
-                    "handoff_id": "or-research-a2a-agent-communication-2026-05-30",
+                    "handoff_id": "ivy-writing-ops-a2a-agent-communication-2026-05-30",
                 },
                 "surface_refs": [],
                 "runtime_refs": [],
