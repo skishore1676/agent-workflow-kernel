@@ -674,7 +674,7 @@ def _summary(
         "owner",
         "reason",
     )
-    pass_through_source = {**lifecycle_json, **handoff_json}
+    pass_through_source = {**handoff_json, **lifecycle_json}
     pass_through = {key: pass_through_source.get(key) for key in pass_through_keys if pass_through_source.get(key)}
     stage_order = {stage.id: index for index, stage in enumerate(workflow.stages)}
     stage_runs = sorted(
