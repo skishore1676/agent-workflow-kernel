@@ -61,7 +61,7 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
 
         self.assertEqual(
             [stage.no_prompt_reason for stage in workflow.stages],
-            [script.DETERMINISTIC_COMPAT_NO_PROMPT_REASON] * 3,
+            [script.DETERMINISTIC_COMPAT_NO_PROMPT_REASON] * 4,
         )
 
     def test_noop_handoff_reaches_done_without_refreshing_blackboard(self) -> None:
@@ -83,8 +83,57 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
             self.assertEqual([row["stage_id"] for row in summary["stage_runs"]], [
                 "audit_editorial_path",
                 "run_review_handoff",
+                "advance_lifecycle",
             ])
             self.assertFalse((openclaw / "blackboard-refreshed.txt").exists())
+
+    def test_noop_handoff_advances_one_machine_owned_ivy_project_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            write_fake_openclaw_scripts(openclaw, action="noop")
+            write_project(openclaw, project_id="flowr", gate="P2", status="active", needs_suman=False)
+
+            summary = script.run_owned_ivy_jonah(
+                openclaw_root=openclaw,
+                ledger_path=root / "awk.sqlite3",
+                instance_id="ivy-owned-advance",
+                now="2026-06-01T12:00:00Z",
+            )
+
+            self.assertTrue(summary["ok"])
+            self.assertEqual(summary["action"], "advanced_ivy_lifecycle_project")
+            self.assertEqual(summary["project_id"], "flowr")
+            self.assertEqual(summary["from_gate"], "P2")
+            self.assertEqual(summary["to_gate"], "P3")
+            self.assertEqual(summary["owner"], "machine")
+            project = json.loads((openclaw / "workspace/agents/ivy_writing_ops/projects/flowr/project.json").read_text())
+            self.assertEqual(project["gate"], "P3")
+            self.assertEqual(project["status"], "active")
+            self.assertFalse((openclaw / "blackboard-refreshed.txt").exists())
+
+    def test_noop_handoff_publishes_existing_human_owned_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            openclaw = root / "openclaw"
+            write_fake_openclaw_scripts(openclaw, action="noop")
+            write_project(openclaw, project_id="flowr", gate="P5", status="needs_suman", needs_suman=True)
+
+            summary = script.run_owned_ivy_jonah(
+                openclaw_root=openclaw,
+                ledger_path=root / "awk.sqlite3",
+                instance_id="ivy-owned-human-gate",
+                now="2026-06-01T12:00:00Z",
+            )
+
+            self.assertTrue(summary["ok"])
+            self.assertEqual(summary["action"], "published_ivy_human_gate")
+            self.assertEqual(summary["project_id"], "flowr")
+            self.assertEqual(summary["gate"], "P5")
+            self.assertEqual(summary["owner"], "human")
+            self.assertTrue(summary["attention_path"].endswith(".json"))
+            self.assertEqual(summary["review_note_rel"], "03 Agent Org/ivy_writing_ops/Reviews/flowr.md")
+            self.assertTrue((openclaw / "blackboard-refreshed.txt").exists())
 
     def test_default_instance_id_is_invocation_scoped_not_daily(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -139,8 +188,14 @@ class OpenClawIvyJonahOwnedRunnerTest(unittest.TestCase):
 
 def write_fake_openclaw_scripts(openclaw: Path, *, action: str) -> None:
     cli = openclaw / "scripts" / "lib" / "work_ledger" / "cli.py"
+    ledger = openclaw / "workspace" / "agents" / "ivy_writing_ops" / "scripts" / "or_project_ledger.py"
+    attention = openclaw / "workspace" / "agents" / "ivy_writing_ops" / "scripts" / "ivy_writing_ops_v2.py"
+    publisher = openclaw / "workspace-main" / "scripts" / "surfaces" / "publish_or_research_attention.py"
     refresh = openclaw / "workspace-main" / "scripts" / "surfaces" / "update_review_inbox.py"
     cli.parent.mkdir(parents=True, exist_ok=True)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    attention.parent.mkdir(parents=True, exist_ok=True)
+    publisher.parent.mkdir(parents=True, exist_ok=True)
     refresh.parent.mkdir(parents=True, exist_ok=True)
     (openclaw / "workspace" / "agents" / "ivy_writing_ops" / "handoffs" / "review_decisions").mkdir(
         parents=True,
@@ -176,6 +231,69 @@ def write_fake_openclaw_scripts(openclaw: Path, *, action: str) -> None:
         + "\n",
         encoding="utf-8",
     )
+    ledger.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "from pathlib import Path",
+                "args = sys.argv[1:]",
+                "root = Path('.')",
+                "if args[:2] == ['--root', 'workspace/agents/ivy_writing_ops']:",
+                "    root = Path(args[1]); args = args[2:]",
+                "cmd = args[0]",
+                "if cmd == 'advance':",
+                "    project = args[args.index('--project') + 1]",
+                "    to_gate = args[args.index('--to') + 1]",
+                "    path = root / 'projects' / project / 'project.json'",
+                "    data = json.loads(path.read_text())",
+                "    data['gate'] = to_gate",
+                "    data['status'] = 'needs_suman' if to_gate == 'P5' else 'active'",
+                "    data['needs_suman'] = to_gate == 'P5'",
+                "    data['next_action'] = 'Suman final review / publish decision' if to_gate == 'P5' else 'next machine step'",
+                "    path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\\n')",
+                "    artifact = root / 'projects' / project / ('p' + to_gate[1:] + '_artifact.md')",
+                "    artifact.write_text('# artifact\\n')",
+                "    print(json.dumps(data))",
+                "elif cmd in {'source-intake-plan', 'weekly-post-candidate', 'lint'}:",
+                "    print(json.dumps({'ok': True, 'action': cmd}))",
+                "else:",
+                "    print(json.dumps({'ok': False, 'action': cmd}))",
+                "    raise SystemExit(1)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    attention.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "from pathlib import Path",
+                "args = sys.argv[1:]",
+                "root = Path('.')",
+                "if args[:2] == ['--root', 'workspace/agents/ivy_writing_ops']:",
+                "    root = Path(args[1]); args = args[2:]",
+                "artifact = args[args.index('--artifact-path') + 1]",
+                "out = root / 'handoffs' / 'attention' / 'attention-flowr.json'",
+                "out.parent.mkdir(parents=True, exist_ok=True)",
+                "payload = {'ok': True, 'output_path': str(out), 'artifact_path': artifact}",
+                "out.write_text(json.dumps(payload, indent=2) + '\\n')",
+                "print(json.dumps(payload))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    publisher.write_text(
+        "\n".join(
+            [
+                "import json",
+                "print(json.dumps({'ok': True, 'published': True, 'already_published': False, 'review_note': '/tmp/flowr.md', 'review_note_rel': '03 Agent Org/ivy_writing_ops/Reviews/flowr.md', 'artifact_record': 'record.json'}))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     refresh.write_text(
         "\n".join(
             [
@@ -184,6 +302,38 @@ def write_fake_openclaw_scripts(openclaw: Path, *, action: str) -> None:
                 "(root / 'blackboard-refreshed.txt').write_text('ok\\n')",
                 "print('review-inbox validation: OK')",
             ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_project(openclaw: Path, *, project_id: str, gate: str, status: str, needs_suman: bool) -> None:
+    project_dir = openclaw / "workspace" / "agents" / "ivy_writing_ops" / "projects" / project_id
+    project_dir.mkdir(parents=True, exist_ok=True)
+    artifact_name = {
+        "P1": "p1_scout.md",
+        "P2": "p2_deep_dive.md",
+        "P3": "p3_research_brief.md",
+        "P4": "p4_draft_package.md",
+        "P5": "p5_final_review.md",
+    }[gate]
+    (project_dir / artifact_name).write_text("# review artifact\n", encoding="utf-8")
+    (project_dir / "project.json").write_text(
+        json.dumps(
+            {
+                "id": project_id,
+                "title": "Flowr",
+                "gate": gate,
+                "status": status,
+                "needs_suman": needs_suman,
+                "target_channel": "brief",
+                "article_type": "tool_teardown",
+                "next_action": "review" if needs_suman else "advance",
+                "events": [],
+            },
+            indent=2,
+            sort_keys=True,
         )
         + "\n",
         encoding="utf-8",
