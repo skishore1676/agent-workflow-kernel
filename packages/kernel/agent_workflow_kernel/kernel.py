@@ -3023,7 +3023,7 @@ def _invoke_lane_stage_adapter(
         artifact_refs: tuple[ArtifactRef, ...] = ()
     elif operation == "build_stage_input":
         outputs = dict(adapter.build_stage_input(run, stage_input))
-        artifact_refs = ()
+        artifact_refs = _artifact_refs_from_stage_input(outputs)
     elif operation == "prepare_human_gate":
         outputs = dict(adapter.prepare_human_gate(run, stage_input))
         artifact_refs = ()

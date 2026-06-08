@@ -86,6 +86,10 @@ class ArtifactHashValidatorAdapter:
                 "editor_verdict_hash_resolved",
                 "hashes_compared",
             ],
+            "artifact_refs": _validated_draft_artifact_refs(
+                stage_run=stage_run,
+                current_draft=current_draft,
+            ),
         }
 
     def validate_artifacts(
@@ -116,6 +120,29 @@ def _current_draft_artifact(domain_state: Mapping[str, Any]) -> Mapping[str, Any
     if revised:
         return revised
     return _mapping(_mapping(artifacts_by_stage.get("build_draft_package")).get("draft_package"))
+
+
+def _validated_draft_artifact_refs(
+    *,
+    stage_run: StageRun,
+    current_draft: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    uri = _string(current_draft.get("uri"))
+    content_hash = _string(current_draft.get("content_hash"))
+    if not uri or not content_hash:
+        return []
+    return [
+        {
+            "artifact_id": f"{stage_run.stage_run_id}:validated_draft_package",
+            "role": "validated_draft_package",
+            "uri": uri,
+            "content_hash": content_hash,
+            "mime_type": _string(current_draft.get("mime_type")) or "application/json",
+            "size_bytes": current_draft.get("size_bytes"),
+            "created_by": "lane.artifact_hash_validator",
+            "visibility": _string(current_draft.get("visibility")) or "internal",
+        }
+    ]
 
 
 def _reviewed_draft_hash(domain_state: Mapping[str, Any]) -> str:

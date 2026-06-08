@@ -188,6 +188,52 @@ class OpenClawAgentRuntimeAdapterTest(unittest.TestCase):
         self.assertEqual(cancel_command[:2], ["openclaw", "session"])
         self.assertIn("cancel", cancel_command)
 
+    def test_agent_output_artifact_refs_are_recorded(self) -> None:
+        runner = RecordingRunner(
+            [
+                CompletedProcess(
+                    args=["openclaw", "agent"],
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "status": "done",
+                            "outcome": "revised",
+                            "artifact_refs": [
+                                {
+                                    "role": "revised_draft_package",
+                                    "uri": "awk://instance/stage-run/revised-draft",
+                                    "content_hash": "sha256:revised-draft",
+                                    "mime_type": "application/json",
+                                }
+                            ],
+                        }
+                    ),
+                ),
+            ]
+        )
+        adapter = OpenClawAgentRuntimeAdapter(
+            default_agent="agent-ivy",
+            runner=runner,
+            artifact_root=Path("/tmp") / "openclaw-runtime-tests",
+        )
+
+        result = adapter.invoke(
+            invocation(),
+            {
+                "stage": {"id": "revise_draft", "budget": {}},
+                "openclaw_agent": {"session_key": "agent:editorial:ivy-revision"},
+            },
+        )
+
+        domain_refs = [artifact for artifact in result.artifact_refs if artifact.role == "revised_draft_package"]
+        self.assertEqual(result.outputs["outcome"], "revised")
+        self.assertEqual(len(domain_refs), 1)
+        self.assertEqual(domain_refs[0].content_hash, "sha256:revised-draft")
+        self.assertIn(
+            "agent_domain_artifacts_recorded",
+            adapter.receipts[-1].runtime_provenance["checks_run"],
+        )
+
     def test_registration_helper_registers_openclaw_agent_runtime(self) -> None:
         registrations = openclaw_agent_runtime_registrations(openclaw_cli="openclaw")
         registry = AdapterRegistry(registrations)

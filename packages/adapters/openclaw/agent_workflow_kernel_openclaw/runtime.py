@@ -230,6 +230,11 @@ class OpenClawAgentRuntimeAdapter:
             },
             suffix=".json",
         )
+        domain_artifact_refs = _domain_artifact_refs_from_output(
+            invocation=invocation,
+            output=output,
+            created_by=self.adapter_id,
+        )
         outputs = {
             "schema": OPENCLAW_AGENT_RUNTIME_SCHEMA,
             "outcome": outcome,
@@ -250,6 +255,7 @@ class OpenClawAgentRuntimeAdapter:
             "packet_path": str(packet_path),
             "proof_path": str(proof_path),
             "raw_output": raw_output,
+            "artifact_refs": [to_plain_data(ref) for ref in domain_artifact_refs],
         }
         artifact_refs = (
             _artifact_from_path(
@@ -266,12 +272,19 @@ class OpenClawAgentRuntimeAdapter:
                 created_by=self.adapter_id,
                 namespace="openclaw",
             ),
-        )
+        ) + domain_artifact_refs
         summary = (
             "OpenClaw agent session started."
             if status == ADAPTER_STATUS_SUCCEEDED
             else "OpenClaw agent session start failed."
         )
+        checks_run = [
+            "resolve_prompt_packet",
+            "openclaw_cli_invocation",
+            "session_output_recorded",
+        ]
+        if domain_artifact_refs:
+            checks_run.append("agent_domain_artifacts_recorded")
         receipt = make_adapter_receipt(
             invocation,
             status=status,
@@ -279,7 +292,7 @@ class OpenClawAgentRuntimeAdapter:
             created_at=created_at,
             artifact_refs=artifact_refs,
             outputs=outputs,
-            checks_run=("resolve_prompt_packet", "openclaw_cli_invocation", "session_output_recorded"),
+            checks_run=tuple(checks_run),
             residual_risk=None
             if status == ADAPTER_STATUS_SUCCEEDED
             else "OpenClaw CLI invocation failed or returned non-zero status code.",
@@ -719,6 +732,69 @@ def _artifact_from_path(
         mime_type="application/json",
         size_bytes=path.stat().st_size if path.exists() else None,
         created_by=created_by,
+    )
+
+
+def _domain_artifact_refs_from_output(
+    *,
+    invocation: AdapterInvocation,
+    output: Mapping[str, Any],
+    created_by: str,
+) -> tuple[ArtifactRef, ...]:
+    refs: list[ArtifactRef] = []
+    for index, raw in enumerate(_iter_domain_artifact_payloads(output)):
+        ref = _domain_artifact_ref_from_mapping(
+            invocation=invocation,
+            raw=raw,
+            index=index,
+            created_by=created_by,
+        )
+        if ref is not None:
+            refs.append(ref)
+    return tuple(refs)
+
+
+def _iter_domain_artifact_payloads(output: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    payloads: list[Mapping[str, Any]] = []
+    for container in (output, _mapping(output.get("result"))):
+        for key in ("artifact_refs", "artifacts"):
+            value = container.get(key)
+            if isinstance(value, Mapping):
+                for role, artifact in value.items():
+                    artifact_mapping = _mapping(artifact)
+                    if artifact_mapping:
+                        payloads.append({"role": str(role), **artifact_mapping})
+            elif isinstance(value, list | tuple):
+                payloads.extend(item for item in value if isinstance(item, Mapping))
+    return tuple(payloads)
+
+
+def _domain_artifact_ref_from_mapping(
+    *,
+    invocation: AdapterInvocation,
+    raw: Mapping[str, Any],
+    index: int,
+    created_by: str,
+) -> ArtifactRef | None:
+    role = _string(raw.get("role"))
+    if not role:
+        return None
+    content_hash = _string(raw.get("content_hash")) or _string(raw.get("hash"))
+    if not content_hash and "content" in raw:
+        content_hash = digest_data(raw.get("content"))
+    if not content_hash:
+        return None
+    artifact_id = _string(raw.get("artifact_id")) or f"{invocation.stage_run_id}:{role}:{index}"
+    uri = _string(raw.get("uri")) or f"awk://{invocation.instance_id}/{invocation.stage_run_id}/{role}"
+    return ArtifactRef(
+        artifact_id=artifact_id,
+        role=role,
+        uri=uri,
+        content_hash=content_hash,
+        mime_type=_string(raw.get("mime_type")) or "application/json",
+        size_bytes=_int(raw.get("size_bytes")),
+        created_by=_string(raw.get("created_by")) or created_by,
+        visibility=_string(raw.get("visibility")) or "internal",
     )
 
 

@@ -1,7 +1,9 @@
+import json
 import sys
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from subprocess import CompletedProcess
 from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 
@@ -10,32 +12,24 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 sys.path.insert(0, str(ROOT / "packages" / "adapters" / "a2a"))
 sys.path.insert(0, str(ROOT / "packages" / "adapters" / "artifact_validation"))
+sys.path.insert(0, str(ROOT / "packages" / "adapters" / "openclaw"))
 sys.path.insert(0, str(ROOT / "packages" / "adapters" / "ivy"))
 
 from agent_workflow_kernel import (  # noqa: E402
-    AdapterFamily,
-    AdapterInvocation,
     AdapterRegistration,
     AdapterRegistry,
-    AdapterResult,
-    ArtifactRef,
-    CapabilitySet,
     HumanApprovalReceipt,
     KernelRuntimeConfig,
     PromptRegistry,
-    Receipt,
-    RuntimeAdapter,
     WorkflowKernel,
     WorkflowLedger,
     WorkflowStatus,
     digest_data,
     load_workflow_file,
-    make_adapter_receipt,
-    result_from_receipt,
 )
-from agent_workflow_kernel.adapters import ADAPTER_STATUS_SUCCEEDED  # noqa: E402
 from agent_workflow_kernel_a2a import A2AReviewRuntimeAdapter  # noqa: E402
 from agent_workflow_kernel_artifact_validation import ArtifactHashValidatorAdapter  # noqa: E402
+from agent_workflow_kernel_openclaw import OpenClawAgentRuntimeAdapter  # noqa: E402
 
 
 WORKFLOW_PATH = ROOT / "workflows" / "ivy_jonah_editorial.yaml"
@@ -43,73 +37,65 @@ PROMPTS_PATH = ROOT / "prompts"
 CREATED_AT = "2026-06-07T12:00:00+00:00"
 
 
-class MockIvyRuntimeAdapter:
-    adapter_id = "runtime.agent"
-    family = AdapterFamily.RUNTIME
-    operations = ("invoke",)
-
+class MockOpenClawRunner:
     def __init__(self) -> None:
-        self.receipts: list[Receipt] = []
+        self.calls: list[list[str]] = []
 
-    def capabilities(self) -> CapabilitySet:
-        return CapabilitySet(
-            adapter_id=self.adapter_id,
-            family=self.family,
-            operations=self.operations,
-            features=("mock_ivy_writer",),
-        )
-
-    def invoke(
+    def __call__(
         self,
-        invocation: AdapterInvocation,
-        runtime_input: Mapping[str, Any],
-    ) -> AdapterResult:
-        stage_id = runtime_input["stage"]["id"]
+        cmd: list[str],
+        *,
+        cwd: str,
+        env: Mapping[str, str],
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+        check: bool,
+    ) -> CompletedProcess[str]:
+        del cwd, env, text, capture_output, timeout, check
+        self.calls.append(list(cmd))
+        packet = _packet_from_command(cmd)
+        stage_id = str(packet.get("stage_id"))
         if stage_id == "build_draft_package":
-            artifacts = (
-                ArtifactRef(
-                    artifact_id=f"{invocation.stage_run_id}:draft_package",
-                    role="draft_package",
-                    uri=f"awk://{invocation.instance_id}/{invocation.stage_run_id}/draft",
-                    content_hash=digest_data({"draft": "ivy-v1"}),
-                    mime_type="application/json",
-                    created_by=self.adapter_id,
-                ),
-                ArtifactRef(
-                    artifact_id=f"{invocation.stage_run_id}:source_trail",
-                    role="source_trail",
-                    uri=f"awk://{invocation.instance_id}/{invocation.stage_run_id}/source-trail",
-                    content_hash=digest_data({"source_trail": "fixture"}),
-                    mime_type="application/json",
-                    created_by=self.adapter_id,
-                ),
-            )
-            outputs = {"outcome": "ready", "draft_hash": artifacts[0].content_hash}
+            output = {
+                "status": "done",
+                "outcome": "ready",
+                "session": {"session_id": "sess-build"},
+                "artifact_refs": [
+                    {
+                        "artifact_id": f"{packet['stage_run_id']}:draft_package",
+                        "role": "draft_package",
+                        "uri": f"awk://{packet['instance_id']}/{packet['stage_run_id']}/draft",
+                        "content_hash": digest_data({"draft": "ivy-v1"}),
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "artifact_id": f"{packet['stage_run_id']}:source_trail",
+                        "role": "source_trail",
+                        "uri": f"awk://{packet['instance_id']}/{packet['stage_run_id']}/source-trail",
+                        "content_hash": digest_data({"source_trail": "fixture"}),
+                        "mime_type": "application/json",
+                    },
+                ],
+            }
         elif stage_id == "revise_draft":
-            artifacts = (
-                ArtifactRef(
-                    artifact_id=f"{invocation.stage_run_id}:revised_draft_package",
-                    role="revised_draft_package",
-                    uri=f"awk://{invocation.instance_id}/{invocation.stage_run_id}/revised-draft",
-                    content_hash=digest_data({"draft": "ivy-v2"}),
-                    mime_type="application/json",
-                    created_by=self.adapter_id,
-                ),
-            )
-            outputs = {"outcome": "revised", "draft_hash": artifacts[0].content_hash}
+            output = {
+                "status": "done",
+                "outcome": "revised",
+                "session": {"session_id": "sess-revise"},
+                "artifact_refs": [
+                    {
+                        "artifact_id": f"{packet['stage_run_id']}:revised_draft_package",
+                        "role": "revised_draft_package",
+                        "uri": f"awk://{packet['instance_id']}/{packet['stage_run_id']}/revised-draft",
+                        "content_hash": digest_data({"draft": "ivy-v2"}),
+                        "mime_type": "application/json",
+                    },
+                ],
+            }
         else:
-            artifacts = ()
-            outputs = {"outcome": "blocked", "stage_id": stage_id}
-        receipt = make_adapter_receipt(
-            invocation,
-            status=ADAPTER_STATUS_SUCCEEDED,
-            summary=f"Mock Ivy completed {stage_id}.",
-            created_at=CREATED_AT,
-            artifact_refs=artifacts,
-            outputs=outputs,
-        )
-        self.receipts.append(receipt)
-        return result_from_receipt(invocation, receipt, outputs=outputs, artifact_refs=artifacts)
+            output = {"status": "blocked", "outcome": "blocked", "stage_id": stage_id}
+        return CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(output))
 
 
 class IvyJonahNativeAdaptersTest(unittest.TestCase):
@@ -180,13 +166,52 @@ class IvyJonahNativeAdaptersTest(unittest.TestCase):
             self.assertEqual(instance.status, WorkflowStatus.BLOCKED)
             self.assertIsNone(instance.current_stage_id)
 
+    def test_revision_path_validates_revised_draft_before_p5_gate(self) -> None:
+        with _kernel(
+            scripted_turn_batches=(
+                (
+                    {
+                        "actor": "reviewer",
+                        "message": "Needs a sharper governance recommendation.",
+                        "outcome": "needs_revision",
+                    },
+                ),
+                (
+                    {
+                        "actor": "reviewer",
+                        "message": "Accepted after revision.",
+                        "outcome": "accepted",
+                    },
+                ),
+            )
+        ) as kernel:
+            _start_and_select_source(kernel)
+            _run_until_stage(kernel, "p5_final_approval")
+
+            revised = _latest_artifact_by_role(kernel, "revised_draft_package")
+            validated = _latest_artifact_by_role(kernel, "validated_draft_package")
+            self.assertEqual(validated["content_hash"], revised["content_hash"])
+            self.assertEqual(validated["uri"], revised["uri"])
+
+            waiting = kernel.run_once(now=_now())
+            self.assertEqual(waiting.decision, "waiting_on_human")
+            instance = kernel.ledger.get_workflow_instance("ivy-native-test")
+            self.assertEqual(instance.status, WorkflowStatus.WAITING_ON_HUMAN)
+            self.assertEqual(instance.current_stage_id, "p5_final_approval")
+
 
 class _kernel:
     def __init__(self, *, scripted_turn_batches: tuple[tuple[Mapping[str, Any], ...], ...]) -> None:
         self.temp_dir = TemporaryDirectory()
         self.ledger = WorkflowLedger(Path(self.temp_dir.name) / "workflow.sqlite")
         workflow = load_workflow_file(WORKFLOW_PATH)
-        ivy = MockIvyRuntimeAdapter()
+        ivy = OpenClawAgentRuntimeAdapter(
+            openclaw_cli="openclaw",
+            default_agent="ivy_writing_ops",
+            artifact_root=Path(self.temp_dir.name) / "openclaw-artifacts",
+            runner=MockOpenClawRunner(),
+            created_at=CREATED_AT,
+        )
         jonah = A2AReviewRuntimeAdapter(
             scripted_turn_batches=scripted_turn_batches,
             created_at=CREATED_AT,
@@ -260,6 +285,32 @@ def _run_until_stage(kernel: WorkflowKernel, stage_id: str, *, max_steps: int = 
             break
     current = kernel.ledger.get_workflow_instance("ivy-native-test").current_stage_id
     raise AssertionError(f"workflow did not reach {stage_id}; current stage is {current}")
+
+
+def _packet_from_command(cmd: list[str]) -> dict[str, Any]:
+    if "--message" in cmd:
+        index = cmd.index("--message")
+        return json.loads(cmd[index + 1])
+    if "--packet" in cmd:
+        index = cmd.index("--packet")
+        return json.loads(Path(cmd[index + 1]).read_text(encoding="utf-8"))
+    return {}
+
+
+def _latest_artifact_by_role(kernel: WorkflowKernel, role: str) -> dict[str, Any]:
+    row = kernel.ledger.connection.execute(
+        """
+        SELECT *
+        FROM artifact_refs
+        WHERE instance_id = ? AND role = ?
+        ORDER BY created_at DESC, artifact_id DESC
+        LIMIT 1
+        """,
+        ("ivy-native-test", role),
+    ).fetchone()
+    if row is None:
+        raise AssertionError(f"artifact role {role!r} was not recorded")
+    return dict(row)
 
 
 def _now() -> datetime:

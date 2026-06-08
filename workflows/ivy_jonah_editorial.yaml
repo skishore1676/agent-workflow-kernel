@@ -25,10 +25,10 @@ defaults:
 
 actors:
   writer:
-    adapter: runtime.agent
+    adapter: runtime.openclaw_agent
     role: editorial_writer
   editor:
-    adapter: runtime.agent
+    adapter: runtime.openclaw_agent
     role: editorial_reviewer
   operator:
     adapter: human.operator
@@ -74,7 +74,7 @@ stages:
 
   - id: build_draft_package
     type: agent_work
-    adapter: runtime.agent
+    adapter: runtime.openclaw_agent
     actors:
       writer: actors.writer
     prompt_refs:
@@ -177,7 +177,7 @@ stages:
 
   - id: revise_draft
     type: agent_work
-    adapter: runtime.agent
+    adapter: runtime.openclaw_agent
     actors:
       writer: actors.writer
     prompt_refs:
@@ -284,7 +284,7 @@ stages:
       binds_to: receipts.validate_editorial_state
       external_publish_allowed: false
     inputs:
-      draft_package: artifacts.build_draft_package.draft_package
+      draft_package: artifacts.validate_editorial_state.validated_draft_package
       editor_verdict: artifacts.editor_review.editor_verdict
       validation_receipt: receipts.validate_editorial_state
     outputs:
