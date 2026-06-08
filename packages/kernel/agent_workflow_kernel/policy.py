@@ -61,6 +61,7 @@ IMPLEMENTED_TRANSITION_GUARDS: frozenset[str] = frozenset(
         "has_required_artifacts",
         "within_retry_budget",
         "within_revision_budget",
+        "within_ping_pong_budget",
         "within_research_iteration_budget",
         "within_resume_budget",
     }

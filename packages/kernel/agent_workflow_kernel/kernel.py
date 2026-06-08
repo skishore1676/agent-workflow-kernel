@@ -70,6 +70,7 @@ BUDGET_TRANSITION_GUARDS = frozenset(
     {
         "within_retry_budget",
         "within_revision_budget",
+        "within_ping_pong_budget",
         "within_research_iteration_budget",
         "within_resume_budget",
     }
@@ -78,6 +79,7 @@ BUDGET_TRANSITION_GUARDS = frozenset(
 _BUDGET_GUARD_KEYS: Mapping[str, tuple[str, ...]] = {
     "within_retry_budget": ("max_attempts", "max_retry_attempts", "max_retries"),
     "within_revision_budget": ("max_revision_turns", "max_revisions"),
+    "within_ping_pong_budget": ("max_ping_pong_turns", "max_ping_pong"),
     "within_research_iteration_budget": (
         "max_research_iterations",
         "max_research_turns",
@@ -89,6 +91,7 @@ _BUDGET_GUARD_KEYS: Mapping[str, tuple[str, ...]] = {
 _BUDGET_GUARD_NESTED_KEYS: Mapping[str, tuple[str, ...]] = {
     "within_retry_budget": ("retry", "retry_budget"),
     "within_revision_budget": ("revision_budget",),
+    "within_ping_pong_budget": ("ping_pong_budget", "a2a_budget"),
     "within_research_iteration_budget": ("research_budget", "iteration_budget"),
     "within_resume_budget": ("resume_budget",),
 }
@@ -96,6 +99,7 @@ _BUDGET_GUARD_NESTED_KEYS: Mapping[str, tuple[str, ...]] = {
 _BUDGET_CONSUMING_OUTCOMES: Mapping[str, frozenset[str]] = {
     "within_retry_budget": frozenset({"retry", "retry_needed", "retry_scheduled"}),
     "within_revision_budget": frozenset({"needs_revision", "revise", "refine"}),
+    "within_ping_pong_budget": frozenset({"question", "answer", "needs_clarification"}),
     "within_research_iteration_budget": frozenset(
         {"needs_more_research", "approve_more_research", "more_research"}
     ),
@@ -3326,6 +3330,16 @@ def _runtime_input(
         if human_decisions:
             payload["prior_human_decisions"] = human_decisions
             payload["latest_human_decision"] = human_decisions[-1]
+        artifact_refs = _prior_artifact_refs(ledger, run.instance_id)
+        if artifact_refs:
+            payload["artifact_refs"] = artifact_refs
+            payload["artifacts_by_stage"] = _artifacts_by_stage(artifact_refs)
+        receipts = _prior_receipts(ledger, run.instance_id)
+        if receipts:
+            payload["prior_receipts"] = receipts
+        receipt_outputs = _prior_receipts_with_outputs(ledger, run.instance_id)
+        if receipt_outputs:
+            payload["receipts_by_stage"] = _receipts_by_stage(receipt_outputs)
     if rendered_context is not None:
         payload["context_packet"] = rendered_context.packet_data
         payload["rendered_input"] = rendered_context.rendered_input
@@ -3368,6 +3382,96 @@ def _prior_human_decisions(ledger: WorkflowLedger, instance_id: str) -> list[dic
             }
         )
     return decisions
+
+
+def _prior_artifact_refs(ledger: WorkflowLedger, instance_id: str) -> list[dict[str, Any]]:
+    rows = ledger.connection.execute(
+        """
+        SELECT ar.*, sr.stage_id
+        FROM artifact_refs ar
+        LEFT JOIN stage_runs sr ON sr.stage_run_id = ar.stage_run_id
+        WHERE ar.instance_id = ?
+        ORDER BY ar.created_at ASC, ar.artifact_id ASC
+        """,
+        (instance_id,),
+    ).fetchall()
+    artifacts: list[dict[str, Any]] = []
+    for row in rows:
+        artifacts.append(
+            {
+                "artifact_id": row["artifact_id"],
+                "stage_run_id": row["stage_run_id"],
+                "stage_id": row["stage_id"],
+                "receipt_id": row["receipt_id"],
+                "role": row["role"],
+                "uri": row["uri"],
+                "content_hash": row["content_hash"],
+                "mime_type": row["mime_type"],
+                "size_bytes": row["size_bytes"],
+                "created_by": row["created_by"],
+                "visibility": row["visibility"],
+                "created_at": row["created_at"],
+            }
+        )
+    return artifacts
+
+
+def _artifacts_by_stage(artifact_refs: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    for artifact in artifact_refs:
+        stage_id = artifact.get("stage_id")
+        role = artifact.get("role")
+        if not stage_id or not role:
+            continue
+        grouped.setdefault(str(stage_id), {})[str(role)] = artifact
+    return grouped
+
+
+def _prior_receipts_with_outputs(ledger: WorkflowLedger, instance_id: str) -> list[dict[str, Any]]:
+    rows = ledger.connection.execute(
+        """
+        SELECT r.*, sr.stage_id
+        FROM receipts r
+        LEFT JOIN stage_runs sr ON sr.stage_run_id = r.stage_run_id
+        WHERE r.instance_id = ?
+        ORDER BY r.created_at ASC, r.receipt_id ASC
+        """,
+        (instance_id,),
+    ).fetchall()
+    receipts: list[dict[str, Any]] = []
+    for row in rows:
+        receipt = json.loads(row["receipt_json"])
+        receipts.append(
+            {
+                "receipt_id": row["receipt_id"],
+                "stage_run_id": row["stage_run_id"],
+                "stage_id": row["stage_id"],
+                "kind": row["receipt_kind"],
+                "status": row["status"],
+                "summary": row["summary"],
+                "created_at": row["created_at"],
+                "receipt": receipt,
+                "outputs": _receipt_runtime_outputs(receipt),
+            }
+        )
+    return receipts
+
+
+def _receipts_by_stage(receipts: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for receipt in receipts:
+        stage_id = receipt.get("stage_id")
+        if stage_id:
+            grouped.setdefault(str(stage_id), []).append(receipt)
+    return grouped
+
+
+def _receipt_runtime_outputs(receipt: Mapping[str, Any]) -> Mapping[str, Any]:
+    provenance = receipt.get("runtime_provenance", {})
+    if not isinstance(provenance, Mapping):
+        return {}
+    outputs = provenance.get("outputs", {})
+    return outputs if isinstance(outputs, Mapping) else {}
 
 
 def _stage_run_prompt_provenance(

@@ -23,18 +23,27 @@ codex-sdk = [
 where = [
   "packages/kernel",
   "packages/adapters/openclaw",
+  "packages/adapters/a2a",
   "packages/adapters/codex_cli",
   "packages/adapters/codex_sdk",
+  "packages/adapters/artifact_validation",
+  "packages/adapters/ivy",
 ]
 include = [
   "agent_workflow_kernel",
   "agent_workflow_kernel.*",
   "agent_workflow_kernel_openclaw",
   "agent_workflow_kernel_openclaw.*",
+  "agent_workflow_kernel_a2a",
+  "agent_workflow_kernel_a2a.*",
+  "agent_workflow_kernel_artifact_validation",
+  "agent_workflow_kernel_artifact_validation.*",
   "agent_workflow_kernel_codex_cli",
   "agent_workflow_kernel_codex_cli.*",
   "agent_workflow_kernel_codex_sdk",
   "agent_workflow_kernel_codex_sdk.*",
+  "agent_workflow_kernel_ivy",
+  "agent_workflow_kernel_ivy.*",
 ]
 
 [tool.pytest.ini_options]

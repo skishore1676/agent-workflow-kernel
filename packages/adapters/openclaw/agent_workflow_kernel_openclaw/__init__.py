@@ -79,6 +79,12 @@ from .weekly_update import (
     weekly_source_artifact,
     weekly_update_from_fixture,
 )
+from .runtime import (
+    OPENCLAW_AGENT_INPUT_PACKET_SCHEMA,
+    OPENCLAW_AGENT_RUNTIME_SCHEMA,
+    OpenClawAgentRuntimeAdapter,
+    openclaw_agent_runtime_registrations,
+)
 
 __all__ = [
     "IVY_JONAH_ADOPTION_REPORT_SCHEMA",
@@ -146,4 +152,8 @@ __all__ = [
     "weekly_owner",
     "weekly_source_artifact",
     "weekly_update_from_fixture",
+    "OPENCLAW_AGENT_INPUT_PACKET_SCHEMA",
+    "OPENCLAW_AGENT_RUNTIME_SCHEMA",
+    "OpenClawAgentRuntimeAdapter",
+    "openclaw_agent_runtime_registrations",
 ]
