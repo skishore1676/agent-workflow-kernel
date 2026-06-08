@@ -1,0 +1,353 @@
+schema: workflow.kernel.v1
+workflow:
+  id: x_digest_post_review
+  version: 0.1.0
+  name: X Digest Post Review
+  owner: public_presence_lane_adapter
+  description: Review-only workflow for turning X bookmarks into approval-bound post candidates.
+
+inputs:
+  required:
+    - bookmark_window
+    - project_context
+  optional:
+    - target_surface
+    - style_memory_ref
+
+defaults:
+  policy_class: public_draft_review
+  timeout_seconds: 1800
+  retry:
+    max_attempts: 1
+    on_failure_class:
+      runtime_failure: retry
+      invalid_output: block
+  capability_policy:
+    allowed:
+      - read_bookmarks
+      - draft_public_posts
+      - render_human_review
+      - jonah_review
+      - validate_publish_packet
+      - publish_after_exact_approval
+    forbidden:
+      - ungated_public_publish
+      - auth_mutation
+      - bulk_scrape_private_surfaces
+      - destructive_cleanup
+
+actors:
+  source_reader:
+    adapter: runtime.agent
+    role: bookmark_scout
+  writer:
+    adapter: runtime.agent
+    role: public_post_writer
+  reviewer:
+    adapter: runtime.agent
+    role: public_post_reviewer
+  operator:
+    adapter: human.operator
+    role: final_approver
+
+stages:
+  - id: collect_bookmarks
+    type: system_action
+    adapter: lane.x_bookmark_intake
+    no_prompt_reason: deterministic_or_host_readonly_bookmark_snapshot
+    inputs:
+      bookmark_window: input.bookmark_window
+    outputs:
+      artifacts:
+        - role: bookmark_digest
+          required: true
+      receipt_kind: x_bookmark_digest.v1
+      outcome_schema: x_bookmark_digest_result.v1
+    policy:
+      class: read_only
+      reads_private_source: true
+      external_effects: false
+    outcomes:
+      - ready
+      - no_candidates
+      - blocked
+
+  - id: propose_post_options
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      writer: actors.writer
+    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    inputs:
+      bookmark_digest: artifacts.collect_bookmarks.bookmark_digest
+      project_context: input.project_context
+      style_memory_ref: input.style_memory_ref
+    outputs:
+      artifacts:
+        - role: option_packet
+          required: true
+      receipt_kind: x_post_options.v1
+      outcome_schema: x_post_options_result.v1
+    policy:
+      class: public_draft_review
+      max_options: 4
+      external_publish_allowed: false
+    outcomes:
+      - options_ready
+      - blocked
+
+  - id: option_selection_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: review_only
+      requires_explicit_approval: true
+      binds_to: artifacts.propose_post_options.option_packet
+      decision_schema: x_post_option_selection.v1
+      min_selected: 0
+      max_selected: 4
+      external_publish_allowed: false
+    inputs:
+      option_packet: artifacts.propose_post_options.option_packet
+    outputs:
+      receipt_kind: x_post_option_selection.v1
+      outcome_schema: x_post_option_selection_decision.v1
+    outcomes:
+      - draft_selected
+      - revise_options
+      - park
+      - blocked
+
+  - id: draft_selected_posts
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      writer: actors.writer
+    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    inputs:
+      option_packet: artifacts.propose_post_options.option_packet
+      option_selection: receipts.option_selection_gate
+      project_context: input.project_context
+    outputs:
+      artifacts:
+        - role: draft_post_packet
+          required: true
+      receipt_kind: x_post_draft_packet.v1
+      outcome_schema: x_post_draft_result.v1
+    policy:
+      class: public_draft_review
+      external_publish_allowed: false
+    outcomes:
+      - draft_ready
+      - blocked
+
+  - id: jonah_review_posts
+    type: a2a_review_loop
+    adapter: runtime.a2a
+    actors:
+      producer: actors.writer
+      reviewer: actors.reviewer
+    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    inputs:
+      draft_post_packet: artifacts.draft_selected_posts.draft_post_packet
+      option_selection: receipts.option_selection_gate
+    budget:
+      max_questions: 3
+      max_revision_turns: 1
+      max_ping_pong_turns: 6
+    outputs:
+      artifacts:
+        - role: post_review_transcript
+          required: true
+        - role: post_review_verdict
+          required: true
+      receipt_kind: x_post_editorial_review.v1
+      outcome_schema: x_post_review_verdict.v1
+    outcomes:
+      - accepted
+      - needs_revision
+      - block
+
+  - id: revise_posts
+    type: agent_work
+    adapter: runtime.agent
+    actors:
+      writer: actors.writer
+    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    inputs:
+      draft_post_packet: artifacts.draft_selected_posts.draft_post_packet
+      review_verdict: artifacts.jonah_review_posts.post_review_verdict
+    budget:
+      max_revision_turns: 1
+    outputs:
+      artifacts:
+        - role: revised_post_packet
+          required: true
+      receipt_kind: x_post_revision.v1
+      outcome_schema: x_post_revision_result.v1
+    policy:
+      class: public_draft_review
+      external_publish_allowed: false
+    outcomes:
+      - revised
+      - blocked
+
+  - id: validate_publish_packet
+    type: system_action
+    adapter: lane.x_post_packet_validator
+    no_prompt_reason: deterministic_hash_and_approval_binding_validation
+    inputs:
+      draft_post_packet: artifacts.draft_selected_posts.draft_post_packet
+      revised_post_packet: artifacts.revise_posts.revised_post_packet
+      review_verdict: artifacts.jonah_review_posts.post_review_verdict
+      option_selection: receipts.option_selection_gate
+    outputs:
+      artifacts:
+        - role: validated_publish_packet
+          required: true
+      receipt_kind: x_post_publish_packet_validation.v1
+      outcome_schema: x_post_publish_packet_validation_result.v1
+    policy:
+      class: public_publish_preflight
+      external_publish_allowed: false
+    outcomes:
+      - valid
+      - stale_review
+      - blocked
+
+  - id: final_publish_gate
+    type: human_gate
+    adapter: surface.human_review
+    actors:
+      operator: actors.operator
+    policy:
+      class: public_publish
+      requires_explicit_approval: true
+      binds_to: artifacts.validate_publish_packet.validated_publish_packet
+      decision_schema: x_post_final_publish_decision.v1
+      external_publish_allowed: false
+    inputs:
+      publish_packet: artifacts.validate_publish_packet.validated_publish_packet
+      validation_receipt: receipts.validate_publish_packet
+    outputs:
+      receipt_kind: x_post_final_publish_decision.v1
+      outcome_schema: x_post_final_publish_decision_result.v1
+    outcomes:
+      - approve_publish
+      - revise
+      - park
+      - reject
+
+  - id: publish_approved_posts
+    type: system_action
+    adapter: host.x_public_publish
+    no_prompt_reason: deterministic_public_publish_requires_exact_human_approval
+    inputs:
+      publish_packet: artifacts.validate_publish_packet.validated_publish_packet
+      approval_receipt: receipts.final_publish_gate
+    outputs:
+      artifacts:
+        - role: x_publish_receipt
+          required: true
+      receipt_kind: x_public_publish_receipt.v1
+      outcome_schema: x_public_publish_result.v1
+    policy:
+      class: public_publish
+      requires_prior_approval: true
+      approval_ref: receipts.final_publish_gate
+      approval_binds_to: artifacts.validate_publish_packet.validated_publish_packet
+      idempotency_required: true
+      external_publish_allowed: true
+    outcomes:
+      - published
+      - skipped_duplicate
+      - blocked
+
+transitions:
+  - from: collect_bookmarks
+    "on": ready
+    to: propose_post_options
+  - from: collect_bookmarks
+    "on": no_candidates
+    terminal: done
+  - from: collect_bookmarks
+    "on": blocked
+    terminal: blocked
+  - from: propose_post_options
+    "on": options_ready
+    to: option_selection_gate
+  - from: propose_post_options
+    "on": blocked
+    terminal: blocked
+  - from: option_selection_gate
+    "on": draft_selected
+    to: draft_selected_posts
+  - from: option_selection_gate
+    "on": revise_options
+    to: propose_post_options
+  - from: option_selection_gate
+    "on": park
+    terminal: blocked
+  - from: option_selection_gate
+    "on": blocked
+    terminal: blocked
+  - from: draft_selected_posts
+    "on": draft_ready
+    to: jonah_review_posts
+  - from: draft_selected_posts
+    "on": blocked
+    terminal: blocked
+  - from: jonah_review_posts
+    "on": accepted
+    to: validate_publish_packet
+  - from: jonah_review_posts
+    "on": needs_revision
+    to: revise_posts
+    guard: within_revision_budget
+  - from: jonah_review_posts
+    "on": block
+    terminal: blocked
+  - from: revise_posts
+    "on": revised
+    to: jonah_review_posts
+    guard: within_revision_budget
+  - from: revise_posts
+    "on": blocked
+    terminal: blocked
+  - from: validate_publish_packet
+    "on": valid
+    to: final_publish_gate
+  - from: validate_publish_packet
+    "on": stale_review
+    terminal: blocked
+  - from: validate_publish_packet
+    "on": blocked
+    terminal: blocked
+  - from: final_publish_gate
+    "on": approve_publish
+    to: publish_approved_posts
+  - from: final_publish_gate
+    "on": revise
+    to: draft_selected_posts
+    guard: within_revision_budget
+  - from: final_publish_gate
+    "on": park
+    terminal: blocked
+  - from: final_publish_gate
+    "on": reject
+    terminal: policy_denied
+  - from: publish_approved_posts
+    "on": published
+    terminal: done
+  - from: publish_approved_posts
+    "on": skipped_duplicate
+    terminal: done
+  - from: publish_approved_posts
+    "on": blocked
+    terminal: blocked
+
+compatibility:
+  fixture_id: example.x_digest_post_review.v1
+  portability_note: X API access, account auth, and physical operator surfaces are host adapters, not workflow assumptions.

@@ -1,6 +1,6 @@
 {
   "schema": "workflow.kernel.validation-report.v1",
-  "summary": "Nine portable workflow fixtures mapped to the kernel capabilities they prove.",
+  "summary": "Ten portable workflow fixtures mapped to the kernel capabilities they prove.",
   "workflow_ids": [
     "bumblebee_quality_review",
     "jarvis_weekly_update_shadow",
@@ -10,7 +10,8 @@
     "deterministic_system_action",
     "openclaw_blackboard_bus",
     "openclaw_supercharge_idea_lifecycle",
-    "safe_token_optimizer_review"
+    "safe_token_optimizer_review",
+    "x_digest_post_review"
   ],
   "core_capabilities": [
     "versioned_workflow_def",
@@ -206,6 +207,28 @@
         "option decision generates or closes the final prompt card",
         "final prompt card offers handoff, manual handling, or park",
         "terminal Obsidian decisions do not resurface as active cards"
+      ]
+    },
+    {
+      "workflow_id": "x_digest_post_review",
+      "proves": [
+        "system_action",
+        "agent_work",
+        "a2a_review_loop",
+        "human_gate",
+        "surface_adapter",
+        "host_runtime_adapter",
+        "policy_gates"
+      ],
+      "must_not_depend_on": [
+        "physical_operator_surface",
+        "x_api_credentials",
+        "ungated_public_publish"
+      ],
+      "acceptance_checks": [
+        "bookmark ingestion is read-only and host-owned",
+        "option and final publish decisions use semantic human-review surfaces",
+        "public publish requires exact final approval and idempotency"
       ]
     }
   ]

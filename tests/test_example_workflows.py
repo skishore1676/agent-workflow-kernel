@@ -35,6 +35,7 @@ EXPECTED_WORKFLOWS = {
     "openclaw_blackboard_bus",
     "openclaw_supercharge_idea_lifecycle",
     "safe_token_optimizer_review",
+    "x_digest_post_review",
 }
 
 CORE_CAPABILITIES = {
@@ -384,6 +385,29 @@ class ExampleWorkflowFixtureTest(unittest.TestCase):
         self.assertEqual(transitions[("final_prompt_gate", "handoff_to_jarvis")]["to"], "route_final_prompt_handoff")
         self.assertEqual(transitions[("final_prompt_gate", "handled_manually")]["terminal"], "done")
         self.assertEqual(transitions[("final_prompt_gate", "park")]["terminal"], "done")
+
+    def test_x_digest_graph_keeps_publish_behind_exact_final_gate(self) -> None:
+        workflow = self.workflows["x_digest_post_review"]
+        stages = stage_by_id(workflow)
+
+        self.assertEqual(stages["option_selection_gate"]["adapter"], "surface.human_review")
+        self.assertEqual(stages["final_publish_gate"]["adapter"], "surface.human_review")
+        self.assertFalse(stages["option_selection_gate"]["policy"]["external_publish_allowed"])
+        self.assertFalse(stages["final_publish_gate"]["policy"]["external_publish_allowed"])
+
+        publish_stage = stages["publish_approved_posts"]
+        self.assertEqual(publish_stage["adapter"], "host.x_public_publish")
+        self.assertTrue(publish_stage["policy"]["requires_prior_approval"])
+        self.assertEqual(publish_stage["policy"]["approval_ref"], "receipts.final_publish_gate")
+        self.assertTrue(publish_stage["policy"]["idempotency_required"])
+
+        transitions = {
+            (transition["from"], transition["on"]): transition
+            for transition in workflow["transitions"]
+        }
+        self.assertEqual(transitions[("final_publish_gate", "approve_publish")]["to"], "publish_approved_posts")
+        self.assertEqual(transitions[("publish_approved_posts", "published")]["terminal"], "done")
+        self.assertEqual(transitions[("publish_approved_posts", "skipped_duplicate")]["terminal"], "done")
 
 
 if __name__ == "__main__":
