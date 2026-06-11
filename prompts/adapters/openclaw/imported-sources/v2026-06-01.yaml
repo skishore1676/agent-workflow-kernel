@@ -26,6 +26,20 @@ sources:
     mapped_prompt_ids:
       - identity.jonah_editor@1.0.0
       - stage.ivy_jonah.editor_review@1.0.0
+  - source_uri: openclaw://workspace/agents/ivy_writing_ops/skills/x-digest-shortform/SKILL.md
+    source_hash: sha256:3700db6e167c61790e1afda7d75eb683ffeb9971d0b14bfdec20f4a04db26864
+    mapped_prompt_ids:
+      - identity.ivy_or_research@1.0.0
+      - lane.x_digest_post_review@1.0.0
+      - stage.x_digest.propose_post_options@1.0.0
+      - stage.x_digest.draft_selected_posts@1.0.0
+      - stage.x_digest.revise_posts@1.0.0
+  - source_uri: openclaw://workspace/agents/jonah_editor/skills/shortform-x-review/SKILL.md
+    source_hash: sha256:c71ec85f9bc4a1afa574cbb89586fe159283009164427e5993f76c9ebdf6111b
+    mapped_prompt_ids:
+      - identity.jonah_editor@1.0.0
+      - lane.x_digest_post_review@1.0.0
+      - stage.x_digest.jonah_review_posts@1.0.0
   - source_uri: openclaw://workspace-main/docs/blackboard_decision_loop.md
     source_hash: sha256:705a520257a597cb2c926d822ac7960209a43fffdbd0ba509290249ab34d92fe
     mapped_prompt_ids:
@@ -53,3 +67,5 @@ sources:
       - stage.safe_token_optimizer.final_prompt_card@1.0.0
       - stage.safe_token_optimizer.final_prompt_gate@1.0.0
       - stage.safe_token_optimizer.handoff_route@1.0.0
+      - stage.x_digest.option_selection_gate@1.0.0
+      - stage.x_digest.final_publish_gate@1.0.0

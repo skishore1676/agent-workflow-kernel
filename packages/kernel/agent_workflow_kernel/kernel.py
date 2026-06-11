@@ -996,10 +996,10 @@ class WorkflowKernel:
                 )
             except AdapterRegistryError as exc:
                 return self._blocked(state, str(exc), FailureClass.ADAPTER_UNAVAILABLE)
-            if registration.family not in {AdapterFamily.RUNTIME, AdapterFamily.LANE}:
+            if registration.family not in {AdapterFamily.RUNTIME, AdapterFamily.LANE, AdapterFamily.HOST}:
                 return self._blocked(
                     state,
-                    "Only runtime and lane adapter invocation is implemented in this kernel slice.",
+                    "Only runtime, lane, and invokable host adapter stages are implemented in this kernel slice.",
                     FailureClass.ADAPTER_UNAVAILABLE,
                 )
             if not registration.supports(operation):
@@ -2375,11 +2375,25 @@ def _policy_components(value: Any) -> _PolicyComponents:
         forbidden_actions.extend(_string_tuple(value.get("forbidden")))
         if value.get("external_publish_allowed") is False:
             forbidden_actions.extend(("public_publish", "publish", "external_send"))
+        external_effects = value.get("external_effects")
+        if external_effects is True:
+            risk_classes.append(RiskClass.EXTERNAL_EFFECT)
+            hard_gates.append(HardGate.EXTERNAL_SEND)
+            side_effects_ambiguous = True
+        elif isinstance(external_effects, str) or (
+            isinstance(external_effects, tuple | list | set | frozenset)
+            and external_effects
+        ):
+            risk_classes.append(RiskClass.EXTERNAL_EFFECT)
+            hard_gates.append(HardGate.EXTERNAL_SEND)
+        if value.get("reads_private_source") is True:
+            risk_classes.append(RiskClass.READ_ONLY)
 
         requires_approval = (
             value.get("requires_explicit_approval") is True
             or value.get("requires_prior_approval") is True
         )
+        dry_run_only = value.get("dry_run_only") is True
         has_hard_policy = bool(hard_gates) or any(
             risk
             in {
@@ -2392,7 +2406,7 @@ def _policy_components(value: Any) -> _PolicyComponents:
             }
             for risk in risk_classes
         )
-        if requires_approval and not has_hard_policy:
+        if requires_approval and not has_hard_policy and not dry_run_only:
             side_effects_ambiguous = True
         if value.get("side_effects_known") is False:
             side_effects_known = False
@@ -2708,6 +2722,8 @@ _POLICY_CLASS_MAP: dict[str, tuple[tuple[RiskClass, ...], tuple[HardGate, ...]]]
     "read_only_review": ((RiskClass.READ_ONLY,), ()),
     "local_draft": ((RiskClass.LOCAL_DRAFT,), ()),
     "internal_generation": ((RiskClass.LOCAL_DRAFT,), ()),
+    "public_draft_review": ((RiskClass.LOCAL_DRAFT, RiskClass.REVIEW_ONLY), ()),
+    "public_publish_preflight": ((RiskClass.REVIEW_ONLY, RiskClass.INTERNAL_STATE), ()),
     "review_only": ((RiskClass.REVIEW_ONLY,), ()),
     "internal_state": ((RiskClass.INTERNAL_STATE,), ()),
     "external_effect": ((RiskClass.EXTERNAL_EFFECT,), (HardGate.EXTERNAL_SEND,)),
@@ -2755,7 +2771,7 @@ def _operation_for_stage(stage: StageDef, *, adapter_family: AdapterFamily) -> s
     if adapter_family == AdapterFamily.SURFACE:
         return "publish"
     if adapter_family == AdapterFamily.HOST:
-        return "resolve"
+        return "invoke"
     return "invoke"
 
 
@@ -3001,6 +3017,8 @@ def _invoke_registered_stage_adapter(
             stage_input=stage_input,
             created_at=created_at,
         )
+    if registration.family == AdapterFamily.HOST and hasattr(registration.adapter, "invoke"):
+        return registration.adapter.invoke(invocation, stage_input)
     raise ValueError(
         f"adapter family {registration.family.value!r} is not supported for owned stage invocation"
     )
@@ -3325,7 +3343,10 @@ def _runtime_input(
         "stage": to_plain_data(stage),
         "stage_run": to_plain_data(run),
     }
+    workflow_inputs: Mapping[str, Any] = {}
     if ledger is not None:
+        workflow_inputs = ledger.get_workflow_input_snapshot(run.instance_id) or {}
+        payload["workflow_inputs"] = dict(workflow_inputs)
         human_decisions = _prior_human_decisions(ledger, run.instance_id)
         if human_decisions:
             payload["prior_human_decisions"] = human_decisions
@@ -3340,11 +3361,66 @@ def _runtime_input(
         receipt_outputs = _prior_receipts_with_outputs(ledger, run.instance_id)
         if receipt_outputs:
             payload["receipts_by_stage"] = _receipts_by_stage(receipt_outputs)
+    payload["inputs"] = _resolve_stage_inputs(stage.inputs, payload, workflow_inputs)
     if rendered_context is not None:
         payload["context_packet"] = rendered_context.packet_data
         payload["rendered_input"] = rendered_context.rendered_input
         payload["rendered_input_digest"] = rendered_context.rendered_input_digest
     return payload
+
+
+def _resolve_stage_inputs(
+    stage_inputs: Mapping[str, Any],
+    runtime_payload: Mapping[str, Any],
+    workflow_inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        str(key): _resolve_stage_input_value(value, runtime_payload, workflow_inputs)
+        for key, value in stage_inputs.items()
+    }
+
+
+def _resolve_stage_input_value(
+    value: Any,
+    runtime_payload: Mapping[str, Any],
+    workflow_inputs: Mapping[str, Any],
+) -> Any:
+    if isinstance(value, str):
+        if value.startswith("input."):
+            return _path_get(workflow_inputs, value.removeprefix("input."))
+        if value.startswith("artifacts."):
+            artifacts_by_stage = runtime_payload.get("artifacts_by_stage")
+            if not isinstance(artifacts_by_stage, Mapping):
+                return None
+            return _path_get(artifacts_by_stage, value.removeprefix("artifacts."))
+        if value.startswith("receipts."):
+            receipts_by_stage = runtime_payload.get("receipts_by_stage")
+            if not isinstance(receipts_by_stage, Mapping):
+                return None
+            receipts = _path_get(receipts_by_stage, value.removeprefix("receipts."))
+            if isinstance(receipts, list) and receipts:
+                return receipts[-1]
+            return receipts
+        return value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _resolve_stage_input_value(item, runtime_payload, workflow_inputs)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_resolve_stage_input_value(item, runtime_payload, workflow_inputs) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_resolve_stage_input_value(item, runtime_payload, workflow_inputs) for item in value)
+    return value
+
+
+def _path_get(root: Mapping[str, Any], path: str) -> Any:
+    current: Any = root
+    for part in path.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _prior_human_decisions(ledger: WorkflowLedger, instance_id: str) -> list[dict[str, Any]]:

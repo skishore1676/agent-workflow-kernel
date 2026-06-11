@@ -79,6 +79,11 @@ prompts:
     version: 1.0.0
     path: lanes/safe-token-optimizer/v1.0.0.md
     status: active
+  - id: lane.x_digest_post_review
+    kind: lane
+    version: 1.0.0
+    path: lanes/x-digest-post-review/v1.0.0.md
+    status: active
   - id: stage.review
     kind: stage
     version: 1.0.0
@@ -198,6 +203,36 @@ prompts:
     kind: stage
     version: 1.0.0
     path: stages/safe-token-optimizer/handoff-route/v1.0.0.md
+    status: active
+  - id: stage.x_digest.propose_post_options
+    kind: stage
+    version: 1.0.0
+    path: stages/x-digest/propose-post-options/v1.0.0.md
+    status: active
+  - id: stage.x_digest.option_selection_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/x-digest/option-selection-gate/v1.0.0.md
+    status: active
+  - id: stage.x_digest.draft_selected_posts
+    kind: stage
+    version: 1.0.0
+    path: stages/x-digest/draft-selected-posts/v1.0.0.md
+    status: active
+  - id: stage.x_digest.jonah_review_posts
+    kind: stage
+    version: 1.0.0
+    path: stages/x-digest/jonah-review-posts/v1.0.0.md
+    status: active
+  - id: stage.x_digest.revise_posts
+    kind: stage
+    version: 1.0.0
+    path: stages/x-digest/revise-posts/v1.0.0.md
+    status: active
+  - id: stage.x_digest.final_publish_gate
+    kind: stage
+    version: 1.0.0
+    path: stages/x-digest/final-publish-gate/v1.0.0.md
     status: active
   - id: adapter_source.openclaw.imported_sources
     kind: adapter_source

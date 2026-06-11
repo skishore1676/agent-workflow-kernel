@@ -67,6 +67,25 @@ class AdapterRegistration:
         )
 
     @classmethod
+    def from_host_adapter(
+        cls,
+        adapter: HostAdapter,
+        *,
+        side_effects: tuple[RiskClass, ...] = (RiskClass.INTERNAL_STATE,),
+        replay_safe: bool = False,
+    ) -> "AdapterRegistration":
+        capabilities = adapter.capabilities()
+        return cls(
+            adapter_id=capabilities.adapter_id,
+            family=capabilities.family,
+            adapter=adapter,
+            operations=capabilities.operations,
+            side_effects=side_effects,
+            replay_safe=replay_safe,
+            metadata=dict(capabilities.metadata),
+        )
+
+    @classmethod
     def from_lane_adapter(
         cls,
         adapter: LaneAdapter,

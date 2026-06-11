@@ -1,0 +1,41 @@
+{
+  "label": "birdclaw-dummy-bookmarks",
+  "source": "local_fixture",
+  "items": [
+    {
+      "id": "bm-001",
+      "author": "ops_ai_lab",
+      "url": "https://x.com/ops_ai_lab/status/1001",
+      "text": "A planning agent that turns warehouse constraints into a daily schedule is more useful when it can show the violated assumptions.",
+      "project_hint": "OpenClaw and OR writing"
+    },
+    {
+      "id": "bm-002",
+      "author": "supply_chain_ai",
+      "url": "https://x.com/supply_chain_ai/status/1002",
+      "text": "Retail inventory copilots need exception handling and trust calibration more than another generic chat interface.",
+      "project_hint": "OR team AI adoption"
+    },
+    {
+      "id": "bm-003",
+      "author": "agent_runtime",
+      "url": "https://x.com/agent_runtime/status/1003",
+      "text": "Agent workflows fail when review loops lack artifact hashes and a durable owner for the next state.",
+      "project_hint": "AWK migration"
+    },
+    {
+      "id": "bm-004",
+      "author": "planning_notes",
+      "url": "https://x.com/planning_notes/status/1004",
+      "text": "The best optimization systems explain the tradeoff they rejected, not just the answer they selected.",
+      "project_hint": "public writing"
+    },
+    {
+      "id": "bm-005",
+      "author": "ai_eval_ops",
+      "url": "https://x.com/ai_eval_ops/status/1005",
+      "text": "Eval design for agents should measure recovery from stale context, not only first-pass answer quality.",
+      "project_hint": "OpenClaw evaluation"
+    }
+  ]
+}

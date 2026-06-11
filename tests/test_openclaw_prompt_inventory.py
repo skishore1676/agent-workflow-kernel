@@ -133,6 +133,43 @@ WORKFLOW_EXPECTATIONS = {
             "stage.jarvis_weekly.route_follow_up",
         },
     },
+    "x_digest_post_review.yaml": {
+        "propose_post_options": {
+            "identity.ivy_or_research",
+            "policy.openclaw.editorial_public_boundary",
+            "lane.x_digest_post_review",
+            "stage.x_digest.propose_post_options",
+        },
+        "option_selection_gate": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.x_digest_post_review",
+            "stage.x_digest.option_selection_gate",
+        },
+        "draft_selected_posts": {
+            "identity.ivy_or_research",
+            "policy.openclaw.editorial_public_boundary",
+            "lane.x_digest_post_review",
+            "stage.x_digest.draft_selected_posts",
+        },
+        "jonah_review_posts": {
+            "identity.ivy_or_research",
+            "identity.jonah_editor",
+            "policy.openclaw.editorial_public_boundary",
+            "lane.x_digest_post_review",
+            "stage.x_digest.jonah_review_posts",
+        },
+        "revise_posts": {
+            "identity.ivy_or_research",
+            "policy.openclaw.editorial_public_boundary",
+            "lane.x_digest_post_review",
+            "stage.x_digest.revise_posts",
+        },
+        "final_publish_gate": {
+            "policy.openclaw.review_only_human_gate",
+            "lane.x_digest_post_review",
+            "stage.x_digest.final_publish_gate",
+        },
+    },
 }
 
 

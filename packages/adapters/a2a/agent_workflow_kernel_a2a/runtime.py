@@ -130,19 +130,20 @@ class A2AReviewRuntimeAdapter:
             },
             "verdict": verdict,
         }
+        transcript_role, verdict_role = _review_artifact_roles(runtime_input)
         artifact_refs = (
             ArtifactRef(
-                artifact_id=f"{invocation.stage_run_id}:editor_transcript",
-                role="editor_transcript",
-                uri=f"awk://{invocation.instance_id}/{invocation.stage_run_id}/editor_transcript",
+                artifact_id=f"{invocation.stage_run_id}:{transcript_role}",
+                role=transcript_role,
+                uri=f"awk://{invocation.instance_id}/{invocation.stage_run_id}/{transcript_role}",
                 content_hash=digest_data(transcript),
                 mime_type="application/json",
                 created_by=invocation.adapter_id,
             ),
             ArtifactRef(
-                artifact_id=f"{invocation.stage_run_id}:editor_verdict",
-                role="editor_verdict",
-                uri=f"awk://{invocation.instance_id}/{invocation.stage_run_id}/editor_verdict",
+                artifact_id=f"{invocation.stage_run_id}:{verdict_role}",
+                role=verdict_role,
+                uri=f"awk://{invocation.instance_id}/{invocation.stage_run_id}/{verdict_role}",
                 content_hash=digest_data(verdict),
                 mime_type="application/json",
                 created_by=invocation.adapter_id,
@@ -334,7 +335,34 @@ def _current_draft_artifact(runtime_input: Mapping[str, Any]) -> Mapping[str, An
     revised = _mapping(_mapping(artifacts_by_stage.get("revise_draft")).get("revised_draft_package"))
     if revised:
         return revised
+    revised_post = _mapping(_mapping(artifacts_by_stage.get("revise_posts")).get("revised_post_packet"))
+    if revised_post:
+        return revised_post
+    for value in _mapping(runtime_input.get("inputs")).values():
+        artifact = _mapping(value)
+        if artifact.get("content_hash"):
+            return artifact
     return _mapping(_mapping(artifacts_by_stage.get("build_draft_package")).get("draft_package"))
+
+
+def _review_artifact_roles(runtime_input: Mapping[str, Any]) -> tuple[str, str]:
+    stage = _mapping(runtime_input.get("stage"))
+    outputs = _mapping(stage.get("outputs"))
+    artifacts = outputs.get("artifacts")
+    transcript_role = "editor_transcript"
+    verdict_role = "editor_verdict"
+    if isinstance(artifacts, Sequence) and not isinstance(artifacts, (str, bytes)):
+        roles = [
+            _string(_mapping(item).get("role"))
+            for item in artifacts
+            if isinstance(item, Mapping)
+        ]
+        for role in roles:
+            if role and "transcript" in role:
+                transcript_role = role
+            if role and "verdict" in role:
+                verdict_role = role
+    return transcript_role, verdict_role
 
 
 def _prompt_bundle_digest(runtime_input: Mapping[str, Any]) -> str | None:

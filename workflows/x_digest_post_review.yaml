@@ -77,7 +77,19 @@ stages:
     adapter: runtime.agent
     actors:
       writer: actors.writer
-    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    prompt_refs:
+      - id: identity.ivy_or_research
+        kind: identity
+        version: 1.0.0
+      - id: policy.openclaw.editorial_public_boundary
+        kind: policy
+        version: 1.0.0
+      - id: lane.x_digest_post_review
+        kind: lane
+        version: 1.0.0
+      - id: stage.x_digest.propose_post_options
+        kind: stage
+        version: 1.0.0
     inputs:
       bookmark_digest: artifacts.collect_bookmarks.bookmark_digest
       project_context: input.project_context
@@ -101,6 +113,16 @@ stages:
     adapter: surface.human_review
     actors:
       operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+      - id: lane.x_digest_post_review
+        kind: lane
+        version: 1.0.0
+      - id: stage.x_digest.option_selection_gate
+        kind: stage
+        version: 1.0.0
     policy:
       class: review_only
       requires_explicit_approval: true
@@ -125,7 +147,19 @@ stages:
     adapter: runtime.agent
     actors:
       writer: actors.writer
-    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    prompt_refs:
+      - id: identity.ivy_or_research
+        kind: identity
+        version: 1.0.0
+      - id: policy.openclaw.editorial_public_boundary
+        kind: policy
+        version: 1.0.0
+      - id: lane.x_digest_post_review
+        kind: lane
+        version: 1.0.0
+      - id: stage.x_digest.draft_selected_posts
+        kind: stage
+        version: 1.0.0
     inputs:
       option_packet: artifacts.propose_post_options.option_packet
       option_selection: receipts.option_selection_gate
@@ -149,7 +183,22 @@ stages:
     actors:
       producer: actors.writer
       reviewer: actors.reviewer
-    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    prompt_refs:
+      - id: identity.ivy_or_research
+        kind: identity
+        version: 1.0.0
+      - id: identity.jonah_editor
+        kind: identity
+        version: 1.0.0
+      - id: policy.openclaw.editorial_public_boundary
+        kind: policy
+        version: 1.0.0
+      - id: lane.x_digest_post_review
+        kind: lane
+        version: 1.0.0
+      - id: stage.x_digest.jonah_review_posts
+        kind: stage
+        version: 1.0.0
     inputs:
       draft_post_packet: artifacts.draft_selected_posts.draft_post_packet
       option_selection: receipts.option_selection_gate
@@ -175,7 +224,19 @@ stages:
     adapter: runtime.agent
     actors:
       writer: actors.writer
-    no_prompt_reason: prompt_registry_entries_pending_x_digest_lane
+    prompt_refs:
+      - id: identity.ivy_or_research
+        kind: identity
+        version: 1.0.0
+      - id: policy.openclaw.editorial_public_boundary
+        kind: policy
+        version: 1.0.0
+      - id: lane.x_digest_post_review
+        kind: lane
+        version: 1.0.0
+      - id: stage.x_digest.revise_posts
+        kind: stage
+        version: 1.0.0
     inputs:
       draft_post_packet: artifacts.draft_selected_posts.draft_post_packet
       review_verdict: artifacts.jonah_review_posts.post_review_verdict
@@ -222,6 +283,16 @@ stages:
     adapter: surface.human_review
     actors:
       operator: actors.operator
+    prompt_refs:
+      - id: policy.openclaw.review_only_human_gate
+        kind: policy
+        version: 1.0.0
+      - id: lane.x_digest_post_review
+        kind: lane
+        version: 1.0.0
+      - id: stage.x_digest.final_publish_gate
+        kind: stage
+        version: 1.0.0
     policy:
       class: public_publish
       requires_explicit_approval: true
@@ -254,12 +325,13 @@ stages:
       receipt_kind: x_public_publish_receipt.v1
       outcome_schema: x_public_publish_result.v1
     policy:
-      class: public_publish
+      class: public_publish_preflight
+      dry_run_only: true
       requires_prior_approval: true
       approval_ref: receipts.final_publish_gate
       approval_binds_to: artifacts.validate_publish_packet.validated_publish_packet
       idempotency_required: true
-      external_publish_allowed: true
+      external_publish_allowed: false
     outcomes:
       - published
       - skipped_duplicate
