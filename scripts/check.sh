@@ -9,6 +9,9 @@ if [[ -x .venv/bin/python ]]; then
   PYTHON=".venv/bin/python"
 fi
 
+echo "== kernel purity import-lint =="
+"$PYTHON" tools/import_lint.py
+
 "$PYTHON" -m unittest discover -s tests
 
 if [[ "$PYTHON" == ".venv/bin/python" ]]; then
