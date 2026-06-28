@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -225,12 +226,32 @@ class PromptRegistry:
                 f"Prompt {record.registry}:{record.kind}:{record.id}@{record.version} "
                 f"is {record.status}; only active prompts may be resolved for execution"
             )
-        path = (self.root / record.path).resolve()
-        try:
-            path.relative_to(self.root)
-        except ValueError as exc:
-            raise PromptRegistryError(f"Prompt path escapes registry root: {record.path}") from exc
-        content = path.read_text(encoding="utf-8")
+        # Escape guard against BOTH path traversal and symlink escape, while
+        # still allowing a symlinked registry *root* (a deployment may symlink a
+        # host's `prompts/` into a temp/install root — base/prompts -> ROOT/prompts).
+        # 1) cheap lexical `..` reject; 2) the real guard: resolve both root and
+        # candidate and require the candidate's real path to stay within the root's
+        # real tree. A symlinked root passes (both sides resolve to the same real
+        # tree); a prompt *file* symlinked outside the registry is rejected (its
+        # real path escapes). content_hash is optional, so this containment check —
+        # not a hash pin — is what blocks reading an external file via a planted
+        # symlink.
+        logical = os.path.normpath(os.path.join(str(self.root), record.path))
+        root_str = os.path.normpath(str(self.root))
+        if logical != root_str and not logical.startswith(root_str + os.sep):
+            raise PromptRegistryError(f"Prompt path escapes registry root: {record.path}")
+        # Block a prompt *file* that is itself a symlink jumping outside its
+        # declared directory (the Codex-found escape), while still allowing a
+        # symlinked registry root or a symlinked intermediate dir (the legit
+        # deployment/test mount: host_root/prompts -> ROOT/prompts). The file's
+        # real path must live directly in its own resolved parent dir.
+        real_file = os.path.realpath(logical)
+        real_parent = os.path.realpath(os.path.dirname(logical))
+        if os.path.dirname(real_file) != real_parent:
+            raise PromptRegistryError(
+                f"Prompt path escapes registry root (symlink): {record.path}"
+            )
+        content = Path(real_file).read_text(encoding="utf-8")
         actual_hash = hash_text(content)
         for declared_hash in (record.content_hash, ref.content_hash):
             if declared_hash and declared_hash != actual_hash:

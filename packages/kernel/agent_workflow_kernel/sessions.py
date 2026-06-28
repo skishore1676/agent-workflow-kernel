@@ -22,6 +22,160 @@ ACTOR_SESSION_KEY_PREFIX = "ask:v1:"
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+# --------------------------------------------------------------------------- #
+# Session budget: a hard turn/token/time cap for a bounded conversational
+# session (ladder rung 3). This GENERALIZES the stage-level budget guards
+# (within_ping_pong_budget / within_research_iteration_budget in kernel.py),
+# which bound a *stage's* re-entries, to bound a *conversation's* turn count,
+# token spend, and wall-clock — keyed off a single mapping the way a stage
+# `budget:` dict is. It carries the same fail-closed integer semantics: a
+# non-integer, boolean, or negative limit is rejected (a careless config can
+# never disable the cap), and a missing limit means "no cap on that axis"
+# (you opt INTO a cap, you never silently lose one you set). The companion
+# runner consumes this to enforce the rung-3 contract; the cap-hit is a
+# resumable pause, not a crash.
+# --------------------------------------------------------------------------- #
+
+
+_SESSION_BUDGET_KEYS: Mapping[str, tuple[str, ...]] = {
+    "max_turns": ("max_turns", "max_turn", "turn_cap"),
+    "max_total_tokens": ("max_total_tokens", "max_tokens", "token_cap"),
+    "max_wall_seconds": ("max_wall_seconds", "max_seconds", "time_cap_seconds"),
+}
+
+
+def _coerce_session_limit(value: Any, *, label: str) -> int | None:
+    """A non-negative integer cap, or None for "no cap on this axis".
+
+    Fail closed on a careless value: a boolean or non-integer is a config
+    error (raises), NOT a silently-disabled cap. ``None``/missing means the
+    axis is uncapped on purpose — the caller opted out of that one axis, it is
+    not an accidental removal of a cap that was set."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"session budget {label!r} must be an integer, not boolean")
+    try:
+        limit = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"session budget {label!r} must be an integer") from exc
+    if limit < 0:
+        raise ValueError(f"session budget {label!r} must be non-negative")
+    return limit
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBudget:
+    """Hard caps for one bounded conversational session.
+
+    Any axis left ``None`` is uncapped (opt-in caps). The session runner checks
+    ``cap_hit(...)`` BEFORE producing each turn, so a cap stops the loop at a
+    turn boundary (never mid-turn) and the stop is resumable. ``zero`` axes are
+    legal and immediately cap (a 0-turn session is a no-op that still records a
+    ledger row) — but a *missing* cap is uncapped, a *negative* cap is rejected.
+    """
+
+    max_turns: int | None = None
+    max_total_tokens: int | None = None
+    max_wall_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        # Re-validate via the coercer so a directly-constructed budget obeys the
+        # same fail-closed rule as one parsed from config.
+        object.__setattr__(self, "max_turns", _coerce_session_limit(self.max_turns, label="max_turns"))
+        object.__setattr__(
+            self, "max_total_tokens", _coerce_session_limit(self.max_total_tokens, label="max_total_tokens")
+        )
+        object.__setattr__(
+            self, "max_wall_seconds", _coerce_session_limit(self.max_wall_seconds, label="max_wall_seconds")
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> "SessionBudget":
+        """Parse a lane ``budget:`` mapping into a SessionBudget, accepting the
+        same key aliases the stage budget guards accept. Unknown keys are
+        ignored (forward-compatible); a present-but-bad value fails closed."""
+        if value is None:
+            return cls()
+        if not isinstance(value, Mapping):
+            raise ValueError("session budget must be a mapping")
+        resolved: dict[str, int | None] = {}
+        for canonical, aliases in _SESSION_BUDGET_KEYS.items():
+            picked: Any = None
+            for alias in aliases:
+                if alias in value:
+                    picked = value[alias]
+                    break
+            resolved[canonical] = picked
+        return cls(
+            max_turns=resolved["max_turns"],
+            max_total_tokens=resolved["max_total_tokens"],
+            max_wall_seconds=resolved["max_wall_seconds"],
+        )
+
+    def is_capped(self) -> bool:
+        """True if at least one axis is bounded. A fully-unbounded budget is a
+        rung-4 escape hatch; the companion runner refuses to start on one."""
+        return any(
+            limit is not None
+            for limit in (self.max_turns, self.max_total_tokens, self.max_wall_seconds)
+        )
+
+    def has_hard_backstop(self) -> bool:
+        """True only if an axis caps the loop REGARDLESS of provider behavior.
+
+        ``is_capped()`` is satisfied by a token-only budget, but tokens are not a
+        backstop: a provider that reports zero/missing ``usage.total_tokens`` (a
+        stub, a failure mode, a misconfigured adapter) never advances the token
+        total, so a never-wrapping persona on a token-only cap loops FOREVER
+        (Codex verified at 0 tokens). The only axes immune to provider usage are
+        the turn count (always advances one per produced turn) and wall-clock
+        (always advances with real time). At least one of those MUST bound the
+        session or it is not genuinely capped."""
+        return self.max_turns is not None or self.max_wall_seconds is not None
+
+    def with_hard_backstop(self, *, default_max_turns: int) -> "SessionBudget":
+        """Return a budget guaranteed to have a usage-independent hard cap.
+
+        If this budget already has a turn or wall-clock cap it is returned
+        unchanged. Otherwise (e.g. a token-only budget) a ``max_turns`` backstop
+        is layered on so NO configuration can produce an unbounded loop. The
+        existing token/wall axes are preserved as secondary budgets."""
+        if self.has_hard_backstop():
+            return self
+        if not isinstance(default_max_turns, int) or isinstance(default_max_turns, bool):
+            raise ValueError("default_max_turns must be an integer")
+        if default_max_turns <= 0:
+            raise ValueError("default_max_turns backstop must be a positive integer")
+        return SessionBudget(
+            max_turns=default_max_turns,
+            max_total_tokens=self.max_total_tokens,
+            max_wall_seconds=self.max_wall_seconds,
+        )
+
+    def cap_hit(
+        self, *, turns: int, total_tokens: int, elapsed_seconds: float
+    ) -> str | None:
+        """Return the name of the FIRST axis whose cap is reached/exceeded, or
+        None if the session may produce another turn. Checked at a turn
+        boundary. ``turns`` is the count already produced (so ``turns >=
+        max_turns`` stops before producing the (max_turns+1)-th)."""
+        if self.max_turns is not None and turns >= self.max_turns:
+            return "max_turns"
+        if self.max_total_tokens is not None and total_tokens >= self.max_total_tokens:
+            return "max_total_tokens"
+        if self.max_wall_seconds is not None and elapsed_seconds >= self.max_wall_seconds:
+            return "max_wall_seconds"
+        return None
+
+    def to_dict(self) -> dict[str, int | None]:
+        return {
+            "max_turns": self.max_turns,
+            "max_total_tokens": self.max_total_tokens,
+            "max_wall_seconds": self.max_wall_seconds,
+        }
+
+
 class ActorSessionScope(StrEnum):
     """Portable reuse scope for an actor runtime session."""
 

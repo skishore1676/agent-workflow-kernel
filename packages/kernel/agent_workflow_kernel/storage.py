@@ -239,6 +239,38 @@ class WorkflowLedger:
               receipt_json TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_instances_created
+              ON workflow_instances (created_at DESC, instance_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_instances_updated
+              ON workflow_instances (updated_at DESC, instance_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_instances_status_updated
+              ON workflow_instances (status, updated_at DESC, instance_id);
+            CREATE INDEX IF NOT EXISTS idx_stage_runs_waiting_gate
+              ON stage_runs (status, created_at, stage_run_id);
+            CREATE INDEX IF NOT EXISTS idx_stage_runs_waiting_gate_latest
+              ON stage_runs (instance_id, status, updated_at, stage_run_id);
+            CREATE INDEX IF NOT EXISTS idx_stage_runs_instance_stage_latest
+              ON stage_runs (
+                instance_id, stage_id, updated_at DESC, attempt DESC, stage_run_id DESC
+              );
+            CREATE INDEX IF NOT EXISTS idx_stage_runs_status_lease
+              ON stage_runs (status, lease_expires_at, stage_run_id);
+            -- Migration: the lane-agnostic kernel must not name a host lane. The
+            -- old `idx_stage_runs_trade_lab_feed` is renamed to a name describing
+            -- its COLUMNS (the index is lane-generic); drop the old name so an
+            -- existing ledger DB upgrades cleanly on next open.
+            DROP INDEX IF EXISTS idx_stage_runs_trade_lab_feed;
+            CREATE INDEX IF NOT EXISTS idx_stage_runs_stage_status_completed
+              ON stage_runs (
+                stage_id, status, completed_at DESC, stage_run_id DESC, instance_id
+              );
+            CREATE INDEX IF NOT EXISTS idx_events_stage_run_sequence
+              ON events (stage_run_id, event_sequence);
+            CREATE INDEX IF NOT EXISTS idx_receipts_instance_latest
+              ON receipts (instance_id, status, created_at DESC, receipt_id DESC);
+            CREATE INDEX IF NOT EXISTS idx_receipts_stage_run
+              ON receipts (stage_run_id, created_at DESC, receipt_id DESC);
             """
         )
         for column_name, column_sql in (
@@ -450,6 +482,229 @@ class WorkflowLedger:
                 payload=payload or {},
                 created_at=now,
             )
+
+    def cancel_workflow_instance(
+        self,
+        *,
+        instance_id: str,
+        actor: str = "operator",
+        reason: str | None = None,
+        updated_at: datetime | str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Terminalize an instance as cancelled and retire active stage runs.
+
+        This is an operator repair primitive, not a workflow transition. It is
+        intentionally conservative: terminal instances are left unchanged unless
+        ``force`` is set, and only active/not-yet-terminal stage runs are marked
+        superseded.
+        """
+
+        now = iso_timestamp(updated_at)
+        terminal = {
+            WorkflowStatus.DONE.value,
+            WorkflowStatus.CANCELLED.value,
+            WorkflowStatus.POLICY_DENIED.value,
+        }
+        active_stage_statuses = {
+            StageRunStatus.QUEUED.value,
+            StageRunStatus.CLAIMED.value,
+            StageRunStatus.STARTED.value,
+            StageRunStatus.WAITING.value,
+            StageRunStatus.WAITING_ON_CHILD.value,
+            StageRunStatus.WAITING_ON_HUMAN.value,
+            StageRunStatus.VALIDATING.value,
+            StageRunStatus.APPROVAL_REQUIRED.value,
+        }
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM workflow_instances WHERE instance_id = ?",
+                (instance_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(instance_id)
+            previous_status = row["status"]
+            if previous_status in terminal and not force:
+                return {
+                    "changed": False,
+                    "instance_id": instance_id,
+                    "previous_status": previous_status,
+                    "status": previous_status,
+                    "superseded_stage_runs": [],
+                    "reason": "already_terminal",
+                }
+            stage_rows = conn.execute(
+                f"""
+                SELECT stage_run_id, status
+                FROM stage_runs
+                WHERE instance_id = ?
+                  AND status IN ({",".join("?" for _ in active_stage_statuses)})
+                ORDER BY created_at, stage_run_id
+                """,
+                (instance_id, *sorted(active_stage_statuses)),
+            ).fetchall()
+            superseded = [r["stage_run_id"] for r in stage_rows]
+            if superseded:
+                conn.executemany(
+                    """
+                    UPDATE stage_runs
+                    SET status = ?, lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at = NULL, updated_at = ?
+                    WHERE stage_run_id = ?
+                    """,
+                    [
+                        (StageRunStatus.SUPERSEDED.value, now, stage_run_id)
+                        for stage_run_id in superseded
+                    ],
+                )
+            conn.execute(
+                """
+                UPDATE workflow_instances
+                SET status = ?, current_stage_id = NULL, updated_at = ?
+                WHERE instance_id = ?
+                """,
+                (WorkflowStatus.CANCELLED.value, now, instance_id),
+            )
+            payload = {
+                "previous_status": previous_status,
+                "previous_stage_id": row["current_stage_id"],
+                "reason": reason,
+                "force": force,
+                "superseded_stage_runs": superseded,
+            }
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=None,
+                event_type="workflow_cancelled",
+                actor=actor,
+                payload=payload,
+                created_at=now,
+            )
+        return {
+            "changed": True,
+            "instance_id": instance_id,
+            "previous_status": previous_status,
+            "status": WorkflowStatus.CANCELLED.value,
+            "superseded_stage_runs": superseded,
+            "reason": reason,
+        }
+
+    def park_stale_workflow_instance(
+        self,
+        *,
+        instance_id: str,
+        actor: str = "supervisor",
+        reason: str | None = None,
+        updated_at: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Recoverably PARK (not cancel) an in-flight instance stranded by a
+        workflow-definition change.
+
+        This is the storage half of the auto-park-stale sweep. Unlike
+        :meth:`cancel_workflow_instance` it does NOT terminalize the instance as
+        ``cancelled`` — the row + all receipts are preserved for inspection. It
+        moves the instance to ``blocked`` (a non-advancing, non-cancelled state
+        the active-instance sweep already excludes) and supersedes any active
+        stage runs so the stranded gate stops surfacing as a waiting ACT/NEEDS-
+        ATTENTION row. A distinct ``workflow_auto_parked_stale_definition`` event
+        records the park for the audit trail.
+
+        Idempotent by construction: a caller that filters to in-flight (non-
+        terminal, non-blocked) instances never re-parks an already-parked run,
+        and this method also no-ops on an instance already in a blocked/terminal
+        state (``changed: False``) so a double-call is safe.
+        """
+        now = iso_timestamp(updated_at)
+        # An already-parked/terminal instance is left untouched (idempotent).
+        leave_unchanged = {
+            WorkflowStatus.DONE.value,
+            WorkflowStatus.CANCELLED.value,
+            WorkflowStatus.POLICY_DENIED.value,
+            WorkflowStatus.BLOCKED.value,
+        }
+        active_stage_statuses = {
+            StageRunStatus.QUEUED.value,
+            StageRunStatus.CLAIMED.value,
+            StageRunStatus.STARTED.value,
+            StageRunStatus.WAITING.value,
+            StageRunStatus.WAITING_ON_CHILD.value,
+            StageRunStatus.WAITING_ON_HUMAN.value,
+            StageRunStatus.VALIDATING.value,
+            StageRunStatus.APPROVAL_REQUIRED.value,
+        }
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM workflow_instances WHERE instance_id = ?",
+                (instance_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(instance_id)
+            previous_status = row["status"]
+            if previous_status in leave_unchanged:
+                return {
+                    "changed": False,
+                    "instance_id": instance_id,
+                    "previous_status": previous_status,
+                    "status": previous_status,
+                    "superseded_stage_runs": [],
+                    "reason": "already_parked_or_terminal",
+                }
+            stage_rows = conn.execute(
+                f"""
+                SELECT stage_run_id, status
+                FROM stage_runs
+                WHERE instance_id = ?
+                  AND status IN ({",".join("?" for _ in active_stage_statuses)})
+                ORDER BY created_at, stage_run_id
+                """,
+                (instance_id, *sorted(active_stage_statuses)),
+            ).fetchall()
+            superseded = [r["stage_run_id"] for r in stage_rows]
+            if superseded:
+                conn.executemany(
+                    """
+                    UPDATE stage_runs
+                    SET status = ?, lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at = NULL, updated_at = ?
+                    WHERE stage_run_id = ?
+                    """,
+                    [
+                        (StageRunStatus.SUPERSEDED.value, now, stage_run_id)
+                        for stage_run_id in superseded
+                    ],
+                )
+            conn.execute(
+                """
+                UPDATE workflow_instances
+                SET status = ?, current_stage_id = NULL, updated_at = ?
+                WHERE instance_id = ?
+                """,
+                (WorkflowStatus.BLOCKED.value, now, instance_id),
+            )
+            payload = {
+                "previous_status": previous_status,
+                "previous_stage_id": row["current_stage_id"],
+                "reason": reason,
+                "superseded_stage_runs": superseded,
+            }
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=None,
+                event_type="workflow_auto_parked_stale_definition",
+                actor=actor,
+                payload=payload,
+                created_at=now,
+            )
+        return {
+            "changed": True,
+            "instance_id": instance_id,
+            "previous_status": previous_status,
+            "status": WorkflowStatus.BLOCKED.value,
+            "superseded_stage_runs": superseded,
+            "reason": reason,
+        }
 
     def append_event(
         self,
@@ -1304,6 +1559,207 @@ class WorkflowLedger:
                 created_at=completed_at,
             )
 
+    # -- child sessions: a bounded, scoped, audited delegate session --------- #
+    #
+    # The child_sessions table already models exactly a bounded, scoped,
+    # transcript-bearing, audited delegate session (delegate_kind, goal_hash,
+    # allowed_scope_json, status, audit_status, transcript_ref, deadline_at).
+    # A COMPANION session is a new `delegate_kind` row over this table — NOT a
+    # new table. These three methods (insert / update / get) are the durable
+    # spine the companion-session runner records its lifecycle onto: one row
+    # per session, status transitions (open -> capped|closed), the transcript
+    # as an attached ref, and the deadline the wall-clock cap derives from.
+
+    def insert_child_session(
+        self,
+        *,
+        child_session_id: str,
+        parent_stage_run_id: str,
+        delegate_kind: str,
+        delegate_owner: str,
+        goal_hash: str,
+        context_packet_hash: str,
+        allowed_scope: Any,
+        expected_receipts: Any = (),
+        status: str = "open",
+        audit_status: str = "pending",
+        invocation_id: str | None = None,
+        source_thread_id: str | None = None,
+        external_session_id: str | None = None,
+        transcript_ref: str | None = None,
+        deadline_at: datetime | str | None = None,
+        created_at: datetime | str | None = None,
+    ) -> None:
+        """Open a child-session row under an existing parent stage run.
+
+        Append-only at creation; lifecycle is then driven by
+        ``update_child_session``. ``allowed_scope`` / ``expected_receipts`` are
+        stored as canonical JSON (the scope the session may touch and the
+        receipts it is expected to produce — for a companion: its recall
+        namespace and its gated-candidate receipts)."""
+        now = iso_timestamp(created_at)
+        deadline = iso_timestamp(deadline_at) if deadline_at is not None else None
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO child_sessions (
+                  child_session_id, parent_stage_run_id, invocation_id,
+                  source_thread_id, external_session_id, delegate_kind,
+                  delegate_owner, goal_hash, context_packet_hash,
+                  allowed_scope_json, expected_receipts_json, status,
+                  audit_status, transcript_ref, last_seen_at, deadline_at,
+                  created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    child_session_id,
+                    parent_stage_run_id,
+                    invocation_id,
+                    source_thread_id,
+                    external_session_id,
+                    delegate_kind,
+                    delegate_owner,
+                    goal_hash,
+                    context_packet_hash,
+                    _json(allowed_scope),
+                    _json(expected_receipts),
+                    status,
+                    audit_status,
+                    transcript_ref,
+                    now,
+                    deadline,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT instance_id FROM stage_runs WHERE stage_run_id = ?",
+                (parent_stage_run_id,),
+            ).fetchone()
+            if row is not None:
+                self._append_event(
+                    conn,
+                    instance_id=row["instance_id"],
+                    stage_run_id=parent_stage_run_id,
+                    event_type="child_session_opened",
+                    actor=delegate_owner,
+                    payload={
+                        "child_session_id": child_session_id,
+                        "delegate_kind": delegate_kind,
+                        "goal_hash": goal_hash,
+                        "status": status,
+                        "deadline_at": deadline,
+                    },
+                    created_at=now,
+                )
+
+    def update_child_session(
+        self,
+        *,
+        child_session_id: str,
+        status: str | None = None,
+        audit_status: str | None = None,
+        transcript_ref: str | None = None,
+        last_seen_at: datetime | str | None = None,
+        external_session_id: str | None = None,
+        actor: str = "kernel",
+        now: datetime | str | None = None,
+    ) -> None:
+        """Advance a child session's lifecycle (status / audit_status /
+        transcript_ref / last_seen). Only provided fields change; the rest are
+        left as-is. Raises if the session does not exist."""
+        updated_at = iso_timestamp(now)
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM child_sessions WHERE child_session_id = ?",
+                (child_session_id,),
+            ).fetchone()
+            if row is None:
+                raise LedgerConflict(f"child session {child_session_id!r} does not exist")
+            new_status = status if status is not None else row["status"]
+            new_audit = audit_status if audit_status is not None else row["audit_status"]
+            new_transcript = (
+                transcript_ref if transcript_ref is not None else row["transcript_ref"]
+            )
+            new_last_seen = (
+                iso_timestamp(last_seen_at) if last_seen_at is not None else row["last_seen_at"]
+            )
+            new_external = (
+                external_session_id
+                if external_session_id is not None
+                else row["external_session_id"]
+            )
+            conn.execute(
+                """
+                UPDATE child_sessions
+                SET status = ?, audit_status = ?, transcript_ref = ?,
+                    last_seen_at = ?, external_session_id = ?, updated_at = ?
+                WHERE child_session_id = ?
+                """,
+                (
+                    new_status,
+                    new_audit,
+                    new_transcript,
+                    new_last_seen,
+                    new_external,
+                    updated_at,
+                    child_session_id,
+                ),
+            )
+            parent_row = conn.execute(
+                "SELECT instance_id FROM stage_runs WHERE stage_run_id = ?",
+                (row["parent_stage_run_id"],),
+            ).fetchone()
+            if parent_row is not None:
+                self._append_event(
+                    conn,
+                    instance_id=parent_row["instance_id"],
+                    stage_run_id=row["parent_stage_run_id"],
+                    event_type="child_session_updated",
+                    actor=actor,
+                    payload={
+                        "child_session_id": child_session_id,
+                        "status": new_status,
+                        "audit_status": new_audit,
+                        "transcript_ref": new_transcript,
+                    },
+                    created_at=updated_at,
+                )
+
+    def get_child_session(self, child_session_id: str) -> dict[str, Any] | None:
+        """The full child-session row as a plain dict, or None if absent.
+        ``allowed_scope_json`` / ``expected_receipts_json`` are decoded."""
+        row = self.connection.execute(
+            "SELECT * FROM child_sessions WHERE child_session_id = ?",
+            (child_session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "child_session_id": row["child_session_id"],
+            "parent_stage_run_id": row["parent_stage_run_id"],
+            "invocation_id": row["invocation_id"],
+            "source_thread_id": row["source_thread_id"],
+            "external_session_id": row["external_session_id"],
+            "delegate_kind": row["delegate_kind"],
+            "delegate_owner": row["delegate_owner"],
+            "goal_hash": row["goal_hash"],
+            "context_packet_hash": row["context_packet_hash"],
+            "allowed_scope": _loads_json(row["allowed_scope_json"])
+            if row["allowed_scope_json"]
+            else None,
+            "expected_receipts": _loads_json(row["expected_receipts_json"])
+            if row["expected_receipts_json"]
+            else None,
+            "status": row["status"],
+            "audit_status": row["audit_status"],
+            "transcript_ref": row["transcript_ref"],
+            "last_seen_at": row["last_seen_at"],
+            "deadline_at": row["deadline_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def next_stage_attempt(self, *, instance_id: str, stage_id: str) -> int:
         row = self.connection.execute(
             """
@@ -1387,6 +1843,48 @@ class WorkflowLedger:
                     """,
                     (swept_at, row["instance_id"]),
                 )
+                if action == "blocked":
+                    inst = conn.execute(
+                        """
+                        SELECT status, current_stage_id
+                        FROM workflow_instances
+                        WHERE instance_id = ?
+                        """,
+                        (row["instance_id"],),
+                    ).fetchone()
+                    if (
+                        inst is not None
+                        and inst["current_stage_id"] == row["stage_id"]
+                        and inst["status"] not in (
+                            WorkflowStatus.DONE.value,
+                            WorkflowStatus.CANCELLED.value,
+                            WorkflowStatus.BLOCKED.value,
+                            WorkflowStatus.POLICY_DENIED.value,
+                        )
+                    ):
+                        conn.execute(
+                            """
+                            UPDATE workflow_instances
+                            SET status = ?, updated_at = ?
+                            WHERE instance_id = ?
+                            """,
+                            (WorkflowStatus.BLOCKED.value, swept_at, row["instance_id"]),
+                        )
+                        self._append_event(
+                            conn,
+                            instance_id=row["instance_id"],
+                            stage_run_id=row["stage_run_id"],
+                            event_type="workflow_blocked",
+                            actor=actor,
+                            payload={
+                                "stage_id": row["stage_id"],
+                                "stage_run_id": row["stage_run_id"],
+                                "reason": failure_summary,
+                                "failure_class": failure_class.value,
+                                "source": "stale_lease_recovery",
+                            },
+                            created_at=swept_at,
+                        )
                 self._append_event(
                     conn,
                     instance_id=row["instance_id"],
@@ -1410,6 +1908,73 @@ class WorkflowLedger:
                     )
                 )
         return actions
+
+    def terminalize_blocked_current_stages(
+        self, *, now: datetime | str | None = None, actor: str = "recovery"
+    ) -> list[str]:
+        """Repair legacy limbo rows where the current stage is already blocked
+        but the workflow instance still claims to be running."""
+
+        repaired_at = iso_timestamp(now)
+        terminal = (
+            WorkflowStatus.DONE.value,
+            WorkflowStatus.CANCELLED.value,
+            WorkflowStatus.BLOCKED.value,
+            WorkflowStatus.POLICY_DENIED.value,
+        )
+        blocked_stage_statuses = (
+            StageRunStatus.BLOCKED.value,
+            StageRunStatus.FAILED.value,
+            StageRunStatus.INVALID_OUTPUT.value,
+            StageRunStatus.TIMED_OUT.value,
+            StageRunStatus.APPROVAL_DENIED.value,
+        )
+        repaired: list[str] = []
+        with self._transaction() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT wi.instance_id, wi.status AS instance_status,
+                       wi.current_stage_id, sr.stage_run_id,
+                       sr.status AS stage_status, sr.failure_class,
+                       sr.failure_summary
+                FROM workflow_instances wi
+                JOIN stage_runs sr
+                  ON sr.instance_id = wi.instance_id
+                 AND sr.stage_id = wi.current_stage_id
+                WHERE wi.status NOT IN ({",".join("?" for _ in terminal)})
+                  AND sr.status IN ({",".join("?" for _ in blocked_stage_statuses)})
+                ORDER BY sr.updated_at, sr.stage_run_id
+                """,
+                (*terminal, *blocked_stage_statuses),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE workflow_instances
+                    SET status = ?, updated_at = ?
+                    WHERE instance_id = ?
+                    """,
+                    (WorkflowStatus.BLOCKED.value, repaired_at, row["instance_id"]),
+                )
+                self._append_event(
+                    conn,
+                    instance_id=row["instance_id"],
+                    stage_run_id=row["stage_run_id"],
+                    event_type="workflow_blocked",
+                    actor=actor,
+                    payload={
+                        "stage_id": row["current_stage_id"],
+                        "stage_run_id": row["stage_run_id"],
+                        "previous_status": row["instance_status"],
+                        "stage_status": row["stage_status"],
+                        "reason": row["failure_summary"],
+                        "failure_class": row["failure_class"],
+                        "source": "blocked_current_stage_reconcile",
+                    },
+                    created_at=repaired_at,
+                )
+                repaired.append(row["instance_id"])
+        return repaired
 
     def list_events(self, *, stage_run_id: str | None = None) -> list[dict[str, Any]]:
         if stage_run_id is None:

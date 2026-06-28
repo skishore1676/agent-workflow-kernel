@@ -388,6 +388,13 @@ class WorkflowKernel:
             )
 
         assert decision is not None
+        # H2 producer: a public-publish approval must pin the exact packet hash
+        # it authorizes. Stamp it into the approval's constraints (where the
+        # publish executor reads approved_content_hash) before it is recorded,
+        # so both the surface and CLI ingest paths bind the same way.
+        decision = _approval_with_bound_hash(
+            decision, stage, self.ledger, instance_id
+        )
         decision_text = _decision_text(decision.decision)
         outcome = self._outcome_for_human_decision(stage, decision_text)
         if outcome is None:
@@ -751,6 +758,16 @@ class WorkflowKernel:
             "candidate_decision_count": len(candidate_receipts),
             "adapter_receipts": [to_plain_data(receipt) for receipt in decision_receipts],
         }
+        # Surface the operator's decision and any inline `<...>` comments flat
+        # on this gate receipt (not just buried in adapter_receipts), so a
+        # downstream stage wired to `receipts.<gate>` can read the located
+        # edit requests directly. Context only — the approval's own
+        # constraints, recorded separately, remain the binding authority.
+        if approval is not None:
+            outputs["decision"] = _decision_text(approval.decision)
+            operator_comments = approval.constraints.get("operator_comments")
+            if operator_comments:
+                outputs["operator_comments"] = to_plain_data(operator_comments)
         response_hash = digest_data(outputs)
         failure_summary = conversion_error or _surface_ingest_failure_summary(
             decision_receipts,
@@ -937,17 +954,41 @@ class WorkflowKernel:
                 stage,
                 registration=registration,
             )
-            gate = self.config.policy_engine.evaluate(
-                _stage_action_request(
-                    self.workflow,
+            action_request = _stage_action_request(
+                self.workflow,
+                stage,
+                run,
+                registration=registration,
+                operation=operation,
+                effective_policy=effective_policy,
+            )
+            gate = self.config.policy_engine.evaluate(action_request, now=now)
+            # Content-bound authorization bridge: a live-effect system_action
+            # (e.g. host.publish_internal with a real backend) carries
+            # external_effect risk, so the first pass returns require_human even
+            # though a human already approved the upstream gate — the gate's
+            # action fingerprint differs from this stage's. If this stage
+            # declares `policy.binds_to:` the exact packet a recorded, approved,
+            # unrevoked human approval was content-bound to, the human approved
+            # exactly these bytes. Re-evaluate with that approval stamped onto
+            # THIS action's fingerprint; the publish adapter's own H2 check
+            # re-verifies the same content binding (defense in depth). Fail
+            # closed: no matching content-bound approval -> stays blocked.
+            if gate.decision == GateDecision.REQUIRE_HUMAN.value:
+                content_bound = _content_bound_human_approval(
                     stage,
                     run,
-                    registration=registration,
-                    operation=operation,
-                    effective_policy=effective_policy,
-                ),
-                now=now,
-            )
+                    self.ledger,
+                    expected_fingerprint=gate.action_fingerprint,
+                    expected_action=action_request.action,
+                    now=now,
+                )
+                if content_bound is not None:
+                    gate = self.config.policy_engine.evaluate(
+                        action_request,
+                        approval=content_bound,
+                        now=now,
+                    )
             if gate.decision == GateDecision.DENY.value:
                 summary = gate.decision_reason or "Policy denied action."
                 receipt = self._policy_preflight_receipt(
@@ -1119,6 +1160,7 @@ class WorkflowKernel:
                 state["adapter_result"] = adapter_result
                 state["receipt_id"] = receipt.receipt_id
                 retry = _retry_result_for_adapter_failure(
+                    workflow=self.workflow,
                     stage=stage,
                     run=run,
                     registration=registration,
@@ -1209,6 +1251,7 @@ class WorkflowKernel:
                     output_hash=response_hash,
                 )
             retry = _retry_result_for_adapter_failure(
+                workflow=self.workflow,
                 stage=stage,
                 run=run,
                 registration=registration,

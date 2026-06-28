@@ -226,6 +226,12 @@ class SandboxObsidianMarkdownSurfaceAdapter:
         operator_brief = _operator_brief_from_packet(packet)
         choice_options = _choice_options_from_packet(packet)
         choice_manifest_hash = str(packet.get("choice_manifest_hash") or "")
+        # OPERATOR-FACING LABELS ONLY. A genuine gate may be non-test while
+        # still fail-closed/non-live; the frontmatter should say exactly that
+        # so the operator does not mistake a real approval boundary for a live
+        # external action.
+        label_test_only = bool(packet.get("test_only", True))
+        label_non_live = bool(packet.get("non_live", True))
         note_text = _render_review_card(
             invocation=invocation,
             stage_id=stage_id,
@@ -244,8 +250,8 @@ class SandboxObsidianMarkdownSurfaceAdapter:
             operator_brief=operator_brief,
             choice_options=choice_options,
             choice_manifest_hash=choice_manifest_hash,
-            test_only=bool(packet.get("test_only", True)),
-            non_live=True,
+            test_only=label_test_only,
+            non_live=label_non_live,
             created_at=self.created_at,
         )
         existed = note_path.exists()

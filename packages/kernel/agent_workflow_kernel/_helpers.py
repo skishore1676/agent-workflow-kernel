@@ -1015,15 +1015,17 @@ def _default_success_outcome_for_stage(stage: StageDef) -> str:
 
 def _retry_result_for_adapter_failure(
     *,
+    workflow: WorkflowDef,
     stage: StageDef,
     run: StageRun,
     registration: AdapterRegistration,
     adapter_result: AdapterResult,
     created_at: str,
 ) -> RunnerResult | None:
-    if not _retry_enabled(stage.retry):
+    retry_policy = _effective_retry_policy(workflow=workflow, stage=stage, registration=registration)
+    if not _retry_enabled(retry_policy):
         return None
-    max_attempts = _retry_max_attempts(stage.retry)
+    max_attempts = _retry_max_attempts(retry_policy)
     if run.attempt >= max_attempts:
         return None
     if not _retry_is_safe(registration, run):
@@ -1040,7 +1042,7 @@ def _retry_result_for_adapter_failure(
         decision="retry",
         failure_class=FailureClass.RUNTIME_FAILURE,
         failure_summary=f"Adapter returned {adapter_result.status}; queued append-only retry.",
-        retry_after_at=_retry_after_at(created_at, stage.retry),
+        retry_after_at=_retry_after_at(created_at, retry_policy),
     )
 
 
@@ -1309,7 +1311,19 @@ def _prior_human_decisions(ledger: WorkflowLedger, instance_id: str) -> list[dic
                 "selected_option": constraints.get("selected_option")
                 if isinstance(constraints, Mapping)
                 else None,
+                "longform_option": constraints.get("longform_option")
+                if isinstance(constraints, Mapping)
+                else None,
                 "choice_manifest_hash": constraints.get("choice_manifest_hash")
+                if isinstance(constraints, Mapping)
+                else None,
+                # operator_comments: inline `<...>` annotations the operator
+                # left on this gate card, carried as context only so a revise
+                # loop can read the located edit requests off the decision.
+                "operator_comments": constraints.get("operator_comments")
+                if isinstance(constraints, Mapping)
+                else None,
+                "annotated_draft": constraints.get("annotated_draft")
                 if isinstance(constraints, Mapping)
                 else None,
                 "receipt": receipt,
@@ -1516,7 +1530,25 @@ def _human_approval_from_surface_receipt(
     for flag in ("test_only", "non_live"):
         if flag in outputs:
             constraints[flag] = bool(outputs[flag])
-    for key in ("selected_option", "choice_manifest", "choice_manifest_hash"):
+    for key in (
+        "selected_option",
+        # longform_option: per-option routing to a long-form editorial pipeline
+        # (the `longform:<id>` boxes), carried so a downstream routing stage can
+        # commission essays. Like selected_option it records WHAT was chosen; it
+        # authorizes no publish (the essay lane has its own gates).
+        "longform_option",
+        "choice_manifest",
+        "choice_manifest_hash",
+        # operator_comments: inline `<...>` annotations the operator wrote on
+        # the card, carried as context only. They never authorize anything;
+        # the decision ledger keeps them so a revise loop (or any downstream
+        # consumer) can read the located edit requests.
+        "operator_comments",
+        # annotated_draft: the exact draft body region as the operator saw it,
+        # with inline pointy-bracket comments preserved. Context only; lets a
+        # revise loop treat broad editorial notes as whole-piece direction.
+        "annotated_draft",
+    ):
         if key in outputs:
             constraints[key] = to_plain_data(outputs[key])
     return (
@@ -1628,6 +1660,201 @@ def _prior_receipts(ledger: WorkflowLedger, instance_id: str) -> tuple[Mapping[s
             receipts.append({"unparseable_receipt": True})
     return tuple(receipts)
 
+
+def _effective_retry_policy(
+    *,
+    workflow: WorkflowDef,
+    stage: StageDef,
+    registration: AdapterRegistration,
+) -> Mapping[str, Any]:
+    if stage.retry:
+        return stage.retry
+    defaults = workflow.defaults.get("retry")
+    if isinstance(defaults, Mapping) and _retry_enabled(defaults):
+        return defaults
+    if (
+        registration.family == AdapterFamily.RUNTIME
+        and stage.type in (StageType.AGENT_WORK, StageType.AGENT_GATE, StageType.A2A_REVIEW_LOOP)
+        and _retry_is_safe(registration, StageRun(
+            stage_run_id=f"{stage.id}:retry-policy-probe",
+            instance_id=workflow.id,
+            stage_id=stage.id,
+            status=StageRunStatus.QUEUED,
+            idempotency_key=f"{workflow.id}:{stage.id}:retry-policy-probe",
+        ))
+    ):
+        return {"enabled": True, "max_attempts": 2, "backoff_seconds": 0}
+    return {}
+
+
+def _stage_binds_to(stage: StageDef) -> str | None:
+    """The wiring expression a gate's policy binds its approval to, if any.
+
+    ``binds_to:`` names the exact packet/receipt the operator is approving
+    (e.g. ``artifacts.validate_publish_packet.validated_publish_packet`` or
+    ``receipts.validate_editorial_state``). It used to be inert YAML; the
+    approval-hash producer below consumes it so a public-publish approval can
+    cryptographically pin the bytes it authorizes (architecture audit H2)."""
+    binds_to = stage.policy.get("binds_to")
+    return binds_to if isinstance(binds_to, str) and binds_to.strip() else None
+
+
+def _is_public_publish_gate(stage: StageDef) -> bool:
+    return str(stage.policy.get("class") or "").strip() == "public_publish"
+
+
+def _resolve_bound_content_hash(
+    binds_to: str,
+    ledger: WorkflowLedger,
+    instance_id: str,
+) -> str | None:
+    """Resolve a ``binds_to`` wiring expression to the content hash of the
+    packet it names, reading committed ledger state only.
+
+    ``artifacts.<stage>.<role>`` resolves to that artifact ref's content hash
+    (the same hash ``host.publish_internal`` recomputes over the packet body).
+    ``receipts.<stage>[.<role>]`` resolves to the content hash of the named
+    role in the latest receipt for that stage (its packet's ``content_hash``).
+    Returns None when the binding can't be resolved — the executor then fails
+    closed, exactly as it would with no hash at all."""
+    if binds_to.startswith("artifacts."):
+        by_stage = _artifacts_by_stage(_prior_artifact_refs(ledger, instance_id))
+        ref = _path_get(by_stage, binds_to.removeprefix("artifacts."))
+        if isinstance(ref, Mapping):
+            content_hash = ref.get("content_hash")
+            return str(content_hash) if content_hash else None
+        return None
+    if binds_to.startswith("receipts."):
+        by_stage = _receipts_by_stage(_prior_receipts_with_outputs(ledger, instance_id))
+        parts = binds_to.removeprefix("receipts.").split(".", 1)
+        stage_id = parts[0]
+        role = parts[1] if len(parts) > 1 else None
+        receipts = by_stage.get(stage_id)
+        if not isinstance(receipts, list) or not receipts:
+            return None
+        outputs = receipts[-1].get("outputs")
+        if not isinstance(outputs, Mapping):
+            return None
+        # With a role, hash the named packet; without one, fall back to any
+        # single packet-shaped output carrying a content_hash.
+        if role is not None:
+            packet = outputs.get(role)
+            if isinstance(packet, Mapping) and packet.get("content_hash"):
+                return str(packet["content_hash"])
+            return None
+        for value in outputs.values():
+            if isinstance(value, Mapping) and value.get("content_hash"):
+                return str(value["content_hash"])
+        return None
+    return None
+
+
+def _approval_with_bound_hash(
+    decision: HumanApprovalReceipt,
+    stage: StageDef,
+    ledger: WorkflowLedger,
+    instance_id: str,
+) -> HumanApprovalReceipt:
+    """Stamp ``approved_content_hash`` into a public-publish approval (H2).
+
+    When a ``public_publish`` gate (or any gate declaring ``binds_to:``) is
+    approved, resolve the exact packet hash it binds and record it in the
+    approval's constraints, where ``host.publish_internal`` looks for it. This
+    is the producer the executor's H2 check (``require_approval_hash``) was
+    written to consume. Fail closed: if the hash can't be resolved, leave it
+    absent so the executor blocks rather than publishing unbound bytes."""
+    if _decision_text(decision.decision) not in _APPROVING_HUMAN_DECISIONS:
+        return decision
+    binds_to = _stage_binds_to(stage)
+    if binds_to is None and not _is_public_publish_gate(stage):
+        return decision
+    if binds_to is None:
+        return decision
+    content_hash = _resolve_bound_content_hash(binds_to, ledger, instance_id)
+    if not content_hash:
+        return decision
+    constraints = dict(decision.constraints)
+    constraints["approved_content_hash"] = content_hash
+    constraints["approved_content_binds_to"] = binds_to
+    return replace(decision, constraints=constraints)
+
+
+def _content_bound_human_approval(
+    stage: StageDef,
+    run: StageRun,
+    ledger: WorkflowLedger,
+    *,
+    expected_fingerprint: str,
+    expected_action: str,
+    now: Any = None,
+) -> HumanApprovalReceipt | None:
+    """Authorize a downstream live-effect system_action by CONTENT, not re-approval.
+
+    A publish stage reached after a ``public_publish`` human gate carries no
+    fingerprint-matched approval of its own: the human approved the *gate*, whose
+    action fingerprint differs from this stage's. But the gate stamped the exact
+    packet content-hash into its approval (:func:`_approval_with_bound_hash`).
+    When this stage declares ``policy.binds_to:`` naming that same packet, and a
+    recorded, APPROVED, non-test human approval for this instance carries an
+    ``approved_content_hash`` equal to the bytes this stage will publish, the
+    human approved exactly this content. Return that approval re-stamped onto
+    this action's fingerprint so the policy engine allows it; the publish
+    adapter's H2 check independently re-verifies the same binding.
+
+    The content-hash equality below IS the authorization — it is checked here,
+    explicitly, against the ledger-committed approval. Anything that does not
+    match (no binds_to, unresolved packet hash, no approving decision, test-only,
+    revoked/expired, or a different content-hash) returns ``None`` and the stage
+    stays blocked."""
+    binds_to = _stage_binds_to(stage)
+    if binds_to is None:
+        return None
+    bound_hash = _resolve_bound_content_hash(binds_to, ledger, run.instance_id)
+    if not bound_hash:
+        return None
+    current_time = _coerce_datetime(now) or datetime.now(UTC)
+    for decision in reversed(_prior_human_decisions(ledger, run.instance_id)):
+        if _decision_text(decision.get("decision")) not in _APPROVING_HUMAN_DECISIONS:
+            continue
+        receipt = decision.get("receipt")
+        constraints = receipt.get("constraints") if isinstance(receipt, Mapping) else None
+        if not isinstance(constraints, Mapping):
+            continue
+        # A fixture/test approval can never authorize a live effect.
+        if constraints.get("test_only") is True or constraints.get("non_live") is True:
+            continue
+        # THE binding check: the human approved exactly these bytes.
+        if str(constraints.get("approved_content_hash") or "") != bound_hash:
+            continue
+        revoked_at = _coerce_datetime(receipt.get("revoked_at"))
+        if revoked_at is not None and revoked_at <= current_time:
+            continue
+        expires_at = _coerce_datetime(receipt.get("expires_at"))
+        if expires_at is not None and expires_at <= current_time:
+            continue
+        return HumanApprovalReceipt(
+            approval_id=str(receipt.get("approval_id") or decision.get("decision_id") or ""),
+            gate_id=str(receipt.get("gate_id") or decision.get("gate_id") or ""),
+            human_ref=str(receipt.get("human_ref") or decision.get("human_ref") or ""),
+            canonical_surface=str(
+                receipt.get("canonical_surface") or decision.get("canonical_surface") or ""
+            ),
+            decision=_approval_decision_value(decision.get("decision")),
+            # Re-stamped onto THIS action — justified only because the content
+            # hash matched above. The policy engine re-validates fingerprint,
+            # decision, revocation and expiry against this receipt.
+            exact_action_approved=expected_action,
+            action_fingerprint=expected_fingerprint,
+            evidence_refs=_string_tuple(receipt.get("evidence_refs", ())),
+            constraints=dict(constraints),
+            created_at=receipt.get("created_at") or decision.get("created_at"),
+            expires_at=receipt.get("expires_at"),
+            revoked_at=receipt.get("revoked_at"),
+            transcript_or_message_ref=str(receipt.get("transcript_or_message_ref") or "") or None,
+        )
+    return None
+
+
 __all__ = [
     "_index_transitions",
     "_effective_policy_for_stage",
@@ -1669,10 +1896,16 @@ __all__ = [
     "_with_default_lane_outcome",
     "_default_success_outcome_for_stage",
     "_retry_result_for_adapter_failure",
+    "_effective_retry_policy",
     "_retry_enabled",
     "_retry_max_attempts",
     "_retry_is_safe",
     "_retry_after_at",
+    "_stage_binds_to",
+    "_is_public_publish_gate",
+    "_resolve_bound_content_hash",
+    "_approval_with_bound_hash",
+    "_content_bound_human_approval",
     "_human_decision_validation_error",
     "_human_decision_outcome_candidates",
     "_decision_text",
