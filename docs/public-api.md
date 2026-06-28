@@ -1,7 +1,7 @@
 # Kernel Public API Surface
 
-The public API of the vendored kernel is exactly `agent_workflow_kernel.__all__`
-(135 names, frozen by `tests/test_kernel_public_api.py`). Anything not listed
+The public API of the kernel is exactly `agent_workflow_kernel.__all__`
+(136 names, frozen by `tests/test_kernel_public_api.py`). Anything not listed
 here is internal and may change without notice. Submodules prefixed `_`
 (`_internal_types`, `_helpers`) and any `local_adapters/_shared` are private.
 
@@ -60,7 +60,7 @@ from agent_workflow_kernel import WorkflowKernel, WorkflowLedger, load_workflow_
   `build_prompt_provenance`, `build_runtime_provenance`, `build_policy_snapshot`,
   `receipt_digest`, `digest_data`, `hash_text`.
 - Sessions: `canonical_actor_session_key`, `canonical_actor_session_binding`,
-  `ActorSessionBinding`, `ActorSessionScope`, related constants.
+  `ActorSessionBinding`, `ActorSessionScope`, `SessionBudget`, related constants.
 - Surface profiles: `SurfaceProfile`, `load_surface_profile`,
   `surface_profile_from_mapping`, `SurfaceProfileError`.
 - Parity: `ParityReport`, `ParityField`, `report_from_fixture`,

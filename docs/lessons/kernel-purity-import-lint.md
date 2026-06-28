@@ -4,7 +4,7 @@ type: pattern
 area: packages/kernel/agent_workflow_kernel
 date: 2026-06-17
 tags: [agnosticism, lint, vendoring, lane-host, ci]
-refs: [tools/import_lint.py, tests/test_kernel_import_lint.py, scripts/check.sh, docs/rearchitecture-plan.md]
+refs: [tools/import_lint.py, tests/test_kernel_import_lint.py, scripts/check.sh]
 ---
 
 # Kernel purity is a tested invariant, not a convention

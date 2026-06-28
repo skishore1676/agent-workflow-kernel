@@ -27,6 +27,16 @@ AWK is an active workflow-control layer. Selected OpenClaw lanes now use
 AWK-owned production entrypoints, and new lane work should either adopt AWK or
 explicitly document why a different rail is required.
 
+**Canonical single source (v0.3.0).** The kernel is one pip-installable,
+versioned package that every host consumes — there is no second copy. `0.2.0`
+folded in the rearchitecture (god-module split, kernel-purity import-lint,
+frozen public-API guard); `0.3.0` folded in the workflow features that had
+diverged into lane-host's old vendored copy (session budgets, stale-run
+parking/cancel + child sessions, content-bound publish-gate authorization,
+effective-retry policy). OpenClaw rides this package directly; lane-host is
+migrating off its vendored copy onto it. The frozen public surface is
+documented in [`docs/public-api.md`](docs/public-api.md).
+
 The living project control document is [`docs/control.md`](docs/control.md).
 For adopting a new lane, use the concise
 [`docs/lane-adoption-checklist.md`](docs/lane-adoption-checklist.md).

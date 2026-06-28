@@ -2,7 +2,7 @@
 """Kernel purity import-lint.
 
 Enforces the agnosticism invariant the lane-host program depends on
-(docs/rearchitecture-plan.md, Phase 1 acceptance gate):
+(see docs/lessons/kernel-purity-import-lint.md):
 
     packages/kernel/agent_workflow_kernel/** must import nothing from any
     provider/adapter sibling distribution.
