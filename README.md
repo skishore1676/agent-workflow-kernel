@@ -36,6 +36,8 @@ parking/cancel + child sessions, content-bound publish-gate authorization,
 effective-retry policy). OpenClaw rides this package directly; lane-host is
 migrating off its vendored copy onto it. The frozen public surface is
 documented in [`docs/public-api.md`](docs/public-api.md).
+Dependency policy for host consumers is in
+[`docs/DEPENDENCY_POLICY.md`](docs/DEPENDENCY_POLICY.md).
 
 The living project control document is [`docs/control.md`](docs/control.md).
 For adopting a new lane, use the concise
