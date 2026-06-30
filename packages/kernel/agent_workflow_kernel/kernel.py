@@ -65,6 +65,11 @@ from .storage import WorkflowLedger, iso_timestamp
 from ._internal_types import *  # noqa: F401,F403 (shared kernel types/constants)
 from ._helpers import *  # noqa: F401,F403 (kernel helper functions)
 
+try:  # pragma: no cover - PyYAML is a package dependency in normal installs.
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None
+
 
 @dataclass(frozen=True, slots=True)
 class KernelRuntimeConfig:
@@ -1338,6 +1343,9 @@ class WorkflowKernel:
             ],
             "effective_policy": to_plain_data(effective_policy),
         }
+        tool_permissions = _prompt_tool_permissions(bundle)
+        if tool_permissions:
+            permissions["tool_permissions"] = tool_permissions
         adapter_ref = registration.adapter_id if registration is not None else stage.adapter
         adapter_family = (
             registration.family.value
@@ -2165,6 +2173,29 @@ class WorkflowKernel:
             runtime_default_seconds=self.config.default_lease_seconds,
             explicit_lease_seconds=explicit_lease_seconds,
         )
+
+
+def _prompt_tool_permissions(bundle: Any) -> dict[str, Any]:
+    """Extract a policy-envelope tool_permissions block from resolved prompts."""
+
+    if yaml is None:
+        return {}
+    for prompt in getattr(bundle, "prompts", ()):
+        if getattr(getattr(prompt, "ref", None), "kind", None) != "policy":
+            continue
+        content = getattr(prompt, "content", "")
+        if not isinstance(content, str) or "tool_permissions:" not in content:
+            continue
+        try:
+            parsed = yaml.safe_load(content)
+        except Exception:
+            continue
+        if not isinstance(parsed, Mapping):
+            continue
+        permissions = parsed.get("tool_permissions")
+        if isinstance(permissions, Mapping):
+            return to_plain_data(permissions)
+    return {}
 
 
 __all__ = [

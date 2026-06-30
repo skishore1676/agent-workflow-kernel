@@ -17,6 +17,7 @@ from agent_workflow_kernel import (  # noqa: E402
     receipt_digest,
     render_context_packet,
 )
+from agent_workflow_kernel.kernel import _prompt_tool_permissions  # noqa: E402
 
 
 PROMPT_REFS = (
@@ -222,6 +223,62 @@ class PromptContextReceiptTest(unittest.TestCase):
         self.assertEqual(receipt.policy_snapshot["effective_permissions_digest"], rendered.tool_permissions_digest)
         self.assertEqual(receipt.policy_snapshot["denied"], ["external_send", "live_trade"])
         self.assertTrue(receipt_digest(receipt).startswith("sha256:"))
+
+    def test_policy_prompt_tool_permissions_can_be_extracted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "policies").mkdir(parents=True)
+            (root / "policies" / "web-scout.yaml").write_text(
+                "\n".join(
+                    [
+                        "schema_version: policy-envelope.v1",
+                        "id: policy.web_scout",
+                        "version: 1.0.0",
+                        "tool_permissions:",
+                        "  shell:",
+                        "    allowed: true",
+                        "    network: false",
+                        "  browser:",
+                        "    allowed: true",
+                        "  connectors:",
+                        "    allowed: []",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "registry.yaml").write_text(
+                "\n".join(
+                    [
+                        "schema_version: prompt-registry.v1",
+                        "registry_id: local",
+                        "prompts:",
+                        "  - id: policy.web_scout",
+                        "    kind: policy",
+                        "    version: 1.0.0",
+                        "    path: policies/web-scout.yaml",
+                        "    render_mode: yaml",
+                        "    status: active",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bundle = PromptRegistry.load(root).resolve(
+                (
+                    PromptRef(
+                        id="policy.web_scout",
+                        kind="policy",
+                        version="1.0.0",
+                        render_mode="yaml",
+                    ),
+                )
+            )
+
+        permissions = _prompt_tool_permissions(bundle)
+
+        self.assertEqual(permissions["browser"]["allowed"], True)
+        self.assertEqual(permissions["shell"]["network"], False)
 
 
 if __name__ == "__main__":
