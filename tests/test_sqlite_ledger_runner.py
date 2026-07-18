@@ -328,6 +328,11 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         with self.assertRaises(LedgerConflict):
             self.ledger.complete_stage_run(
                 stage_run_id="run-1", lease_token=claimed.lease_token,
+                actor="runner-b", now=self.created_at + timedelta(seconds=1),
+            )
+        with self.assertRaises(LedgerConflict):
+            self.ledger.complete_stage_run(
+                stage_run_id="run-1", lease_token=claimed.lease_token,
                 owner_id="runner-b", now=self.created_at + timedelta(seconds=1),
             )
         with self.assertRaises(LedgerConflict):

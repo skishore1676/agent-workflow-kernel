@@ -1168,7 +1168,7 @@ class WorkflowLedger:
         started_at = iso_timestamp(now)
         with self._transaction() as conn:
             row = self._require_leased_run(
-                conn, stage_run_id, lease_token, at=started_at, owner_id=owner_id,
+                conn, stage_run_id, lease_token, at=started_at, owner_id=owner_id or actor,
                 permitted_statuses={StageRunStatus.CLAIMED},
             )
             conn.execute(
@@ -1411,7 +1411,7 @@ class WorkflowLedger:
         completed_at = iso_timestamp(now)
         with self._transaction() as conn:
             row = self._require_leased_run(
-                conn, stage_run_id, lease_token, at=completed_at, owner_id=owner_id,
+                conn, stage_run_id, lease_token, at=completed_at, owner_id=owner_id or actor,
                 permitted_statuses=_ACTIVE_LEASE_STATUSES,
             )
             conn.execute(
@@ -1460,7 +1460,7 @@ class WorkflowLedger:
         retry_at = iso_timestamp(retry_after_at) if retry_after_at is not None else None
         with self._transaction() as conn:
             row = self._require_leased_run(
-                conn, stage_run_id, lease_token, at=failed_at, owner_id=owner_id,
+                conn, stage_run_id, lease_token, at=failed_at, owner_id=owner_id or actor,
                 permitted_statuses=_ACTIVE_LEASE_STATUSES,
             )
             conn.execute(
@@ -1513,7 +1513,7 @@ class WorkflowLedger:
         retry_at = iso_timestamp(retry_after_at)
         with self._transaction() as conn:
             row = self._require_leased_run(
-                conn, stage_run_id, lease_token, at=scheduled_at, owner_id=owner_id,
+                conn, stage_run_id, lease_token, at=scheduled_at, owner_id=owner_id or actor,
                 permitted_statuses=_ACTIVE_LEASE_STATUSES,
             )
             next_attempt_row = conn.execute(
@@ -1620,7 +1620,7 @@ class WorkflowLedger:
         blocked_at = iso_timestamp(now)
         with self._transaction() as conn:
             row = self._require_leased_run(
-                conn, stage_run_id, lease_token, at=blocked_at, owner_id=owner_id,
+                conn, stage_run_id, lease_token, at=blocked_at, owner_id=owner_id or actor,
                 permitted_statuses=_ACTIVE_LEASE_STATUSES,
             )
             conn.execute(
@@ -1670,7 +1670,7 @@ class WorkflowLedger:
         waiting_at = iso_timestamp(now)
         with self._transaction() as conn:
             row = self._require_leased_run(
-                conn, stage_run_id, lease_token, at=waiting_at, owner_id=owner_id,
+                conn, stage_run_id, lease_token, at=waiting_at, owner_id=owner_id or actor,
                 permitted_statuses=_ACTIVE_LEASE_STATUSES,
             )
             conn.execute(
@@ -2548,7 +2548,7 @@ class WorkflowLedger:
         lease_token: str,
         *,
         at: datetime | str,
-        owner_id: str | None = None,
+        owner_id: str,
         permitted_statuses: set[StageRunStatus] | frozenset[StageRunStatus],
     ) -> sqlite3.Row:
         """Validate all authority predicates at the exact mutation time.
@@ -2564,7 +2564,7 @@ class WorkflowLedger:
         ).fetchone()
         if row is None:
             raise LedgerConflict(f"stage run {stage_run_id!r} is not leased by this token")
-        if owner_id is not None and row["lease_owner"] != owner_id:
+        if row["lease_owner"] != owner_id:
             raise LedgerConflict(f"stage run {stage_run_id!r} is not leased by owner {owner_id!r}")
         if StageRunStatus(row["status"]) not in permitted_statuses:
             allowed = ", ".join(sorted(status.value for status in permitted_statuses))
