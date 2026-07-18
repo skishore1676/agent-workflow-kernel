@@ -1,6 +1,6 @@
 # Canonical Workflow Control Architecture and Migration Plan
 
-Status: Approved direction; implementation in progress
+Status: Candidate implementation proven; final independent review in progress
 Owner: Suman Choudhary
 Primary orchestrator: Codex Super Goal
 Last updated: 2026-07-18
@@ -773,14 +773,14 @@ when it adds durable workflow authority rather than duplicating it.
 
 | Requirement or claim | Evidence required | Status at plan publication |
 |---|---|---|
-| One canonical implementation | Dependency/import readback and vendor absence | Open |
-| Existing workflows preserved | Full suites plus cross-repo fixture matrix | Open |
-| Ledger compatibility | Frozen vendor ledger resumed by canonical AWK | Open |
-| Human gate safety preserved | Content/state/fingerprint positive and negative tests | Open |
-| Codebase reduced | Before/after tracked file and line counts | Baseline captured |
-| Control packets local-only | Ignore and tracked-file scans | In progress |
-| Independent design quality | Sol evaluator receipt and finding disposition | Open |
-| Independent implementation quality | Final adversarial evaluator receipt | Open |
+| One canonical implementation | Dependency/import readback and vendor absence | Proven in candidate commits and clean wheels |
+| Existing workflows preserved | Full suites plus cross-repo fixture matrix | Proven: AWK 285 plus 158 subtests; Lathi 385; Bus 174; Decision 95; Site clean build |
+| Ledger compatibility | Frozen vendor ledger resumed by canonical AWK | Proven by v0 fixture migration, reopen, rejection, backup, and restore tests |
+| Human gate safety preserved | Content/state/fingerprint positive and negative tests | Proven by the integrated five-hop round trip and fail-closed negatives |
+| Codebase reduced | Before/after tracked file and line counts | Proven: Decision commit removes 18,610 lines; vendored kernel accounts for 15,464 |
+| Control packets local-only | Ignore and tracked-file scans | Proven in all five candidate committed trees |
+| Independent design quality | Sol evaluator receipt and finding disposition | Proven: amended-design GO with no remaining blocker |
+| Independent implementation quality | Final adversarial evaluator receipt | In progress |
 
 Each open row must become Proven, explicitly Accepted Risk, or Blocked with an
 exact reason before the Super Goal can complete.
