@@ -1,6 +1,6 @@
 # Canonical Workflow Control Architecture and Migration Plan
 
-Status: Candidate implementation proven; final independent review in progress
+Status: Implementation complete; local source/package acceptance GO
 Owner: Suman Choudhary
 Primary orchestrator: Codex Super Goal
 Last updated: 2026-07-18
@@ -35,7 +35,7 @@ The architecture is conceptually sound but implementation ownership has drifted:
    20-file, 15,464-line vendor copied from the old Lane Host lineage.
 2. Decision Lanes imports that vendor both as `agent_workflow_kernel` and as
    `engine.agent_workflow_kernel`, creating two Python class identities.
-3. AWK's public surface exposes 136 names and includes testing, live-surface,
+3. AWK's public surface now exposes 146 names and includes testing, live-surface,
    personal-reviewer, and host-specific concerns alongside workflow law.
 4. Domain workflow definitions and prompts appear in AWK even though Lathi's
    ownership contract says packs own workflow shape, prompts, persona, and risk.
@@ -774,13 +774,13 @@ when it adds durable workflow authority rather than duplicating it.
 | Requirement or claim | Evidence required | Status at plan publication |
 |---|---|---|
 | One canonical implementation | Dependency/import readback and vendor absence | Proven in candidate commits and clean wheels |
-| Existing workflows preserved | Full suites plus cross-repo fixture matrix | Proven: AWK 285 plus 158 subtests; Lathi 385; Bus 174; Decision 95; Site clean build |
+| Existing workflows preserved | Full suites plus cross-repo fixture matrix | Proven: AWK 285 plus 158 subtests; Lathi 386; Bus 174; Decision 96; Site clean build |
 | Ledger compatibility | Frozen vendor ledger resumed by canonical AWK | Proven by v0 fixture migration, reopen, rejection, backup, and restore tests |
 | Human gate safety preserved | Content/state/fingerprint positive and negative tests | Proven by the integrated five-hop round trip and fail-closed negatives |
-| Codebase reduced | Before/after tracked file and line counts | Proven: Decision commit removes 18,610 lines; vendored kernel accounts for 15,464 |
+| Codebase reduced | Before/after tracked file and line counts | Proven: from the recorded baseline, Decision removes 18,562 lines; vendored kernel accounts for 15,464 |
 | Control packets local-only | Ignore and tracked-file scans | Proven in all five candidate committed trees |
 | Independent design quality | Sol evaluator receipt and finding disposition | Proven: amended-design GO with no remaining blocker |
-| Independent implementation quality | Final adversarial evaluator receipt | In progress |
+| Independent implementation quality | Final adversarial evaluator receipt | Proven: Sol final GO, no unresolved critical/high defect |
 
 Each open row must become Proven, explicitly Accepted Risk, or Blocked with an
 exact reason before the Super Goal can complete.

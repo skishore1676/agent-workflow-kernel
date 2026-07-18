@@ -1,7 +1,7 @@
 # Kernel Public API Surface
 
 The public API of the kernel is exactly `agent_workflow_kernel.__all__`
-(136 names, frozen by `tests/test_kernel_public_api.py`). Anything not listed
+(146 names, frozen by `tests/test_kernel_public_api.py`). Anything not listed
 here is internal and may change without notice. Submodules prefixed `_`
 (`_internal_types`, `_helpers`) and any `local_adapters/_shared` are private.
 
