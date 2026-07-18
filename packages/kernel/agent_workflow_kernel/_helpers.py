@@ -183,6 +183,8 @@ def _stage_action_request(
         workflow_id=workflow.id,
         instance_id=run.instance_id,
         stage_id=stage.id,
+        stage_run_id=run.stage_run_id,
+        workflow_definition_hash=digest_data(json.loads(workflow_to_canonical_json(workflow))),
         actor_ref=run.actor_ref,
         adapter_ref=adapter_ref,
         evidence_refs=evidence_refs,

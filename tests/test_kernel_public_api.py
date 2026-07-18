@@ -17,9 +17,9 @@ import agent_workflow_kernel as awk  # noqa: E402
 
 # Pinned at the baseline of the kernel-vendoring-readiness re-architecture.
 # Changing the public surface is a deliberate act: update this number with intent.
-# Bumped 135 -> 136 by the lane-host feature merge, which exports SessionBudget
-# from sessions.py as a deliberate addition to the public API surface.
-EXPECTED_EXPORT_COUNT = 136
+# Bumped 136 -> 146 for 0.4.0's deliberate ledger/release surface and the
+# adapter-facing status/hash contracts now required at the top level.
+EXPECTED_EXPORT_COUNT = 146
 
 
 class PublicApiSurfaceTest(unittest.TestCase):

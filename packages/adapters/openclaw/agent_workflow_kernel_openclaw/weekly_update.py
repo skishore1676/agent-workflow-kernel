@@ -12,17 +12,17 @@ from pathlib import Path
 import json
 from typing import Any, Mapping
 
-from agent_workflow_kernel.adapters import (
+from agent_workflow_kernel import (
     ADAPTER_STATUS_SUCCEEDED,
     make_adapter_receipt,
 )
-from agent_workflow_kernel.contracts import (
+from agent_workflow_kernel import (
     AdapterFamily,
     AdapterInvocation,
     Receipt,
     to_plain_data,
 )
-from agent_workflow_kernel.prompts import digest_data
+from agent_workflow_kernel import digest_data
 
 
 WEEKLY_UPDATE_FIXTURE_SCHEMA = "openclaw.weekly-update-fixture.v1"

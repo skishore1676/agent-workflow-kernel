@@ -60,6 +60,32 @@ class ImportLintTest(unittest.TestCase):
             violations = import_lint.find_violations(Path(tmp))
         self.assertEqual(violations, [])
 
+    def test_official_adapter_distributions_use_only_top_level_kernel_api(self) -> None:
+        adapters_root = ROOT / "packages" / "adapters"
+        violations = import_lint.find_private_kernel_imports(adapters_root)
+        rendered = [violation.render(adapters_root) for violation in violations]
+        self.assertEqual(violations, [], f"adapter nonpublic-kernel imports: {rendered}")
+
+    def test_detects_private_kernel_import_from_an_adapter(self) -> None:
+        with TemporaryDirectory() as tmp:
+            offending = Path(tmp) / "adapter.py"
+            offending.write_text(
+                "from agent_workflow_kernel._helpers import hidden\n",
+                encoding="utf-8",
+            )
+            violations = import_lint.find_private_kernel_imports(Path(tmp))
+        self.assertEqual(len(violations), 1)
+
+    def test_detects_documented_submodule_import_from_an_adapter(self) -> None:
+        with TemporaryDirectory() as tmp:
+            offending = Path(tmp) / "adapter.py"
+            offending.write_text(
+                "from agent_workflow_kernel.adapters import CapabilitySet\n",
+                encoding="utf-8",
+            )
+            violations = import_lint.find_private_kernel_imports(Path(tmp))
+        self.assertEqual(len(violations), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

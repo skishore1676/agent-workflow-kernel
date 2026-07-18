@@ -10,9 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from agent_workflow_kernel.adapters import RuntimeRef, SurfaceRef
-from agent_workflow_kernel.contracts import to_plain_data
-from agent_workflow_kernel.prompts import digest_data
+from agent_workflow_kernel import RuntimeRef, SurfaceRef, digest_data, to_plain_data
 
 
 OPENCLAW_IDENTITY_CROSSWALK_SCHEMA = "openclaw.awk_identity_crosswalk.v1"

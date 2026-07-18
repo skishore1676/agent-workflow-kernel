@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Mapping
 
-from agent_workflow_kernel.adapters import (
+from agent_workflow_kernel import (
     ADAPTER_STATUS_BLOCKED,
     ADAPTER_STATUS_SUCCEEDED,
     CapabilitySet,
@@ -14,7 +14,7 @@ from agent_workflow_kernel.adapters import (
     result_from_receipt,
     unsupported_operation_result,
 )
-from agent_workflow_kernel.contracts import (
+from agent_workflow_kernel import (
     AdapterFamily,
     AdapterInvocation,
     AdapterResult,
@@ -22,7 +22,7 @@ from agent_workflow_kernel.contracts import (
     Receipt,
     to_plain_data,
 )
-from agent_workflow_kernel.dsl import canonical_json
+from agent_workflow_kernel import canonical_json
 
 from .mapping import OpenClawReferenceMapping, mapping_from_fixture
 

@@ -29,7 +29,7 @@ from agent_workflow_kernel import (
     to_plain_data,
     unsupported_operation_result,
 )
-from agent_workflow_kernel.adapters import (
+from agent_workflow_kernel import (
     ADAPTER_STATUS_CANCELLED,
     ADAPTER_STATUS_FAILED,
     ADAPTER_STATUS_SUCCEEDED,

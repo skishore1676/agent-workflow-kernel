@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-workflow-kernel"
-version = "0.3.1"
+version = "0.4.0"
 description = "Portable workflow kernel for agent, human, script, and adapter-driven work."
 requires-python = ">=3.11"
 dependencies = [
@@ -28,6 +28,7 @@ where = [
   "packages/adapters/codex_sdk",
   "packages/adapters/artifact_validation",
   "packages/adapters/ivy",
+  "packages/adapters/x_digest",
 ]
 include = [
   "agent_workflow_kernel",
@@ -44,6 +45,8 @@ include = [
   "agent_workflow_kernel_codex_sdk.*",
   "agent_workflow_kernel_ivy",
   "agent_workflow_kernel_ivy.*",
+  "agent_workflow_kernel_x_digest",
+  "agent_workflow_kernel_x_digest.*",
 ]
 
 [tool.pytest.ini_options]

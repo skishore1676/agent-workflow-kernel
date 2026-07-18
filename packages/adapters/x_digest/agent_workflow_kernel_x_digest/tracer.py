@@ -23,7 +23,7 @@ from agent_workflow_kernel import (
     result_from_receipt,
     to_plain_data,
 )
-from agent_workflow_kernel.adapters import ADAPTER_STATUS_SUCCEEDED
+from agent_workflow_kernel import ADAPTER_STATUS_SUCCEEDED
 
 
 X_DIGEST_TRACER_SCHEMA = "awk.x_digest_tracer.v1"

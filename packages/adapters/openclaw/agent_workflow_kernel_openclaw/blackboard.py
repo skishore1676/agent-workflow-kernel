@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from agent_workflow_kernel import AdapterFamily, AdapterInvocation, ArtifactRef, Receipt, digest_data, to_plain_data
-from agent_workflow_kernel.adapters import (
+from agent_workflow_kernel import (
     ADAPTER_STATUS_BLOCKED,
     ADAPTER_STATUS_SUCCEEDED,
     CapabilitySet,

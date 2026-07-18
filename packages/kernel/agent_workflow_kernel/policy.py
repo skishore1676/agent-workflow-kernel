@@ -92,6 +92,15 @@ class ActionRequest:
     workflow_id: str = "workflow"
     instance_id: str = "instance"
     stage_id: str = "stage"
+    # An approval governs one immutable workflow attempt, not merely a
+    # similarly named action.  Keep this authority data first-class so it is
+    # always included in the fingerprint rather than being an optional
+    # convention inside ``arguments``.
+    stage_run_id: str | None = None
+    workflow_definition_hash: str | None = None
+    allowed_decisions: tuple[str, ...] = ()
+    state_constraints: Mapping[str, Any] = field(default_factory=dict)
+    expires_at: datetime | str | None = None
     actor_ref: str | None = None
     adapter_ref: str | None = None
     evidence_refs: tuple[str, ...] = ()
@@ -134,6 +143,14 @@ def action_fingerprint(
     context_packet_digest: str | None = None,
     risk_classes: tuple[RiskClass, ...] = (),
     hard_gates: tuple[HardGate, ...] = (),
+    workflow_id: str | None = None,
+    instance_id: str | None = None,
+    stage_id: str | None = None,
+    stage_run_id: str | None = None,
+    workflow_definition_hash: str | None = None,
+    allowed_decisions: tuple[str, ...] = (),
+    state_constraints: Mapping[str, Any] | None = None,
+    expires_at: datetime | str | None = None,
 ) -> str:
     """Return a stable digest for the exact action inputs that require approval."""
 
@@ -145,6 +162,16 @@ def action_fingerprint(
         "context_packet_digest": context_packet_digest,
         "risk_classes": sorted(_canonical_data(risk_classes)),
         "hard_gates": sorted(_canonical_data(hard_gates)),
+        "authority": {
+            "workflow_id": workflow_id,
+            "instance_id": instance_id,
+            "stage_id": stage_id,
+            "stage_run_id": stage_run_id,
+            "workflow_definition_hash": workflow_definition_hash,
+            "allowed_decisions": sorted(_canonical_data(allowed_decisions)),
+            "state_constraints": _canonical_data(state_constraints or {}),
+            "expires_at": _canonical_timestamp(expires_at),
+        },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -159,6 +186,14 @@ def fingerprint_request(request: ActionRequest) -> str:
         context_packet_digest=request.context_packet_digest,
         risk_classes=request.risk_classes,
         hard_gates=request.hard_gates,
+        workflow_id=request.workflow_id,
+        instance_id=request.instance_id,
+        stage_id=request.stage_id,
+        stage_run_id=request.stage_run_id,
+        workflow_definition_hash=request.workflow_definition_hash,
+        allowed_decisions=request.allowed_decisions,
+        state_constraints=request.state_constraints,
+        expires_at=request.expires_at,
     )
 
 
@@ -333,3 +368,8 @@ def _coerce_datetime(value: datetime | str | None) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _canonical_timestamp(value: datetime | str | None) -> str | None:
+    parsed = _coerce_datetime(value)
+    return parsed.isoformat(timespec="microseconds") if parsed is not None else None

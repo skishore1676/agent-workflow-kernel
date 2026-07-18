@@ -74,10 +74,38 @@ def find_violations(root: Path) -> list[Violation]:
     return violations
 
 
+def find_private_kernel_imports(root: Path) -> list[Violation]:
+    """Reject adapter imports below AWK's top-level public API.
+
+    Separately distributed official adapters are consumers too. Keeping them
+    on the same top-level contract prevents an internal module move from
+    becoming a coordinated multi-package migration.
+    """
+    violations: list[Violation] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            module = ""
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("agent_workflow_kernel."):
+                        violations.append(Violation(path, node.lineno, alias.name))
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                module = node.module
+                if module.startswith("agent_workflow_kernel."):
+                    violations.append(Violation(path, node.lineno, module))
+    return violations
+
+
 def default_kernel_root() -> Path:
     # tools/import_lint.py -> repo root is parent of tools/.
     repo_root = Path(__file__).resolve().parent.parent
     return repo_root / "packages" / "kernel" / "agent_workflow_kernel"
+
+
+def default_adapters_root() -> Path:
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / "packages" / "adapters"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=default_kernel_root(),
         help="Directory tree to check (default: the kernel package).",
+    )
+    parser.add_argument(
+        "--adapters-root",
+        type=Path,
+        default=default_adapters_root(),
+        help="Official adapter tree that must use only the top-level AWK API.",
     )
     args = parser.parse_args(argv)
     root = args.root.resolve()
@@ -101,7 +135,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {v.render(root)}")
         print(f"\n{len(violations)} violation(s). The kernel must stay agent-agnostic.")
         return 1
-    print(f"import_lint: OK — {root.name} is import-pure of provider/adapter packages.")
+    adapters_root = args.adapters_root.resolve()
+    adapter_violations = (
+        find_private_kernel_imports(adapters_root) if adapters_root.exists() else []
+    )
+    if adapter_violations:
+        print("Adapter boundary violations (official adapters use top-level AWK only):")
+        for violation in adapter_violations:
+            print(f"  {violation.render(adapters_root)}")
+        print(f"\n{len(adapter_violations)} adapter boundary violation(s).")
+        return 1
+    print(
+        f"import_lint: OK — {root.name} is import-pure and official adapters "
+        "use only the top-level AWK API."
+    )
     return 0
 
 

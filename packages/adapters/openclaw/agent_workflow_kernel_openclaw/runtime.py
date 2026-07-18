@@ -26,14 +26,14 @@ from agent_workflow_kernel import (
     result_from_receipt,
     to_plain_data,
 )
-from agent_workflow_kernel.adapters import (
+from agent_workflow_kernel import (
     ADAPTER_STATUS_CANCELLED,
     ADAPTER_STATUS_FAILED,
     ADAPTER_STATUS_SUCCEEDED,
 )
-from agent_workflow_kernel.adapters import unsupported_operation_result
+from agent_workflow_kernel import unsupported_operation_result
 from agent_workflow_kernel import digest_data
-from agent_workflow_kernel.prompts import hash_bytes
+from agent_workflow_kernel import hash_bytes
 
 
 OPENCLAW_AGENT_RUNTIME_SCHEMA = "openclaw.agent_runtime.v1"

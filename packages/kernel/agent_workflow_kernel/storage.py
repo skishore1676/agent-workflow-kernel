@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -31,6 +32,40 @@ UTC = timezone.utc
 
 class LedgerConflict(RuntimeError):
     """Raised when a leased run cannot be mutated by the caller."""
+
+
+class LedgerSchemaError(RuntimeError):
+    """Raised before touching a database that is not a supported ledger shape."""
+
+
+LEDGER_SCHEMA_VERSION = 1
+
+# The v0 family was deliberately frozen at the last pre-versioned layout.
+# A v0 database must have every durable domain table; optional columns added by
+# old rolling upgrades are normalized by the atomic v0 -> v1 migration.
+_V0_REQUIRED_TABLES = frozenset(
+    {
+        "workflow_instances",
+        "stage_runs",
+        "receipts",
+        "artifact_refs",
+        "adapter_invocations",
+        "events",
+        "child_sessions",
+        "human_decisions",
+    }
+)
+
+_V0_REQUIRED_COLUMNS = {
+    "workflow_instances": {"instance_id", "workflow_def_id", "workflow_version", "status", "input_hash", "created_at", "updated_at"},
+    "stage_runs": {"stage_run_id", "instance_id", "stage_id", "attempt", "status", "input_hash", "created_at", "updated_at"},
+    "receipts": {"receipt_id", "instance_id", "receipt_json", "created_at"},
+    "artifact_refs": {"artifact_id", "instance_id", "content_hash", "created_at"},
+    "adapter_invocations": {"invocation_id", "instance_id", "stage_run_id", "status", "invocation_json", "started_at"},
+    "events": {"event_sequence", "event_id", "instance_id", "event_type", "payload_json", "created_at"},
+    "child_sessions": {"child_session_id", "parent_stage_run_id", "status", "created_at", "updated_at"},
+    "human_decisions": {"decision_id", "instance_id", "stage_run_id", "action_fingerprint", "receipt_json", "created_at"},
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -69,6 +104,17 @@ def _failure_value(value: FailureClass | str | None) -> str | None:
     return value.value if hasattr(value, "value") else str(value)
 
 
+_ACTIVE_LEASE_STATUSES: frozenset[StageRunStatus] = frozenset(
+    {
+        StageRunStatus.CLAIMED,
+        StageRunStatus.STARTED,
+        StageRunStatus.WAITING,
+        StageRunStatus.WAITING_ON_CHILD,
+        StageRunStatus.VALIDATING,
+    }
+)
+
+
 def _decision_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
@@ -85,14 +131,49 @@ class WorkflowLedger:
         self.connection = sqlite3.connect(self.database)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA journal_mode = WAL")
 
     def close(self) -> None:
         self.connection.close()
 
     def initialize(self) -> None:
+        """Open only a known ledger shape and advance it to schema v1.
+
+        Version validation happens before any schema DDL, `ALTER`, index work,
+        or journal setting.  This protects a future/corrupt database from the
+        old `CREATE IF NOT EXISTS` behaviour which could mutate it before
+        refusing to operate.
+        """
+        version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+        tables = self._user_tables()
+        if version > LEDGER_SCHEMA_VERSION or version < 0:
+            raise LedgerSchemaError(
+                f"unsupported ledger schema version {version}; supported versions are 0 and {LEDGER_SCHEMA_VERSION}"
+            )
+        if not tables:
+            if version != 0:
+                raise LedgerSchemaError(
+                    f"empty ledger has schema version {version}, expected 0"
+                )
+            try:
+                self._initialize_schema_unversioned()
+                self.connection.execute(f"PRAGMA user_version = {LEDGER_SCHEMA_VERSION}")
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+            self.connection.execute("PRAGMA journal_mode = WAL")
+            return
+        if version == 0:
+            self._validate_v0_shape(tables)
+            self._migrate_v0_to_v1()
+        else:
+            self._validate_v1_shape(tables)
+        self.connection.execute("PRAGMA journal_mode = WAL")
+
+    def _initialize_schema_unversioned(self) -> None:
         self.connection.executescript(
             """
+            BEGIN IMMEDIATE;
             PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS workflow_instances (
@@ -240,6 +321,20 @@ class WorkflowLedger:
               created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS late_results (
+              late_result_id TEXT PRIMARY KEY,
+              instance_id TEXT NOT NULL REFERENCES workflow_instances(instance_id),
+              stage_run_id TEXT NOT NULL REFERENCES stage_runs(stage_run_id),
+              reported_lease_token TEXT,
+              reported_owner TEXT,
+              result_kind TEXT NOT NULL,
+              result_hash TEXT,
+              external_ref TEXT,
+              evidence_json TEXT NOT NULL,
+              observed_at TEXT NOT NULL,
+              recorded_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_workflow_instances_created
               ON workflow_instances (created_at DESC, instance_id);
             CREATE INDEX IF NOT EXISTS idx_workflow_instances_updated
@@ -271,6 +366,8 @@ class WorkflowLedger:
               ON receipts (instance_id, status, created_at DESC, receipt_id DESC);
             CREATE INDEX IF NOT EXISTS idx_receipts_stage_run
               ON receipts (stage_run_id, created_at DESC, receipt_id DESC);
+            CREATE INDEX IF NOT EXISTS idx_late_results_stage_run
+              ON late_results (stage_run_id, recorded_at DESC, late_result_id DESC);
             """
         )
         for column_name, column_sql in (
@@ -290,6 +387,145 @@ class WorkflowLedger:
             ("workflow_source_uri", "workflow_source_uri TEXT"),
         ):
             self._ensure_workflow_instance_column(column_name, column_sql)
+
+    def _user_tables(self) -> set[str]:
+        return {
+            str(row["name"])
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        }
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        return {
+            str(row["name"])
+            for row in self.connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+
+    def _validate_v0_shape(self, tables: set[str]) -> None:
+        missing_tables = _V0_REQUIRED_TABLES - tables
+        if missing_tables:
+            raise LedgerSchemaError(
+                "malformed v0 ledger; missing required tables: " + ", ".join(sorted(missing_tables))
+            )
+        for table_name, required_columns in _V0_REQUIRED_COLUMNS.items():
+            missing_columns = required_columns - self._table_columns(table_name)
+            if missing_columns:
+                raise LedgerSchemaError(
+                    f"malformed v0 ledger; {table_name} is missing required columns: "
+                    + ", ".join(sorted(missing_columns))
+                )
+
+    def _validate_v1_shape(self, tables: set[str]) -> None:
+        required_tables = _V0_REQUIRED_TABLES | {"late_results"}
+        missing_tables = required_tables - tables
+        if missing_tables:
+            raise LedgerSchemaError(
+                "malformed v1 ledger; missing required tables: " + ", ".join(sorted(missing_tables))
+            )
+        self._validate_v0_shape(tables)
+        required_stage_columns = {
+            "prompt_hash",
+            "context_packet_ref",
+            "context_packet_hash",
+            "rendered_context_hash",
+            "lease_seconds",
+            "lease_source",
+            "lease_source_ref",
+        }
+        missing_stage_columns = required_stage_columns - self._table_columns("stage_runs")
+        if missing_stage_columns:
+            raise LedgerSchemaError(
+                "malformed v1 ledger; stage_runs is missing required columns: "
+                + ", ".join(sorted(missing_stage_columns))
+            )
+        required_instance_columns = {
+            "input_snapshot_json",
+            "workflow_definition_json",
+            "workflow_definition_hash",
+            "workflow_source_uri",
+        }
+        missing_instance_columns = required_instance_columns - self._table_columns("workflow_instances")
+        if missing_instance_columns:
+            raise LedgerSchemaError(
+                "malformed v1 ledger; workflow_instances is missing required columns: "
+                + ", ".join(sorted(missing_instance_columns))
+            )
+
+    def _migrate_v0_to_v1(self) -> None:
+        """Advance the frozen v0 layout atomically, preserving every row.
+
+        The only legal migration is v0 -> v1.  Any exception (including an
+        injected SQLite failure) rolls back both DDL and `user_version`, so a
+        caller can safely restore its pre-migration copy and retry.
+        """
+        with self._transaction() as conn:
+            for column_name, column_sql in (
+                ("prompt_hash", "prompt_hash TEXT"),
+                ("context_packet_ref", "context_packet_ref TEXT"),
+                ("context_packet_hash", "context_packet_hash TEXT"),
+                ("rendered_context_hash", "rendered_context_hash TEXT"),
+                ("lease_seconds", "lease_seconds INTEGER"),
+                ("lease_source", "lease_source TEXT"),
+                ("lease_source_ref", "lease_source_ref TEXT"),
+            ):
+                self._ensure_stage_run_column(column_name, column_sql)
+            for column_name, column_sql in (
+                ("input_snapshot_json", "input_snapshot_json TEXT"),
+                ("workflow_definition_json", "workflow_definition_json TEXT"),
+                ("workflow_definition_hash", "workflow_definition_hash TEXT"),
+                ("workflow_source_uri", "workflow_source_uri TEXT"),
+            ):
+                self._ensure_workflow_instance_column(column_name, column_sql)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS late_results (
+                  late_result_id TEXT PRIMARY KEY,
+                  instance_id TEXT NOT NULL REFERENCES workflow_instances(instance_id),
+                  stage_run_id TEXT NOT NULL REFERENCES stage_runs(stage_run_id),
+                  reported_lease_token TEXT,
+                  reported_owner TEXT,
+                  result_kind TEXT NOT NULL,
+                  result_hash TEXT,
+                  external_ref TEXT,
+                  evidence_json TEXT NOT NULL,
+                  observed_at TEXT NOT NULL,
+                  recorded_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_late_results_stage_run "
+                "ON late_results (stage_run_id, recorded_at DESC, late_result_id DESC)"
+            )
+            conn.execute(f"PRAGMA user_version = {LEDGER_SCHEMA_VERSION}")
+        self._validate_v1_shape(self._user_tables())
+
+    def backup_to(self, destination: str | Path) -> str:
+        """Create a verified SQLite backup and return its SHA-256 digest."""
+        destination_path = Path(destination)
+        if destination_path.resolve() == Path(self.database).resolve():
+            raise ValueError("backup destination must differ from the active ledger")
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(destination_path) as backup:
+            self.connection.backup(backup)
+            integrity = backup.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                raise LedgerSchemaError(f"backup integrity check failed: {integrity}")
+        return _sha256_file(destination_path)
+
+    def restore_from_backup(self, source: str | Path) -> str:
+        """Restore a verified SQLite backup into this open ledger connection."""
+        source_path = Path(source)
+        if not source_path.is_file():
+            raise FileNotFoundError(source_path)
+        with sqlite3.connect(source_path) as backup:
+            integrity = backup.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                raise LedgerSchemaError(f"backup integrity check failed: {integrity}")
+            backup.backup(self.connection)
+        self.initialize()
+        return _sha256_file(source_path)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -882,7 +1118,12 @@ class WorkflowLedger:
                 """,
                 (stage_run_id, owner_id, lease_token),
             ).fetchone()
-            if row is None or (row["lease_expires_at"] and row["lease_expires_at"] <= renewed_at):
+            if row is None or (
+                row["lease_expires_at"]
+                and _coerce_datetime(row["lease_expires_at"]) <= _coerce_datetime(renewed_at)
+            ):
+                return False
+            if StageRunStatus(row["status"]) not in _ACTIVE_LEASE_STATUSES:
                 return False
             conn.execute(
                 """
@@ -909,6 +1150,7 @@ class WorkflowLedger:
         stage_run_id: str,
         lease_token: str,
         actor: str,
+        owner_id: str | None = None,
         idempotency_key: str | None = None,
         side_effect_scope: dict[str, Any] | None = None,
         adapter_family: str | None = None,
@@ -925,7 +1167,10 @@ class WorkflowLedger:
 
         started_at = iso_timestamp(now)
         with self._transaction() as conn:
-            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            row = self._require_leased_run(
+                conn, stage_run_id, lease_token, at=started_at, owner_id=owner_id,
+                permitted_statuses={StageRunStatus.CLAIMED},
+            )
             conn.execute(
                 """
                 UPDATE stage_runs
@@ -1161,10 +1406,14 @@ class WorkflowLedger:
         output_hash: str | None = None,
         now: datetime | str | None = None,
         actor: str = "runner",
+        owner_id: str | None = None,
     ) -> None:
         completed_at = iso_timestamp(now)
         with self._transaction() as conn:
-            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            row = self._require_leased_run(
+                conn, stage_run_id, lease_token, at=completed_at, owner_id=owner_id,
+                permitted_statuses=_ACTIVE_LEASE_STATUSES,
+            )
             conn.execute(
                 """
                 UPDATE stage_runs
@@ -1205,11 +1454,15 @@ class WorkflowLedger:
         retry_after_at: datetime | str | None = None,
         now: datetime | str | None = None,
         actor: str = "runner",
+        owner_id: str | None = None,
     ) -> None:
         failed_at = iso_timestamp(now)
         retry_at = iso_timestamp(retry_after_at) if retry_after_at is not None else None
         with self._transaction() as conn:
-            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            row = self._require_leased_run(
+                conn, stage_run_id, lease_token, at=failed_at, owner_id=owner_id,
+                permitted_statuses=_ACTIVE_LEASE_STATUSES,
+            )
             conn.execute(
                 """
                 UPDATE stage_runs
@@ -1254,11 +1507,15 @@ class WorkflowLedger:
         retry_after_at: datetime | str,
         now: datetime | str | None = None,
         actor: str = "runner",
+        owner_id: str | None = None,
     ) -> None:
         scheduled_at = iso_timestamp(now)
         retry_at = iso_timestamp(retry_after_at)
         with self._transaction() as conn:
-            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            row = self._require_leased_run(
+                conn, stage_run_id, lease_token, at=scheduled_at, owner_id=owner_id,
+                permitted_statuses=_ACTIVE_LEASE_STATUSES,
+            )
             next_attempt_row = conn.execute(
                 """
                 SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
@@ -1358,10 +1615,14 @@ class WorkflowLedger:
         approval_required: bool = False,
         now: datetime | str | None = None,
         actor: str = "runner",
+        owner_id: str | None = None,
     ) -> None:
         blocked_at = iso_timestamp(now)
         with self._transaction() as conn:
-            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            row = self._require_leased_run(
+                conn, stage_run_id, lease_token, at=blocked_at, owner_id=owner_id,
+                permitted_statuses=_ACTIVE_LEASE_STATUSES,
+            )
             conn.execute(
                 """
                 UPDATE stage_runs
@@ -1404,10 +1665,14 @@ class WorkflowLedger:
         failure_summary: str,
         now: datetime | str | None = None,
         actor: str = "runner",
+        owner_id: str | None = None,
     ) -> None:
         waiting_at = iso_timestamp(now)
         with self._transaction() as conn:
-            row = self._require_leased_run(conn, stage_run_id, lease_token)
+            row = self._require_leased_run(
+                conn, stage_run_id, lease_token, at=waiting_at, owner_id=owner_id,
+                permitted_statuses=_ACTIVE_LEASE_STATUSES,
+            )
             conn.execute(
                 """
                 UPDATE stage_runs
@@ -1789,12 +2054,12 @@ class WorkflowLedger:
                 SELECT * FROM stage_runs
                 WHERE lease_token IS NOT NULL
                   AND lease_expires_at IS NOT NULL
-                  AND lease_expires_at <= ?
                 ORDER BY lease_expires_at, stage_run_id
                 """,
-                (swept_at,),
             ).fetchall()
             for row in rows:
+                if _coerce_datetime(row["lease_expires_at"]) > _coerce_datetime(swept_at):
+                    continue
                 previous_status = StageRunStatus(row["status"])
                 if row["status"] in requeue_statuses:
                     if _stage_run_has_start_evidence(conn, row["stage_run_id"]):
@@ -1975,6 +2240,99 @@ class WorkflowLedger:
                 )
                 repaired.append(row["instance_id"])
         return repaired
+
+    def record_late_result(
+        self,
+        *,
+        stage_run_id: str,
+        result_kind: str,
+        evidence: Any,
+        reported_lease_token: str | None = None,
+        reported_owner: str | None = None,
+        result_hash: str | None = None,
+        external_ref: str | None = None,
+        observed_at: datetime | str | None = None,
+        actor: str = "reconciliation",
+    ) -> str:
+        """Store a late external result as evidence without changing stage state.
+
+        This is intentionally not a recovery shortcut.  A completion/failure
+        received after a lease was swept, stolen, or expired is useful for
+        reconciliation, but it cannot authoritatively complete the old run.
+        An operator or a domain-specific reconciliation workflow must decide
+        what to do next from this append-only record.
+        """
+        recorded_at = iso_timestamp()
+        observed = iso_timestamp(observed_at)
+        late_result_id = f"late:{stage_run_id}:{uuid.uuid4().hex}"
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT instance_id, status FROM stage_runs WHERE stage_run_id = ?",
+                (stage_run_id,),
+            ).fetchone()
+            if row is None:
+                raise LedgerConflict(f"stage run {stage_run_id!r} does not exist")
+            conn.execute(
+                """
+                INSERT INTO late_results (
+                  late_result_id, instance_id, stage_run_id, reported_lease_token,
+                  reported_owner, result_kind, result_hash, external_ref,
+                  evidence_json, observed_at, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    late_result_id,
+                    row["instance_id"],
+                    stage_run_id,
+                    reported_lease_token,
+                    reported_owner,
+                    result_kind,
+                    result_hash,
+                    external_ref,
+                    _json(evidence),
+                    observed,
+                    recorded_at,
+                ),
+            )
+            self._append_event(
+                conn,
+                instance_id=row["instance_id"],
+                stage_run_id=stage_run_id,
+                event_type="late_result_recorded",
+                actor=actor,
+                payload={
+                    "late_result_id": late_result_id,
+                    "result_kind": result_kind,
+                    "result_hash": result_hash,
+                    "external_ref": external_ref,
+                    "reported_owner": reported_owner,
+                    "reported_lease_token": reported_lease_token,
+                    "non_authoritative": True,
+                    "stage_status_at_recording": row["status"],
+                },
+                created_at=recorded_at,
+            )
+        return late_result_id
+
+    def list_late_results(self, *, stage_run_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT * FROM late_results WHERE stage_run_id = ? ORDER BY recorded_at, late_result_id",
+            (stage_run_id,),
+        ).fetchall()
+        return [
+            {
+                "late_result_id": row["late_result_id"],
+                "stage_run_id": row["stage_run_id"],
+                "result_kind": row["result_kind"],
+                "result_hash": row["result_hash"],
+                "external_ref": row["external_ref"],
+                "evidence": _loads_json(row["evidence_json"]),
+                "observed_at": row["observed_at"],
+                "recorded_at": row["recorded_at"],
+                "non_authoritative": True,
+            }
+            for row in rows
+        ]
 
     def list_events(self, *, stage_run_id: str | None = None) -> list[dict[str, Any]]:
         if stage_run_id is None:
@@ -2184,14 +2542,39 @@ class WorkflowLedger:
             self.connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
 
     def _require_leased_run(
-        self, conn: sqlite3.Connection, stage_run_id: str, lease_token: str
+        self,
+        conn: sqlite3.Connection,
+        stage_run_id: str,
+        lease_token: str,
+        *,
+        at: datetime | str,
+        owner_id: str | None = None,
+        permitted_statuses: set[StageRunStatus] | frozenset[StageRunStatus],
     ) -> sqlite3.Row:
+        """Validate all authority predicates at the exact mutation time.
+
+        This deliberately treats equality as expired: a lease authorizes times
+        strictly before ``lease_expires_at``.  Callers that received an
+        external result after this check must use ``record_late_result``;
+        they cannot turn that evidence into a terminal state transition.
+        """
         row = conn.execute(
             "SELECT * FROM stage_runs WHERE stage_run_id = ? AND lease_token = ?",
             (stage_run_id, lease_token),
         ).fetchone()
         if row is None:
             raise LedgerConflict(f"stage run {stage_run_id!r} is not leased by this token")
+        if owner_id is not None and row["lease_owner"] != owner_id:
+            raise LedgerConflict(f"stage run {stage_run_id!r} is not leased by owner {owner_id!r}")
+        if StageRunStatus(row["status"]) not in permitted_statuses:
+            allowed = ", ".join(sorted(status.value for status in permitted_statuses))
+            raise LedgerConflict(
+                f"stage run {stage_run_id!r} has status {row['status']!r}; expected one of {allowed}"
+            )
+        expires_at = row["lease_expires_at"]
+        mutation_time = _coerce_datetime(iso_timestamp(at))
+        if expires_at is None or _coerce_datetime(expires_at) <= mutation_time:
+            raise LedgerConflict(f"stage run {stage_run_id!r} lease is expired at mutation time")
         return row
 
     def _append_event(
@@ -2272,6 +2655,14 @@ def _coerce_datetime(value: datetime | str) -> datetime:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
     return datetime.fromisoformat(value).astimezone(UTC)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _positive_int(value: Any, label: str) -> int:

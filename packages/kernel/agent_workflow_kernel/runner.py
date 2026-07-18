@@ -143,6 +143,7 @@ class WorkflowRunner:
             stage_run_id=run.stage_run_id,
             lease_token=run.lease_token,
             actor=self.owner_id,
+            owner_id=self.owner_id,
             idempotency_key=run.idempotency_key,
             side_effect_scope={
                 "boundary": "stage_handler",
@@ -166,6 +167,7 @@ class WorkflowRunner:
                 failure_summary=str(exc),
                 now=now,
                 actor=self.owner_id,
+                owner_id=self.owner_id,
             )
             return RunnerStep(stage_run=run, decision="failed")
 
@@ -180,6 +182,7 @@ class WorkflowRunner:
                 output_hash=result.output_hash,
                 now=now,
                 actor=self.owner_id,
+                owner_id=self.owner_id,
             )
         elif result.decision == "retry":
             if result.retry_after_at is None:
@@ -192,6 +195,7 @@ class WorkflowRunner:
                 retry_after_at=result.retry_after_at,
                 now=now,
                 actor=self.owner_id,
+                owner_id=self.owner_id,
             )
         elif result.decision == "blocked":
             self.ledger.block_stage_run(
@@ -202,6 +206,7 @@ class WorkflowRunner:
                 approval_required=result.approval_required,
                 now=now,
                 actor=self.owner_id,
+                owner_id=self.owner_id,
             )
         elif result.decision == "waiting_on_human":
             self.ledger.wait_stage_run_for_human_decision(
@@ -211,6 +216,7 @@ class WorkflowRunner:
                 failure_summary=result.failure_summary or "Stage is waiting on a human decision.",
                 now=now,
                 actor=self.owner_id,
+                owner_id=self.owner_id,
             )
         elif result.decision == "failed":
             self.ledger.fail_stage_run(
@@ -221,6 +227,7 @@ class WorkflowRunner:
                 status=_status_for_failure(result.failure_class),
                 now=now,
                 actor=self.owner_id,
+                owner_id=self.owner_id,
             )
         else:
             raise ValueError(f"unknown runner decision: {result.decision!r}")

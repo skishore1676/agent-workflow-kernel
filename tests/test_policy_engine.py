@@ -1,5 +1,6 @@
 import sys
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -140,6 +141,34 @@ class PolicyEngineTest(unittest.TestCase):
         )
 
         self.assertEqual(first, second)
+
+    def test_fingerprint_binds_workflow_attempt_definition_artifacts_and_expiry(self) -> None:
+        base = ActionRequest(
+            action="human_decision",
+            target_ref="surface.local",
+            arguments={"choice": "approve"},
+            artifact_hashes=("sha256:artifact-a",),
+            context_packet_digest="sha256:context-a",
+            workflow_id="workflow-a",
+            instance_id="instance-a",
+            stage_id="review",
+            stage_run_id="instance-a:review:1",
+            workflow_definition_hash="sha256:definition-a",
+            allowed_decisions=("approve", "revise"),
+            state_constraints={"required_stage_run_status": "waiting_on_human"},
+            expires_at="2026-06-01T00:00:00Z",
+        )
+        baseline = fingerprint_request(base)
+        for changed in (
+            replace(base, artifact_hashes=("sha256:artifact-b",)),
+            replace(base, workflow_definition_hash="sha256:definition-b"),
+            replace(base, context_packet_digest="sha256:context-b"),
+            replace(base, stage_run_id="instance-a:review:2"),
+            replace(base, allowed_decisions=("approve",)),
+            replace(base, state_constraints={"required_stage_run_status": "started"}),
+            replace(base, expires_at="2026-06-02T00:00:00Z"),
+        ):
+            self.assertNotEqual(baseline, fingerprint_request(changed))
 
     def test_fingerprint_mismatch_invalidates_approval(self) -> None:
         original = ActionRequest(

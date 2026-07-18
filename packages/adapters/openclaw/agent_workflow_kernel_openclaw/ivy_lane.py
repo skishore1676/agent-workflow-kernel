@@ -12,14 +12,13 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from agent_workflow_kernel.adapters import (
+from agent_workflow_kernel import (
     ADAPTER_STATUS_BLOCKED,
     ADAPTER_STATUS_NEEDS_HUMAN,
     ADAPTER_STATUS_SUCCEEDED,
     make_adapter_receipt,
 )
-from agent_workflow_kernel.contracts import AdapterFamily, AdapterInvocation, ArtifactRef, Receipt, to_plain_data
-from agent_workflow_kernel.dsl import canonical_json
+from agent_workflow_kernel import AdapterFamily, AdapterInvocation, ArtifactRef, Receipt, canonical_json, to_plain_data
 
 from .mapping import OpenClawReferenceMapping, mapping_from_fixture
 from .readonly import DEFAULT_CREATED_AT, artifact_refs_from_fixture, guard_read_only_operation

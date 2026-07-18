@@ -21,8 +21,7 @@ from agent_workflow_kernel import (
     to_plain_data,
     unsupported_operation_result,
 )
-from agent_workflow_kernel.adapters import ADAPTER_STATUS_CANCELLED, ADAPTER_STATUS_SUCCEEDED
-from agent_workflow_kernel.prompts import digest_data
+from agent_workflow_kernel import ADAPTER_STATUS_CANCELLED, ADAPTER_STATUS_SUCCEEDED, digest_data
 
 
 A2A_REVIEW_SCHEMA = "awk.a2a_review.v1"

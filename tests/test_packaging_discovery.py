@@ -23,6 +23,7 @@ class PackagingDiscoveryTest(unittest.TestCase):
         self.assertIn("agent_workflow_kernel_a2a", discovered)
         self.assertIn("agent_workflow_kernel_artifact_validation", discovered)
         self.assertIn("agent_workflow_kernel_ivy", discovered)
+        self.assertIn("agent_workflow_kernel_x_digest", discovered)
 
     def test_openclaw_telegram_adapter_imports_from_adapter_package(self) -> None:
         sys.path.insert(0, str(ROOT / "packages" / "kernel"))
@@ -108,6 +109,16 @@ class PackagingDiscoveryTest(unittest.TestCase):
         self.assertFalse(hasattr(agent_workflow_kernel, "OpenClawAgentRuntimeAdapter"))
         self.assertEqual(OpenClawAgentRuntimeAdapter.adapter_id, "runtime.openclaw_agent")
         self.assertIsInstance(openclaw_agent_runtime_registrations(), tuple)
+
+    def test_x_digest_adapter_imports_from_adapter_package(self) -> None:
+        sys.path.insert(0, str(ROOT / "packages" / "kernel"))
+        sys.path.insert(0, str(ROOT / "packages" / "adapters" / "x_digest"))
+
+        import agent_workflow_kernel
+        from agent_workflow_kernel_x_digest import XDigestDraftRuntimeAdapter
+
+        self.assertFalse(hasattr(agent_workflow_kernel, "XDigestDraftRuntimeAdapter"))
+        self.assertEqual(XDigestDraftRuntimeAdapter.adapter_id, "runtime.agent")
 
 
 def _discover_packages(package_root: Path, include: tuple[str, ...]) -> set[str]:

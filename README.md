@@ -27,7 +27,7 @@ AWK is an active workflow-control layer. Selected OpenClaw lanes now use
 AWK-owned production entrypoints, and new lane work should either adopt AWK or
 explicitly document why a different rail is required.
 
-**Canonical single source (v0.3.0).** The kernel is one pip-installable,
+**Canonical single source (v0.4.0).** The kernel is one pip-installable,
 versioned package that every host consumes — there is no second copy. `0.2.0`
 folded in the rearchitecture (god-module split, kernel-purity import-lint,
 frozen public-API guard); `0.3.0` folded in the workflow features that had
@@ -36,6 +36,16 @@ parking/cancel + child sessions, content-bound publish-gate authorization,
 effective-retry policy). OpenClaw rides this package directly; lane-host is
 migrating off its vendored copy onto it. The frozen public surface is
 documented in [`docs/public-api.md`](docs/public-api.md).
+`0.4.0` makes lease authority and storage-version boundaries explicit: an
+expired, foreign, swept, or wrong-state lease cannot terminally mutate a run;
+late external results are reconciliation evidence, never implicit completion.
+The SQLite ledger accepts only the frozen legacy v0 shape or canonical v1 and
+backs up/restores through verified SQLite copies. Human-gate fingerprints now
+bind workflow/run identity, definition, immutable artifact hashes, choices,
+state constraints, and expiry. Existing human approvals must be regenerated
+after the 0.4.0 migration because their v0.3 fingerprints deliberately lack
+that authority context.
+
 Dependency policy for host consumers is in
 [`docs/DEPENDENCY_POLICY.md`](docs/DEPENDENCY_POLICY.md).
 

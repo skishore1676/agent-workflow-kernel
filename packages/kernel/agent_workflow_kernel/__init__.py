@@ -1,6 +1,14 @@
 """Portable workflow kernel contracts and helpers."""
 
+__version__ = "0.4.0"
+
 from .adapters import (
+    ADAPTER_STATUS_BLOCKED,
+    ADAPTER_STATUS_CANCELLED,
+    ADAPTER_STATUS_FAILED,
+    ADAPTER_STATUS_NEEDS_HUMAN,
+    ADAPTER_STATUS_SUCCEEDED,
+    ADAPTER_STATUS_TIMED_OUT,
     AdapterError,
     CapabilitySet,
     HostAdapter,
@@ -109,6 +117,7 @@ from .prompts import (
     RenderedContext,
     ResolvedPrompt,
     digest_data,
+    hash_bytes,
     hash_text,
     render_context_packet,
 )
@@ -154,11 +163,23 @@ from .kernel import (
     WorkflowKernel,
 )
 from .lease import resolved_lease_policy_from_stage_run, resolve_stage_lease_policy
-from .storage import LedgerConflict, RecoveryAction, WorkflowLedger
+from .storage import (
+    LEDGER_SCHEMA_VERSION,
+    LedgerConflict,
+    LedgerSchemaError,
+    RecoveryAction,
+    WorkflowLedger,
+)
 from .validation import WorkflowValidationError, validate_workflow_def, validate_workflow_mapping
 
 __all__ = [
     "ActionRequest",
+    "ADAPTER_STATUS_BLOCKED",
+    "ADAPTER_STATUS_CANCELLED",
+    "ADAPTER_STATUS_FAILED",
+    "ADAPTER_STATUS_NEEDS_HUMAN",
+    "ADAPTER_STATUS_SUCCEEDED",
+    "ADAPTER_STATUS_TIMED_OUT",
     "ALLOWED_TRANSITION_GUARDS",
     "ACTOR_SESSION_KEY_PREFIX",
     "ACTOR_SESSION_KEY_SCHEMA_VERSION",
@@ -203,6 +224,8 @@ __all__ = [
     "LaneAdapter",
     "LaneDescriptor",
     "LedgerConflict",
+    "LedgerSchemaError",
+    "LEDGER_SCHEMA_VERSION",
     "LiveObsidianMarkdownSurfaceAdapter",
     "LOCAL_RUNNER_ACTOR",
     "LocalFakeHostAdapter",
@@ -273,6 +296,7 @@ __all__ = [
     "ensure_invocation_family",
     "fingerprint_request",
     "hash_text",
+    "hash_bytes",
     "load_workflow_file",
     "load_surface_profile",
     "load_workflow_yaml",
@@ -294,4 +318,5 @@ __all__ = [
     "workflow_from_mapping",
     "workflow_to_canonical_json",
     "workflow_to_canonical_json_bytes",
+    "__version__",
 ]

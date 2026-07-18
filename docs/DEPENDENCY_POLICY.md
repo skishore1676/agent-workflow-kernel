@@ -11,12 +11,17 @@ in `docs/public-api.md` and guarded by tests.
 Consumers should declare:
 
 ```text
-agent-workflow-kernel>=0.3.0
+agent-workflow-kernel>=0.4,<0.5
 ```
+
+The 0.4 boundary deliberately changes approval fingerprints and introduces an
+explicit ledger schema version. Consumers upgrading from 0.3 must regenerate
+outstanding approvals and run the documented version-0 to version-1 ledger
+migration proof before deployment.
 
 ## Consumer rule
 
-Hosts such as Lane Host and Lathi use editable installs during development:
+Hosts such as Lane Host and Lathi may use editable installs during development:
 
 ```bash
 python -m pip install -e /Users/suman/code/agent-workflow-kernel
@@ -34,5 +39,6 @@ make check
 ```
 
 Consumer checks should prove import and adapter behavior from the consuming
-venv, not from global Python.
-
+venv, not from global Python. A release candidate must additionally be built
+from a clean archive and installed with dependencies from the reviewed,
+hash-recorded wheelhouse into an empty environment with `PYTHONPATH` unset.

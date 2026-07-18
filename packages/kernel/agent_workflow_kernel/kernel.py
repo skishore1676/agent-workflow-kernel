@@ -124,6 +124,25 @@ class HumanGateSurfaceResult:
     decision_result: KernelDecisionResult | None = None
     failure_summary: str | None = None
 
+
+def _surface_authority_from_outputs(
+    outputs: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    surface_packet = outputs.get("surface_packet")
+    if not isinstance(surface_packet, Mapping):
+        return None
+    raw = surface_packet.get("authority_context", surface_packet.get("authority"))
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if isinstance(raw, str) and raw:
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return dict(decoded) if isinstance(decoded, Mapping) else None
+    return None
+
+
 class WorkflowKernel:
     """High-level facade for starting and stepping one workflow instance."""
 
@@ -535,6 +554,7 @@ class WorkflowKernel:
             started_at=created_at,
         )
         adapter_result = registration.adapter.publish(invocation, packet)
+        self._validate_published_human_gate_authority(packet, adapter_result.outputs)
         response_hash = digest_data(adapter_result)
         self.ledger.complete_adapter_invocation(
             invocation_id=invocation.invocation_id,
@@ -869,18 +889,7 @@ class WorkflowKernel:
             if stage.type == StageType.HUMAN_GATE:
                 effective_policy = _effective_policy_for_stage(self.workflow, stage, registration=None)
                 gate = self.config.policy_engine.evaluate(
-                    _stage_action_request(
-                        self.workflow,
-                        stage,
-                        run,
-                        registration=None,
-                        operation=_human_decision_action(stage),
-                        effective_policy=effective_policy,
-                        target_ref=stage.adapter,
-                        extra_arguments=_human_gate_action_arguments(stage),
-                        evidence_refs=_human_gate_evidence_refs(stage, None),
-                    ),
-                    now=now,
+                    self._human_gate_request(stage, run), now=now
                 )
                 if stage.prompt_refs:
                     try:
@@ -1549,7 +1558,11 @@ class WorkflowKernel:
         test_only: bool,
         non_live: bool,
     ) -> dict[str, Any]:
-        decisions = allowed_decisions or _human_gate_allowed_decisions(stage)
+        decisions = _human_gate_allowed_decisions(stage)
+        if allowed_decisions is not None and tuple(allowed_decisions) != decisions:
+            raise ValueError(
+                "allowed_decisions must match the workflow-bound human-gate outcomes"
+            )
         evidence = evidence_refs or _human_gate_evidence_refs(stage, gate)
         choice_manifest = _human_gate_choice_manifest(stage)
         choice_manifest_hash = digest_data(choice_manifest) if choice_manifest else None
@@ -1558,6 +1571,7 @@ class WorkflowKernel:
             stage=stage,
             stage_run_id=run.stage_run_id,
         )
+        authority_request = self._human_gate_request(stage, run)
         packet = dict(stage.surface)
         packet.update(
             {
@@ -1572,6 +1586,30 @@ class WorkflowKernel:
                 "exact_action": gate.requested_action,
                 "exact_action_approved": gate.requested_action,
                 "action_fingerprint": gate.action_fingerprint,
+                "authority": {
+                    "schema": "awk.human_gate_authority.v1",
+                    "workflow_id": authority_request.workflow_id,
+                    "instance_id": authority_request.instance_id,
+                    "stage_id": authority_request.stage_id,
+                    "stage_run_id": authority_request.stage_run_id,
+                    "definition_hash": authority_request.workflow_definition_hash,
+                    "artifact_hashes": authority_request.artifact_hashes,
+                    # The rendering adapter completes this from the exact bytes
+                    # shown to the human and returns the completed envelope in
+                    # its publish receipt. It may not alter AWK-owned fields.
+                    "reviewed_body_hash": "",
+                    "gate_id": gate.gate_id,
+                    "requested_action": gate.requested_action,
+                    "human_ref": human_ref or _human_ref(stage),
+                    "context_packet_digest": authority_request.context_packet_digest,
+                    "allowed_decisions": authority_request.allowed_decisions,
+                    "risk_classes": tuple(risk.value for risk in authority_request.risk_classes),
+                    "hard_gates": tuple(gate_name.value for gate_name in authority_request.hard_gates),
+                    "state_constraints": to_plain_data(authority_request.state_constraints),
+                    "expires_at": authority_request.expires_at,
+                    "action_fingerprint": gate.action_fingerprint,
+                    "provenance_refs": evidence,
+                },
                 "allowed_decisions": decisions,
                 "evidence_refs": evidence,
                 "choice_options": choice_manifest.get("options", ()),
@@ -1603,13 +1641,42 @@ class WorkflowKernel:
         evidence_refs: tuple[str, ...] | None,
         human_ref: str | None,
     ) -> dict[str, Any]:
+        decisions = _human_gate_allowed_decisions(stage)
+        if allowed_decisions is not None and tuple(allowed_decisions) != decisions:
+            raise ValueError(
+                "allowed_decisions must match the workflow-bound human-gate outcomes"
+            )
         choice_manifest = _human_gate_choice_manifest(stage)
         choice_manifest_hash = digest_data(choice_manifest) if choice_manifest else None
+        evidence = evidence_refs or _human_gate_evidence_refs(stage, gate)
         prompt_provenance = _stage_run_prompt_provenance(
             self.ledger,
             stage=stage,
             stage_run_id=run.stage_run_id,
         )
+        authority_request = self._human_gate_request(stage, run)
+        base_authority = {
+            "schema": "awk.human_gate_authority.v1",
+            "workflow_id": authority_request.workflow_id,
+            "instance_id": authority_request.instance_id,
+            "stage_id": authority_request.stage_id,
+            "stage_run_id": authority_request.stage_run_id,
+            "definition_hash": authority_request.workflow_definition_hash,
+            "artifact_hashes": authority_request.artifact_hashes,
+            "reviewed_body_hash": "",
+            "gate_id": gate.gate_id,
+            "requested_action": gate.requested_action,
+            "human_ref": human_ref or _human_ref(stage),
+            "context_packet_digest": authority_request.context_packet_digest,
+            "allowed_decisions": authority_request.allowed_decisions,
+            "risk_classes": tuple(risk.value for risk in authority_request.risk_classes),
+            "hard_gates": tuple(gate_name.value for gate_name in authority_request.hard_gates),
+            "state_constraints": to_plain_data(authority_request.state_constraints),
+            "expires_at": authority_request.expires_at,
+            "action_fingerprint": gate.action_fingerprint,
+            "provenance_refs": evidence,
+        }
+        published_authority = self._published_human_gate_authority(run)
         return {
             "query_id": f"{run.stage_run_id}:human_gate_surface_decision",
             "workflow_id": self.workflow.id,
@@ -1623,8 +1690,9 @@ class WorkflowKernel:
             "exact_action_approved": gate.requested_action,
             "expected_action_fingerprint": gate.action_fingerprint,
             "action_fingerprint": gate.action_fingerprint,
-            "allowed_decisions": allowed_decisions or _human_gate_allowed_decisions(stage),
-            "evidence_refs": evidence_refs or _human_gate_evidence_refs(stage, gate),
+            "authority": published_authority or base_authority,
+            "allowed_decisions": decisions,
+            "evidence_refs": evidence,
             "choice_options": choice_manifest.get("options", ()),
             "choice_manifest": choice_manifest,
             "choice_manifest_hash": choice_manifest_hash,
@@ -1656,19 +1724,116 @@ class WorkflowKernel:
         )
 
     def _human_gate(self, stage: StageDef, run: StageRun):
-        effective_policy = _effective_policy_for_stage(self.workflow, stage, registration=None)
-        return self.config.policy_engine.evaluate(
-            _stage_action_request(
-                self.workflow,
-                stage,
-                run,
-                registration=None,
-                operation=_human_decision_action(stage),
-                effective_policy=effective_policy,
-                target_ref=stage.adapter,
-                extra_arguments=_human_gate_action_arguments(stage),
-                evidence_refs=_human_gate_evidence_refs(stage, None),
+        return self.config.policy_engine.evaluate(self._human_gate_request(stage, run))
+
+    def _validate_published_human_gate_authority(
+        self,
+        requested_packet: Mapping[str, Any],
+        adapter_outputs: Mapping[str, Any],
+    ) -> None:
+        """Allow the renderer to add only the reviewed-content hash.
+
+        The adapter may complete AWK's base envelope after it knows the exact
+        bytes shown to the human. It cannot relabel workflow, action, state, or
+        fingerprint authority in its publish result.
+        """
+        requested = requested_packet.get("authority")
+        published = _surface_authority_from_outputs(adapter_outputs)
+        if not isinstance(requested, Mapping) or published is None:
+            return
+        for key, value in requested.items():
+            if key == "reviewed_body_hash":
+                continue
+            if to_plain_data(published.get(key)) != to_plain_data(value):
+                raise AdapterRegistryError(
+                    f"surface adapter changed AWK authority field {key!r} while publishing"
+                )
+        reviewed_hash = str(published.get("reviewed_body_hash") or "")
+        if reviewed_hash and not reviewed_hash.startswith("sha256:"):
+            raise AdapterRegistryError(
+                "surface adapter reviewed_body_hash must be a sha256 digest"
             )
+
+    def _published_human_gate_authority(
+        self, run: StageRun
+    ) -> dict[str, Any] | None:
+        """Read the completed envelope from AWK's durable publish receipt."""
+        for event in reversed(self.ledger.list_events(stage_run_id=run.stage_run_id)):
+            if event["event_type"] != "human_gate_surface_published":
+                continue
+            receipt_id = str(event["payload"].get("receipt_id") or "")
+            if not receipt_id:
+                continue
+            row = self.ledger.connection.execute(
+                "SELECT receipt_json FROM receipts WHERE receipt_id = ?",
+                (receipt_id,),
+            ).fetchone()
+            if row is None:
+                continue
+            try:
+                receipt = json.loads(str(row["receipt_json"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            provenance = receipt.get("runtime_provenance", {})
+            outputs = provenance.get("outputs", {}) if isinstance(provenance, Mapping) else {}
+            authority = _surface_authority_from_outputs(outputs)
+            if authority is not None:
+                return authority
+        return None
+
+    def _human_gate_request(self, stage: StageDef, run: StageRun) -> ActionRequest:
+        """Build the content-bound authority request for a human gate.
+
+        Evidence links explain *where* a reviewer looked.  The approval itself
+        binds immutable ledger hashes, identity, choices, policy and the state
+        in which a decision is consumable; a changed link can never substitute
+        for a changed artifact.
+        """
+        effective_policy = _effective_policy_for_stage(self.workflow, stage, registration=None)
+        request = _stage_action_request(
+            self.workflow,
+            stage,
+            run,
+            registration=None,
+            operation=_human_decision_action(stage),
+            effective_policy=effective_policy,
+            target_ref=stage.adapter,
+            extra_arguments=_human_gate_action_arguments(stage),
+            evidence_refs=_human_gate_evidence_refs(stage, None),
+        )
+        audit = self.ledger.export_stage_run_audit(stage_run_id=run.stage_run_id) or {}
+        # Bind the immutable evidence that existed *before* this human gate.
+        # Do not absorb artifacts emitted while publishing/readback-ing the
+        # review packet itself; doing that would mutate the expected
+        # fingerprint between publication and decision ingestion.
+        artifact_rows = self.ledger.connection.execute(
+            """
+            SELECT content_hash FROM artifact_refs
+            WHERE instance_id = ? AND stage_run_id <> ?
+            ORDER BY content_hash, artifact_id
+            """,
+            (run.instance_id, run.stage_run_id),
+        ).fetchall()
+        artifact_hashes = tuple(str(row["content_hash"]) for row in artifact_rows)
+        provenance = audit.get("provenance", {})
+        instance = audit.get("instance", {})
+        expires_at = stage.surface.get("expires_at") or stage.inputs.get("expires_at")
+        return replace(
+            request,
+            artifact_hashes=artifact_hashes,
+            context_packet_digest=(
+                provenance.get("context_packet_hash")
+                if isinstance(provenance, Mapping)
+                else None
+            ),
+            allowed_decisions=_human_gate_allowed_decisions(stage),
+            state_constraints={
+                "required_stage_run_status": StageRunStatus.WAITING_ON_HUMAN.value,
+                "recovery_epoch": instance.get("recovery_epoch")
+                if isinstance(instance, Mapping)
+                else None,
+            },
+            expires_at=expires_at,
         )
 
     def _outcome_for_human_decision(self, stage: StageDef, decision_text: str) -> str | None:

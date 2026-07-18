@@ -8,5 +8,7 @@ dist/
 build/
 *.egg-info/
 .awk-live/
-.super-goal/
+/.super-goal/
+/.supervisor/
+/.supervisor-lane/
 .DS_Store

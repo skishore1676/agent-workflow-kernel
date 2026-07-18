@@ -15,7 +15,7 @@ from agent_workflow_kernel import (
     StageRun,
     make_adapter_receipt,
 )
-from agent_workflow_kernel.adapters import ADAPTER_STATUS_SUCCEEDED
+from agent_workflow_kernel import ADAPTER_STATUS_SUCCEEDED
 
 
 HASH_VALIDATOR_SCHEMA = "awk.artifact_hash_validation.v1"
