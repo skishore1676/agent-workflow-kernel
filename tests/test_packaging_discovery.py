@@ -9,6 +9,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingDiscoveryTest(unittest.TestCase):
+    def test_release_version_matches_public_package(self) -> None:
+        config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        sys.path.insert(0, str(ROOT / "packages" / "kernel"))
+        import agent_workflow_kernel
+
+        self.assertEqual(config["project"]["version"], "0.4.1")
+        self.assertEqual(agent_workflow_kernel.__version__, "0.4.1")
+
     def test_root_package_discovery_includes_kernel_and_runtime_adapters(self) -> None:
         config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         find_config = config["tool"]["setuptools"]["packages"]["find"]

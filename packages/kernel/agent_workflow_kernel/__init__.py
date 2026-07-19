@@ -1,6 +1,6 @@
 """Portable workflow kernel contracts and helpers."""
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from .adapters import (
     ADAPTER_STATUS_BLOCKED,

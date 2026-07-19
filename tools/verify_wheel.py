@@ -40,9 +40,9 @@ def main(argv: list[str] | None = None) -> int:
         wheelhouse = args.wheelhouse or scratch / "wheelhouse"
         wheelhouse.mkdir(parents=True, exist_ok=True)
         _run([sys.executable, "-m", "pip", "wheel", "--no-deps", ".", "-w", str(wheelhouse)])
-        wheels = sorted(wheelhouse.glob("agent_workflow_kernel-0.4.0-*.whl"))
+        wheels = sorted(wheelhouse.glob("agent_workflow_kernel-0.4.1-*.whl"))
         if len(wheels) != 1:
-            raise RuntimeError(f"expected exactly one 0.4.0 kernel wheel, found: {wheels}")
+            raise RuntimeError(f"expected exactly one 0.4.1 kernel wheel, found: {wheels}")
         wheel = wheels[0]
         _assert_allowlist(wheel)
         environment = scratch / "venv"
@@ -60,8 +60,8 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "import importlib.metadata as m; import agent_workflow_kernel as a; "
                     "import agent_workflow_kernel_x_digest as x; "
-                    "assert a.__version__ == '0.4.0'; "
-                    "assert m.version('agent-workflow-kernel') == '0.4.0'; "
+                    "assert a.__version__ == '0.4.1'; "
+                    "assert m.version('agent-workflow-kernel') == '0.4.1'; "
                     "assert x.XDigestDraftRuntimeAdapter.adapter_id == 'runtime.agent'"
                 ),
             ],
