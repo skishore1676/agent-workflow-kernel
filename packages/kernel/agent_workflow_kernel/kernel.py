@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -60,7 +59,7 @@ from .prompts import (
 )
 from .receipts import build_prompt_provenance
 from .runner import RunnerResult, WorkflowRunner
-from .storage import WorkflowLedger, iso_timestamp
+from .storage import LedgerConflict, WorkflowLedger, iso_timestamp
 
 from ._internal_types import *  # noqa: F401,F403 (shared kernel types/constants)
 from ._helpers import *  # noqa: F401,F403 (kernel helper functions)
@@ -81,6 +80,7 @@ class KernelRuntimeConfig:
     prompt_registry_path: str | Path | None = None
     policy_engine: PolicyEngine = field(default_factory=PolicyEngine)
     default_lease_seconds: int = 300
+    completion_margin_seconds: int = 30
 
     def __post_init__(self) -> None:
         if self.prompt_registry is not None and self.prompt_registry_path is not None:
@@ -91,6 +91,8 @@ class KernelRuntimeConfig:
                 "prompt_registry",
                 PromptRegistry.load(self.prompt_registry_path),
             )
+        if self.completion_margin_seconds < 0:
+            raise ValueError("completion_margin_seconds must be nonnegative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,39 +192,42 @@ class WorkflowKernel:
             idempotency_key=idempotency_key,
             input_hash=input_hash,
         )
+        first_run = StageRun(
+            stage_run_id=f"{instance_id}:{first_stage.id}:1",
+            instance_id=instance_id,
+            stage_id=first_stage.id,
+            status=StageRunStatus.QUEUED,
+            attempt=1,
+            adapter_id=first_stage.adapter,
+            actor_ref=_actor_ref(first_stage),
+            idempotency_key=f"{instance_id}:{first_stage.id}:1",
+        )
         try:
-            self.ledger.insert_workflow_instance(
+            durable_instance, _created = self.ledger.get_or_start_workflow_instance(
                 instance,
+                first_run=first_run,
+                first_run_input_hash=digest_data(
+                    {"stage": first_stage, "inputs": inputs, "attempt": 1}
+                ),
                 created_at=created_at,
                 input_snapshot=dict(inputs),
                 workflow_definition_json=workflow_definition_json,
                 workflow_definition_hash=workflow_definition_hash,
+                actor=self.config.owner_id,
+                event_payload={
+                    "workflow_id": self.workflow.id,
+                    "workflow_version": self.workflow.version,
+                    "first_stage_id": first_stage.id,
+                    "input_hash": input_hash,
+                    "workflow_definition_hash": workflow_definition_hash,
+                },
             )
-        except sqlite3.IntegrityError as exc:
-            raise ValueError(f"workflow instance already exists: {instance_id}") from exc
-        self._queue_stage(
-            first_stage,
-            instance_id=instance_id,
-            attempt=1,
-            inputs=inputs,
-            created_at=created_at,
-        )
-        self._instance_inputs[instance_id] = dict(inputs)
-        self.ledger.append_event(
-            instance_id=instance_id,
-            stage_run_id=None,
-            event_type="workflow_started",
-            actor=self.config.owner_id,
-            payload={
-                "workflow_id": self.workflow.id,
-                "workflow_version": self.workflow.version,
-                "first_stage_id": first_stage.id,
-                "input_hash": input_hash,
-                "workflow_definition_hash": workflow_definition_hash,
-            },
-            created_at=created_at,
-        )
-        return instance
+        except LedgerConflict as exc:
+            if idempotency_key is None and "workflow instance already exists" in str(exc):
+                raise ValueError(f"workflow instance already exists: {instance_id}") from exc
+            raise
+        self._instance_inputs[durable_instance.instance_id] = dict(inputs)
+        return durable_instance
 
     def run_once(
         self,
@@ -245,6 +250,13 @@ class WorkflowKernel:
         )
         if step.stage_run is None:
             return KernelStep(stage_run=None, decision="idle")
+        if not step.authoritative:
+            return KernelStep(
+                stage_run=step.stage_run,
+                decision="idle",
+                receipt_id=step.late_result_id,
+                failure_summary="Provider result arrived after cancellation and was quarantined.",
+            )
 
         stage = self._stage_by_id.get(step.stage_run.stage_id)
         final_decision: KernelDecision = step.decision
@@ -2331,12 +2343,19 @@ class WorkflowKernel:
                 ),
                 runtime_default_seconds=self.config.default_lease_seconds,
                 explicit_lease_seconds=explicit_lease_seconds,
+                minimum_seconds=None,
             )
+        minimum_seconds = (
+            stage.timeout_seconds + self.config.completion_margin_seconds
+            if stage.timeout_seconds is not None
+            else None
+        )
         return resolve_stage_lease_policy(
             self.workflow,
             stage,
             runtime_default_seconds=self.config.default_lease_seconds,
             explicit_lease_seconds=explicit_lease_seconds,
+            minimum_seconds=minimum_seconds,
         )
 
 

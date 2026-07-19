@@ -14,6 +14,7 @@ def resolve_stage_lease_policy(
     *,
     runtime_default_seconds: int,
     explicit_lease_seconds: int | None = None,
+    minimum_seconds: int | None = None,
 ) -> ResolvedLeasePolicy:
     """Resolve the lease used to claim a stage run.
 
@@ -24,21 +25,21 @@ def resolve_stage_lease_policy(
 
     if explicit_lease_seconds is not None:
         seconds = _positive_int(explicit_lease_seconds, "explicit lease override")
-        return ResolvedLeasePolicy(
+        return _enforce_minimum(ResolvedLeasePolicy(
             lease_seconds=seconds,
             source="runner_override",
             source_ref="WorkflowKernel.run_once.lease_seconds",
             actor_ref=_actor_ref(stage),
-        )
+        ), minimum_seconds)
 
     stage_seconds = _lease_seconds_from_mapping(stage.lease)
     if stage_seconds is not None:
-        return ResolvedLeasePolicy(
+        return _enforce_minimum(ResolvedLeasePolicy(
             lease_seconds=stage_seconds,
             source="stage",
             source_ref=f"stages.{stage.id}.lease",
             actor_ref=_actor_ref(stage),
-        )
+        ), minimum_seconds)
 
     actor_ref, actor_config = _actor_config_for_stage(workflow, stage)
     actor_seconds = _lease_seconds_from_mapping(
@@ -46,28 +47,42 @@ def resolve_stage_lease_policy(
     )
     if actor_seconds is not None:
         actor_name = _actor_name(actor_ref) or actor_ref or "unknown"
-        return ResolvedLeasePolicy(
+        return _enforce_minimum(ResolvedLeasePolicy(
             lease_seconds=actor_seconds,
             source="actor",
             source_ref=f"actors.{actor_name}.lease",
             actor_ref=actor_ref,
-        )
+        ), minimum_seconds)
 
     workflow_seconds = _lease_seconds_from_mapping(workflow.defaults.get("lease"))
     if workflow_seconds is not None:
-        return ResolvedLeasePolicy(
+        return _enforce_minimum(ResolvedLeasePolicy(
             lease_seconds=workflow_seconds,
             source="workflow_default",
             source_ref="defaults.lease",
             actor_ref=_actor_ref(stage),
-        )
+        ), minimum_seconds)
 
-    return ResolvedLeasePolicy(
+    return _enforce_minimum(ResolvedLeasePolicy(
         lease_seconds=_positive_int(runtime_default_seconds, "runtime default lease"),
         source="runtime_default",
         source_ref="KernelRuntimeConfig.default_lease_seconds",
         actor_ref=_actor_ref(stage),
-    )
+    ), minimum_seconds)
+
+
+def _enforce_minimum(
+    policy: ResolvedLeasePolicy, minimum_seconds: int | None
+) -> ResolvedLeasePolicy:
+    if minimum_seconds is None:
+        return policy
+    minimum = _positive_int(minimum_seconds, "minimum lease duration")
+    if policy.lease_seconds < minimum:
+        raise ValueError(
+            f"resolved lease {policy.lease_seconds}s from {policy.source_ref} is shorter "
+            f"than required provider timeout plus completion margin ({minimum}s)"
+        )
+    return policy
 
 
 def resolved_lease_policy_from_stage_run(run: Any) -> ResolvedLeasePolicy | None:
