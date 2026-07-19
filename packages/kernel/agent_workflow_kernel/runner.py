@@ -354,6 +354,7 @@ class WorkflowRunner:
                     self.ledger,
                     stage_run_id=waiting_run.stage_run_id,
                 )
+                published_now = False
                 if publish_human_gate and surface_ref is None:
                     publish = kernel.publish_waiting_human_gate(
                         instance_id=resolved_instance_id,
@@ -369,6 +370,7 @@ class WorkflowRunner:
                     )
                     surface_results.append(publish)
                     surface_ref = getattr(publish, "surface_ref", None)
+                    published_now = True
                     if getattr(publish, "status", None) != "succeeded":
                         return OwnedRunSummary(
                             status="blocked",
@@ -419,6 +421,19 @@ class WorkflowRunner:
                         reviewer_human_ref = getattr(review, "human_ref", None) or reviewer_human_ref
 
                 if ingest_human_decision:
+                    # A transition in this same owned tick may have opened a
+                    # brand-new gate.  Publish/read it for operator visibility,
+                    # then yield waiting state; attempting to ingest an absence
+                    # before the human can act turns normal review latency into
+                    # a false domain block.
+                    if published_now and automated_reviewer is None:
+                        return OwnedRunSummary(
+                            status="waiting_on_human",
+                            instance_id=resolved_instance_id,
+                            stop_reason="waiting_on_human",
+                            kernel_steps=tuple(kernel_steps),
+                            surface_results=tuple(surface_results),
+                        )
                     if surface_ref is None:
                         return OwnedRunSummary(
                             status="blocked",
