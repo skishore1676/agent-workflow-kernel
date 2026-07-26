@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .contracts import (
     AdapterInvocation,
@@ -1017,6 +1017,8 @@ class WorkflowLedger:
         instance_id: str | None = None,
         lease_seconds: int | None = 300,
         lease_resolver: Callable[[StageRun], ResolvedLeasePolicy] | None = None,
+        claim_predicate: Callable[[StageRun], bool] | None = None,
+        claim_context: Mapping[str, Any] | None = None,
         now: datetime | str | None = None,
     ) -> StageRun | None:
         claimed_at = iso_timestamp(now)
@@ -1028,17 +1030,25 @@ class WorkflowLedger:
             else (StageRunStatus.QUEUED.value, claimed_at)
         )
         with self._transaction() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 f"""
                 SELECT * FROM stage_runs
                 WHERE status = ?
                   AND (retry_after_at IS NULL OR retry_after_at <= ?)
                   {instance_filter}
                 ORDER BY created_at, stage_run_id
-                LIMIT 1
                 """,
                 params,
-            ).fetchone()
+            ).fetchall()
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if claim_predicate is None
+                    or claim_predicate(self._stage_run_from_row(candidate))
+                ),
+                None,
+            )
             if row is None:
                 return None
             lease = (
@@ -1091,6 +1101,7 @@ class WorkflowLedger:
                     "lease_expires_at": expires_at,
                     "lease": to_plain_data(lease),
                     "previous_status": row["status"],
+                    "claim_context": dict(claim_context or {}),
                 },
                 created_at=claimed_at,
             )

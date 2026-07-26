@@ -178,6 +178,61 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
             ],
         )
 
+    def test_required_platform_stage_cannot_be_claimed_by_oldmac(self) -> None:
+        workflow = self.workflow_with_runtime_stage(
+            stage_policy={"required_platform": "mac_air"},
+        )
+        adapter = LocalFakeRuntimeAdapter(created_at=self.now.isoformat())
+        registry = AdapterRegistry(
+            (AdapterRegistration.from_runtime_adapter(adapter),)
+        )
+        oldmac_kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(
+                owner_id="oldmac-coordinator",
+                adapter_registry=registry,
+                worker_platform="oldmac",
+            ),
+        )
+        oldmac_kernel.start(
+            instance_id="instance-platform",
+            inputs={"objective": "heavy compute"},
+            now=self.now,
+        )
+
+        denied = oldmac_kernel.run_once(now=self.now)
+
+        self.assertEqual(denied.decision, "idle")
+        queued = self.ledger.get_stage_run("instance-platform:draft:1")
+        self.assertIsNotNone(queued)
+        assert queued is not None
+        self.assertEqual(queued.status, StageRunStatus.QUEUED)
+
+        air_kernel = WorkflowKernel(
+            self.ledger,
+            workflow,
+            KernelRuntimeConfig(
+                owner_id="mac-air-worker",
+                adapter_registry=registry,
+                worker_platform="mac_air",
+            ),
+        )
+        accepted = air_kernel.run_once(now=self.now)
+
+        self.assertEqual(accepted.decision, "succeeded")
+        claim_event = next(
+            event
+            for event in self.ledger.list_events(
+                stage_run_id="instance-platform:draft:1"
+            )
+            if event["event_type"] == "stage_claimed"
+        )
+        self.assertEqual(
+            claim_event["payload"]["claim_context"],
+            {"worker_platform": "mac_air"},
+        )
+
     def test_run_once_invokes_registered_lane_system_action(self) -> None:
         lane = LocalFakeLaneAdapter(created_at=self.now.isoformat())
         registry = AdapterRegistry((AdapterRegistration.from_lane_adapter(lane),))

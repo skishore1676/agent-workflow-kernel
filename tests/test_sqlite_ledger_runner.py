@@ -102,6 +102,42 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in events], ["stage_claimed"])
         self.assertEqual(events[0]["actor"], "runner-a")
 
+    def test_claim_predicate_skips_ineligible_run_and_records_context(self) -> None:
+        self.insert_run()
+        self.ledger.insert_stage_run(
+            StageRun(
+                stage_run_id="run-2",
+                instance_id="instance-1",
+                stage_id="stage-2",
+                status=StageRunStatus.QUEUED,
+                adapter_id="runtime.fake",
+                actor_ref="worker",
+            ),
+            input_hash="stage-input-sha-2",
+            created_at=self.created_at,
+        )
+
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="mac-air-worker",
+            lease_seconds=30,
+            claim_predicate=lambda run: run.stage_id == "stage-2",
+            claim_context={"worker_platform": "mac_air"},
+            now=self.created_at,
+        )
+
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual(claimed.stage_run_id, "run-2")
+        self.assertEqual(
+            self.ledger.get_stage_run("run-1").status,
+            StageRunStatus.QUEUED,
+        )
+        event = self.ledger.list_events(stage_run_id="run-2")[0]
+        self.assertEqual(
+            event["payload"]["claim_context"],
+            {"worker_platform": "mac_air"},
+        )
+
     def test_receipt_artifact_and_completion_are_append_only_then_state_update(self) -> None:
         self.insert_run()
         claimed = self.ledger.claim_next_queued_run(

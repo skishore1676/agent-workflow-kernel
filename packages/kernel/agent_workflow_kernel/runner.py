@@ -125,6 +125,8 @@ class WorkflowRunner:
         instance_id: str | None = None,
         lease_seconds: int | None = 300,
         lease_resolver: Callable[[StageRun], ResolvedLeasePolicy] | None = None,
+        claim_predicate: Callable[[StageRun], bool] | None = None,
+        claim_context: Mapping[str, Any] | None = None,
         now: datetime | str | None = None,
     ) -> RunnerStep:
         self.ledger.sweep_stale_leases(now=now, actor=self.owner_id)
@@ -133,6 +135,8 @@ class WorkflowRunner:
             instance_id=instance_id,
             lease_seconds=lease_seconds,
             lease_resolver=lease_resolver,
+            claim_predicate=claim_predicate,
+            claim_context=claim_context,
             now=now,
         )
         if run is None:

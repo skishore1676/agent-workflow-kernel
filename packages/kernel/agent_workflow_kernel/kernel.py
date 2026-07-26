@@ -81,6 +81,7 @@ class KernelRuntimeConfig:
     prompt_registry_path: str | Path | None = None
     policy_engine: PolicyEngine = field(default_factory=PolicyEngine)
     default_lease_seconds: int = 300
+    worker_platform: str | None = None
 
     def __post_init__(self) -> None:
         if self.prompt_registry is not None and self.prompt_registry_path is not None:
@@ -241,6 +242,8 @@ class WorkflowKernel:
                 run,
                 explicit_lease_seconds=lease_seconds,
             ),
+            claim_predicate=self._stage_claim_is_platform_eligible,
+            claim_context={"worker_platform": self.config.worker_platform},
             now=now,
         )
         if step.stage_run is None:
@@ -362,6 +365,15 @@ class WorkflowKernel:
             receipt_id=state.get("receipt_id"),
             failure_summary=final_failure_summary,
         )
+
+    def _stage_claim_is_platform_eligible(self, run: StageRun) -> bool:
+        stage = self._stage_by_id.get(run.stage_id)
+        if stage is None:
+            return False
+        required_platform = stage.policy.get("required_platform")
+        if required_platform in (None, ""):
+            return True
+        return self.config.worker_platform == required_platform
 
     def ingest_human_decision(
         self,

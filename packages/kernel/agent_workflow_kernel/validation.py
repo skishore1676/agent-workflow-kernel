@@ -80,6 +80,15 @@ def validate_workflow_mapping(data: Mapping[str, Any]) -> None:
         _coerce_stage_type(stage["type"], f"stages[{index}].type")
         _require_str(stage["adapter"], f"stages[{index}].adapter")
         _validate_optional_lease(stage.get("lease"), f"stages[{index}].lease")
+        policy = stage.get("policy")
+        if policy is not None:
+            policy_map = require_mapping(policy, label=f"stages[{index}].policy")
+            required_platform = policy_map.get("required_platform")
+            if required_platform not in (None, ""):
+                _require_str(
+                    required_platform,
+                    f"stages[{index}].policy.required_platform",
+                )
 
         outcomes = require_sequence(stage["outcomes"], label=f"stages[{index}].outcomes")
         if not outcomes:
