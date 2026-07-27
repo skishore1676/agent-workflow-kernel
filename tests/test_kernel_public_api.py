@@ -19,7 +19,7 @@ import agent_workflow_kernel as awk  # noqa: E402
 # Changing the public surface is a deliberate act: update this number with intent.
 # Bumped 136 -> 146 for 0.4.0's deliberate ledger/release surface and the
 # adapter-facing status/hash contracts now required at the top level.
-EXPECTED_EXPORT_COUNT = 146
+EXPECTED_EXPORT_COUNT = 148
 
 
 class PublicApiSurfaceTest(unittest.TestCase):
