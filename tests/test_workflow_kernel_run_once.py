@@ -1391,7 +1391,7 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertIn("- Requested action: `surface_review_clear`", note_text)
         self.assertEqual(readback.status, "succeeded")
         self.assertTrue(readback.outputs["readback"]["exists"])
-        self.assertEqual(ingest.status, "succeeded")
+        self.assertEqual(ingest.status, "succeeded", ingest.failure_summary)
         self.assertIsNotNone(ingest.decision_result)
         assert ingest.decision_result is not None
         self.assertEqual(ingest.decision_result.decision, "queued")
@@ -1401,6 +1401,94 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertIsNotNone(apply)
         assert apply is not None
         self.assertEqual(apply.status, StageRunStatus.QUEUED)
+
+    def test_surface_decision_uses_persisted_gate_across_policy_id_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as notes_dir:
+            surface = LocalMarkdownHumanReviewSurfaceAdapter(
+                notes_dir,
+                created_at=self.now.isoformat(),
+            )
+            kernel = self.kernel_for(
+                self.workflow_with_surface_lifecycle_gate(surface.adapter_id),
+                surface_adapter=surface,
+            )
+            self._run_to_waiting_gate(kernel, instance_id="instance-gate-drift")
+            publish = kernel.publish_waiting_human_gate(
+                instance_id="instance-gate-drift",
+                test_only=True,
+                non_live=True,
+                now=self.now,
+            )
+            receipt_row = self.ledger.connection.execute(
+                "SELECT receipt_json FROM receipts WHERE receipt_id = ?",
+                (publish.receipt_id,),
+            ).fetchone()
+            assert receipt_row is not None
+            persisted_receipt = json.loads(receipt_row["receipt_json"])
+            waiting_run = self.ledger.find_waiting_human_stage_run(
+                instance_id="instance-gate-drift"
+            )
+            assert waiting_run is not None
+            waiting_stage = kernel._stage_by_id[waiting_run.stage_id]
+            published_gate = kernel._human_gate(waiting_stage, waiting_run)
+            published_request = kernel._human_gate_request(
+                waiting_stage, waiting_run
+            )
+            persisted_receipt["runtime_provenance"]["outputs"]["surface_packet"] = (
+                {
+                    "authority": {
+                        "workflow_id": kernel.workflow.id,
+                        "instance_id": waiting_run.instance_id,
+                        "stage_id": waiting_run.stage_id,
+                        "stage_run_id": waiting_run.stage_run_id,
+                        "definition_hash": published_request.workflow_definition_hash,
+                        "allowed_decisions": list(waiting_stage.outcomes),
+                        "gate_id": published_gate.gate_id,
+                        "requested_action": published_gate.requested_action,
+                        "action_fingerprint": published_gate.action_fingerprint,
+                    }
+                }
+            )
+            self.ledger.connection.execute(
+                "UPDATE receipts SET receipt_json = ? WHERE receipt_id = ?",
+                (json.dumps(persisted_receipt), publish.receipt_id),
+            )
+            self.ledger.connection.commit()
+            self.assertIsNotNone(
+                kernel._published_human_gate_authority(waiting_run)
+            )
+            decision = HumanApprovalReceipt(
+                approval_id="approval:persisted-gate-drift",
+                gate_id=publish.outputs["gate_id"],
+                human_ref="Suman(test)",
+                canonical_surface="local_markdown",
+                decision=ApprovalDecision.APPROVED,
+                exact_action_approved=publish.outputs["requested_action"],
+                action_fingerprint=publish.outputs["action_fingerprint"],
+                created_at=self.now,
+            )
+            original_human_gate = kernel._human_gate
+
+            def drifted_human_gate(stage, run):
+                current = original_human_gate(stage, run)
+                return replace(
+                    current,
+                    gate_id="gate-derived-after-upgrade",
+                    action_fingerprint="sha256:derived-after-upgrade",
+                )
+
+            kernel._human_gate = drifted_human_gate
+            ingest = kernel.ingest_human_decision(
+                instance_id="instance-gate-drift",
+                decision=decision,
+                now=self.now,
+            )
+
+        self.assertEqual(ingest.decision, "queued", ingest.failure_summary)
+        self.assertEqual(ingest.outcome, "approved")
+        self.assertIsNotNone(
+            self.ledger.get_stage_run("instance-gate-drift:apply:1")
+        )
 
     def test_surface_decision_ingest_blocks_invalid_markdown_decisions(self) -> None:
         cases = {

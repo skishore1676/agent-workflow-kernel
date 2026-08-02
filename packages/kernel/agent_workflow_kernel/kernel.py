@@ -409,9 +409,12 @@ class WorkflowKernel:
             )
 
         gate = self._human_gate(stage, waiting_run)
-        validation_error = _human_decision_validation_error(
+        validation_gate, persisted_authority_error = (
+            self._human_decision_validation_gate(waiting_run, stage, gate)
+        )
+        validation_error = persisted_authority_error or _human_decision_validation_error(
             decision,
-            gate,
+            validation_gate,
             now=now,
             allowed_decisions=stage.outcomes,
         )
@@ -1792,6 +1795,55 @@ class WorkflowKernel:
             if authority is not None:
                 return authority
         return None
+
+    def _human_decision_validation_gate(
+        self,
+        run: StageRun,
+        stage: StageDef,
+        gate: Any,
+    ) -> tuple[Any, str | None]:
+        """Use the immutable published authority when a review was projected.
+
+        Policy-engine upgrades may change a derived gate id or action fingerprint
+        while a human review is waiting. The publish receipt is the durable
+        envelope the human actually saw, so a later decision must be checked
+        against that exact envelope. Identity, definition, action, and decision
+        space still have to match the current pinned workflow; malformed or
+        cross-workflow authority fails closed.
+        """
+        authority = self._published_human_gate_authority(run)
+        if authority is None:
+            return gate, None
+        request = self._human_gate_request(stage, run)
+        allowed = tuple(str(value) for value in authority.get("allowed_decisions") or ())
+        identity_matches = (
+            str(authority.get("workflow_id") or "") == self.workflow.id
+            and str(authority.get("instance_id") or "") == run.instance_id
+            and str(authority.get("stage_id") or "") == stage.id
+            and str(authority.get("stage_run_id") or "") == run.stage_run_id
+            and str(authority.get("definition_hash") or "")
+            == str(request.workflow_definition_hash or "")
+            and set(allowed) == set(stage.outcomes)
+        )
+        gate_id = str(authority.get("gate_id") or "")
+        requested_action = str(authority.get("requested_action") or "")
+        action_fingerprint = str(authority.get("action_fingerprint") or "")
+        if not identity_matches or not all(
+            (gate_id, requested_action, action_fingerprint)
+        ):
+            return gate, (
+                "Durable published human-gate authority does not match the "
+                "current pinned workflow."
+            )
+        return (
+            replace(
+                gate,
+                gate_id=gate_id,
+                requested_action=requested_action,
+                action_fingerprint=action_fingerprint,
+            ),
+            None,
+        )
 
     def _human_gate_request(self, stage: StageDef, run: StageRun) -> ActionRequest:
         """Build the content-bound authority request for a human gate.
