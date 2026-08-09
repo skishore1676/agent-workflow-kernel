@@ -442,6 +442,50 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         self.assertEqual(instance.status, WorkflowStatus.RUNNING)
         self.assertEqual(instance.recovery_epoch, 1)
 
+    def test_operator_can_reauthorize_verified_no_effect_stale_system_stage(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=1, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.mark_stage_run_started(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            actor="runner-a",
+            owner_id="runner-a",
+            now=self.created_at,
+        )
+        self.ledger.sweep_stale_leases(
+            now=self.created_at + timedelta(seconds=2), actor="recovery"
+        )
+
+        with self.assertRaises(LedgerConflict):
+            self.ledger.retry_blocked_stage_without_effect(
+                instance_id="instance-1",
+                reason="effect evidence checked",
+                verified_no_external_effect=True,
+                now=self.created_at + timedelta(seconds=3),
+            )
+
+        recovery = self.ledger.retry_blocked_stage_without_effect(
+            instance_id="instance-1",
+            reason="effect evidence checked",
+            verified_no_external_effect=True,
+            operator_reauthorized=True,
+            now=self.created_at + timedelta(seconds=3),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        row = self.ledger.connection.execute(
+            "SELECT approval_required FROM stage_runs WHERE stage_run_id = ?",
+            ("instance-1:stage-1:2",),
+        ).fetchone()
+        assert row is not None
+        self.assertFalse(bool(row["approval_required"]))
+
     def test_foreign_keys_are_enabled(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):
             self.ledger.insert_stage_run(

@@ -1967,6 +1967,7 @@ class WorkflowLedger:
         instance_id: str,
         reason: str,
         verified_no_external_effect: bool,
+        operator_reauthorized: bool = False,
         actor: str = "operator",
         now: datetime | str | None = None,
     ) -> dict[str, Any]:
@@ -1975,7 +1976,10 @@ class WorkflowLedger:
         Human gates use :meth:`retry_blocked_human_gate` so their authority is
         always republished. This companion primitive is for post-gate runtime
         or validation stages whose failed attempts produced no artifact or
-        external effect. It never rewrites the failed attempt or its receipts.
+        external effect. A stale lease is conservatively marked as requiring
+        approval; ``operator_reauthorized`` lets an operator replay that
+        non-gate stage after checking the effect evidence. It never rewrites
+        the failed attempt or its receipts.
         """
 
         if not verified_no_external_effect:
@@ -2013,9 +2017,9 @@ class WorkflowLedger:
                 raise LedgerConflict(
                     f"workflow instance {instance_id!r} has no retryable failed current stage"
                 )
-            if bool(row["approval_required"]):
+            if bool(row["approval_required"]) and not operator_reauthorized:
                 raise LedgerConflict(
-                    "approval-required stages must use retry_blocked_human_gate"
+                    "approval-required stage retry requires operator_reauthorized"
                 )
             artifact = conn.execute(
                 "SELECT 1 FROM artifact_refs WHERE stage_run_id = ? LIMIT 1",
@@ -2065,6 +2069,7 @@ class WorkflowLedger:
                 "new_stage_run_id": next_stage_run_id,
                 "reason": recovery_reason,
                 "verified_no_external_effect": True,
+                "operator_reauthorized": bool(operator_reauthorized),
             }
             self._append_event(
                 conn,
