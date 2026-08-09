@@ -1835,6 +1835,132 @@ class WorkflowLedger:
                 created_at=completed_at,
             )
 
+    def retry_blocked_human_gate(
+        self,
+        *,
+        instance_id: str,
+        reason: str,
+        verified_no_external_effect: bool,
+        actor: str = "operator",
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Queue a fresh attempt for a blocked human-gate transport failure.
+
+        This is deliberately narrower than a generic workflow reset. The old
+        attempt and receipts remain immutable, the instance must still point at
+        that blocked approval-required stage, and the operator must attest that
+        the failed attempt caused no external effect. A new attempt produces a
+        fresh authority envelope and therefore requires a fresh human decision.
+        """
+
+        if not verified_no_external_effect:
+            raise ValueError("blocked human-gate retry requires verified_no_external_effect")
+        recovery_reason = str(reason).strip()
+        if not recovery_reason:
+            raise ValueError("blocked human-gate retry requires a reason")
+        retried_at = iso_timestamp(now)
+        with self._transaction() as conn:
+            instance = conn.execute(
+                "SELECT * FROM workflow_instances WHERE instance_id = ?",
+                (instance_id,),
+            ).fetchone()
+            if instance is None:
+                raise KeyError(instance_id)
+            if instance["status"] != WorkflowStatus.BLOCKED.value:
+                raise LedgerConflict(f"workflow instance {instance_id!r} is not blocked")
+            stage_id = str(instance["current_stage_id"] or "")
+            row = conn.execute(
+                """
+                SELECT * FROM stage_runs
+                WHERE instance_id = ? AND stage_id = ?
+                ORDER BY attempt DESC, created_at DESC, stage_run_id DESC
+                LIMIT 1
+                """,
+                (instance_id, stage_id),
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != StageRunStatus.BLOCKED.value
+                or not bool(row["approval_required"])
+            ):
+                raise LedgerConflict(
+                    f"workflow instance {instance_id!r} is not blocked on an approval-required human gate"
+                )
+            decision = conn.execute(
+                "SELECT 1 FROM human_decisions WHERE stage_run_id = ? LIMIT 1",
+                (row["stage_run_id"],),
+            ).fetchone()
+            if decision is not None:
+                raise LedgerConflict("blocked human-gate attempt already has a durable human decision")
+
+            next_attempt = int(row["attempt"]) + 1
+            next_stage_run_id = f"{instance_id}:{stage_id}:{next_attempt}"
+            conn.execute(
+                """
+                INSERT INTO stage_runs (
+                  stage_run_id, instance_id, stage_id, attempt, status,
+                  adapter_id, actor_ref, approval_required, idempotency_key,
+                  input_hash, retry_count, parent_stage_run_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    next_stage_run_id,
+                    instance_id,
+                    stage_id,
+                    next_attempt,
+                    StageRunStatus.QUEUED.value,
+                    row["adapter_id"],
+                    row["actor_ref"],
+                    next_stage_run_id,
+                    row["input_hash"],
+                    int(row["retry_count"] or 0) + 1,
+                    row["stage_run_id"],
+                    retried_at,
+                    retried_at,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE workflow_instances
+                SET status = ?, recovery_epoch = recovery_epoch + 1, updated_at = ?
+                WHERE instance_id = ?
+                """,
+                (WorkflowStatus.RUNNING.value, retried_at, instance_id),
+            )
+            payload = {
+                "blocked_stage_run_id": row["stage_run_id"],
+                "new_stage_run_id": next_stage_run_id,
+                "reason": recovery_reason,
+                "verified_no_external_effect": True,
+            }
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=row["stage_run_id"],
+                event_type="blocked_human_gate_retry_authorized",
+                actor=actor,
+                payload=payload,
+                created_at=retried_at,
+            )
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=next_stage_run_id,
+                event_type="blocked_human_gate_retry_queued",
+                actor=actor,
+                payload=payload,
+                created_at=retried_at,
+            )
+        return {
+            "instance_id": instance_id,
+            "previous_stage_run_id": row["stage_run_id"],
+            "stage_run_id": next_stage_run_id,
+            "stage_id": stage_id,
+            "attempt": next_attempt,
+            "status": StageRunStatus.QUEUED.value,
+            "reason": recovery_reason,
+        }
+
     # -- child sessions: a bounded, scoped, audited delegate session --------- #
     #
     # The child_sessions table already models exactly a bounded, scoped,

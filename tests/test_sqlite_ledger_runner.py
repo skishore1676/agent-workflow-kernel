@@ -344,6 +344,65 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         self.assertEqual(parent["parent_stage_run_id"], "run-1")
         self.assertEqual(parent["retry_count"], 1)
 
+    def test_operator_retry_of_blocked_human_gate_is_append_only(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.wait_stage_run_for_human_decision(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_summary="waiting for approval",
+            now=self.created_at,
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.complete_waiting_human_stage_run(
+            stage_run_id="run-1",
+            status=StageRunStatus.BLOCKED,
+            failure_class=FailureClass.DOMAIN_BLOCKED,
+            failure_summary="rendered body hash mismatch",
+            now=self.created_at + timedelta(seconds=1),
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.BLOCKED,
+            current_stage_id="stage-1",
+            updated_at=self.created_at + timedelta(seconds=1),
+        )
+
+        recovery = self.ledger.retry_blocked_human_gate(
+            instance_id="instance-1",
+            reason="deployed deterministic rendering fix",
+            verified_no_external_effect=True,
+            now=self.created_at + timedelta(seconds=2),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        self.assertEqual(self.ledger.get_stage_run("run-1").status, StageRunStatus.BLOCKED)
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.RUNNING)
+        self.assertEqual(instance.recovery_epoch, 1)
+        events = self.ledger.connection.execute(
+            "SELECT event_type FROM events WHERE instance_id = ?",
+            ("instance-1",),
+        ).fetchall()
+        self.assertIn("blocked_human_gate_retry_authorized", [e["event_type"] for e in events])
+
+    def test_operator_retry_of_blocked_human_gate_requires_no_effect_proof(self) -> None:
+        with self.assertRaises(ValueError):
+            self.ledger.retry_blocked_human_gate(
+                instance_id="instance-1",
+                reason="not yet checked",
+                verified_no_external_effect=False,
+                now=self.created_at,
+            )
+
     def test_foreign_keys_are_enabled(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):
             self.ledger.insert_stage_run(
