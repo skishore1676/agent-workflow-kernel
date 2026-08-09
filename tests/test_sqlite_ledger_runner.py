@@ -403,6 +403,45 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
                 now=self.created_at,
             )
 
+    def test_operator_retry_of_effect_free_failed_stage_is_append_only(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.fail_stage_run(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_class=FailureClass.RUNTIME_FAILURE,
+            failure_summary="fixed packaging defect",
+            now=self.created_at + timedelta(seconds=1),
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.BLOCKED,
+            current_stage_id="stage-1",
+            updated_at=self.created_at + timedelta(seconds=1),
+        )
+
+        recovery = self.ledger.retry_blocked_stage_without_effect(
+            instance_id="instance-1",
+            reason="deployed packaging fix",
+            verified_no_external_effect=True,
+            now=self.created_at + timedelta(seconds=2),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        self.assertEqual(self.ledger.get_stage_run("run-1").status, StageRunStatus.FAILED)
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.RUNNING)
+        self.assertEqual(instance.recovery_epoch, 1)
+
     def test_foreign_keys_are_enabled(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):
             self.ledger.insert_stage_run(
