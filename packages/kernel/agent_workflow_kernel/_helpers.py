@@ -1214,6 +1214,7 @@ def _runtime_input(
         if human_decisions:
             payload["prior_human_decisions"] = human_decisions
             payload["latest_human_decision"] = human_decisions[-1]
+            payload["decisions_by_stage"] = _decisions_by_stage(human_decisions)
         artifact_refs = _prior_artifact_refs(ledger, run.instance_id)
         if artifact_refs:
             payload["artifact_refs"] = artifact_refs
@@ -1264,6 +1265,11 @@ def _resolve_stage_input_value(
             if isinstance(receipts, list) and receipts:
                 return receipts[-1]
             return receipts
+        if value.startswith("decisions."):
+            decisions_by_stage = runtime_payload.get("decisions_by_stage")
+            if not isinstance(decisions_by_stage, Mapping):
+                return None
+            return _path_get(decisions_by_stage, value.removeprefix("decisions."))
         return value
     if isinstance(value, Mapping):
         return {
@@ -1289,11 +1295,13 @@ def _path_get(root: Mapping[str, Any], path: str) -> Any:
 def _prior_human_decisions(ledger: WorkflowLedger, instance_id: str) -> list[dict[str, Any]]:
     rows = ledger.connection.execute(
         """
-        SELECT decision_id, stage_run_id, gate_id, decision, human_ref,
-               canonical_surface, action_fingerprint, receipt_json, created_at
-        FROM human_decisions
-        WHERE instance_id = ?
-        ORDER BY created_at ASC, decision_id ASC
+        SELECT h.decision_id, h.stage_run_id, sr.stage_id, h.gate_id,
+               h.decision, h.human_ref, h.canonical_surface,
+               h.action_fingerprint, h.receipt_json, h.created_at
+        FROM human_decisions h
+        JOIN stage_runs sr ON sr.stage_run_id = h.stage_run_id
+        WHERE h.instance_id = ?
+        ORDER BY sr.created_at ASC, sr.attempt ASC, h.rowid ASC
         """,
         (instance_id,),
     ).fetchall()
@@ -1305,6 +1313,7 @@ def _prior_human_decisions(ledger: WorkflowLedger, instance_id: str) -> list[dic
             {
                 "decision_id": row["decision_id"],
                 "stage_run_id": row["stage_run_id"],
+                "stage_id": row["stage_id"],
                 "gate_id": row["gate_id"],
                 "decision": row["decision"],
                 "human_ref": row["human_ref"],
@@ -1333,6 +1342,17 @@ def _prior_human_decisions(ledger: WorkflowLedger, instance_id: str) -> list[dic
             }
         )
     return decisions
+
+
+def _decisions_by_stage(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Return the latest recorded human decision for each workflow stage."""
+
+    by_stage: dict[str, dict[str, Any]] = {}
+    for decision in decisions:
+        stage_id = decision.get("stage_id")
+        if stage_id:
+            by_stage[str(stage_id)] = decision
+    return by_stage
 
 
 def _prior_artifact_refs(ledger: WorkflowLedger, instance_id: str) -> list[dict[str, Any]]:
@@ -1917,6 +1937,7 @@ __all__ = [
     "_resolve_stage_input_value",
     "_path_get",
     "_prior_human_decisions",
+    "_decisions_by_stage",
     "_prior_artifact_refs",
     "_artifacts_by_stage",
     "_prior_receipts_with_outputs",

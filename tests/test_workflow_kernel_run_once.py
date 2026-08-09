@@ -1782,11 +1782,13 @@ class WorkflowKernelRunOnceTest(unittest.TestCase):
         self.assertEqual(apply.decision, "succeeded")
         apply_input = runtime.inputs_by_stage["apply"][-1]
         latest_decision = apply_input["latest_human_decision"]
+        stage_decision = apply_input["decisions_by_stage"]["choose"]
         self.assertEqual(latest_decision["decision"], "option_2")
         self.assertEqual(latest_decision["action_fingerprint"], publish.outputs["action_fingerprint"])
         self.assertEqual(latest_decision["choice_manifest_hash"], publish.outputs["choice_manifest_hash"])
         self.assertEqual(latest_decision["selected_option"]["id"], "option_2")
         self.assertEqual(latest_decision["selected_option"]["budget_profile"], "balanced")
+        self.assertEqual(stage_decision["selected_option"]["id"], "option_2")
         stored = self.ledger.get_workflow_instance("instance-choice")
         self.assertIsNotNone(stored)
         assert stored is not None
