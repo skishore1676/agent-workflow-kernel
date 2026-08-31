@@ -403,6 +403,61 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
                 now=self.created_at,
             )
 
+    def test_transport_repair_reissues_waiting_human_gate_append_only(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.wait_stage_run_for_human_decision(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_summary="waiting for approval",
+            now=self.created_at,
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.WAITING_ON_HUMAN,
+            current_stage_id="stage-1",
+            updated_at=self.created_at,
+        )
+
+        recovery = self.ledger.reissue_waiting_human_gate_for_transport_repair(
+            instance_id="instance-1",
+            reason="validated article was projected as proof-plan JSON",
+            verified_no_human_decision=True,
+            now=self.created_at + timedelta(seconds=1),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        self.assertEqual(self.ledger.get_stage_run("run-1").status, StageRunStatus.BLOCKED)
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.RUNNING)
+        self.assertEqual(instance.recovery_epoch, 1)
+        events = self.ledger.connection.execute(
+            "SELECT event_type FROM events WHERE instance_id = ?",
+            ("instance-1",),
+        ).fetchall()
+        self.assertIn(
+            "waiting_human_gate_transport_repair_queued",
+            [event["event_type"] for event in events],
+        )
+
+    def test_transport_repair_requires_verified_absence_of_decision(self) -> None:
+        with self.assertRaises(ValueError):
+            self.ledger.reissue_waiting_human_gate_for_transport_repair(
+                instance_id="instance-1",
+                reason="projection defect",
+                verified_no_human_decision=False,
+                now=self.created_at,
+            )
+
     def test_operator_retry_of_effect_free_failed_stage_is_append_only(self) -> None:
         self.insert_run()
         claimed = self.ledger.claim_next_queued_run(

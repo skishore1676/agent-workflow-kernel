@@ -1961,6 +1961,148 @@ class WorkflowLedger:
             "reason": recovery_reason,
         }
 
+    def reissue_waiting_human_gate_for_transport_repair(
+        self,
+        *,
+        instance_id: str,
+        reason: str,
+        verified_no_human_decision: bool,
+        actor: str = "operator",
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Append a fresh gate attempt after a proven projection defect.
+
+        This is not a generic reset. It is available only while an instance is
+        waiting at an approval-required human gate, before any durable human
+        decision exists. The defective attempt is retained and marked blocked;
+        a child attempt receives fresh content-bound authority on publication.
+        """
+
+        if not verified_no_human_decision:
+            raise ValueError("human-gate transport repair requires verified_no_human_decision")
+        repair_reason = str(reason).strip()
+        if not repair_reason:
+            raise ValueError("human-gate transport repair requires a reason")
+        reissued_at = iso_timestamp(now)
+        with self._transaction() as conn:
+            instance = conn.execute(
+                "SELECT * FROM workflow_instances WHERE instance_id = ?",
+                (instance_id,),
+            ).fetchone()
+            if instance is None:
+                raise KeyError(instance_id)
+            if instance["status"] != WorkflowStatus.WAITING_ON_HUMAN.value:
+                raise LedgerConflict(
+                    f"workflow instance {instance_id!r} is not waiting on a human gate"
+                )
+            stage_id = str(instance["current_stage_id"] or "")
+            row = conn.execute(
+                """
+                SELECT * FROM stage_runs
+                WHERE instance_id = ? AND stage_id = ?
+                ORDER BY attempt DESC, created_at DESC, stage_run_id DESC
+                LIMIT 1
+                """,
+                (instance_id, stage_id),
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != StageRunStatus.WAITING_ON_HUMAN.value
+                or not bool(row["approval_required"])
+            ):
+                raise LedgerConflict(
+                    f"workflow instance {instance_id!r} has no waiting approval-required stage"
+                )
+            decision = conn.execute(
+                "SELECT 1 FROM human_decisions WHERE stage_run_id = ? LIMIT 1",
+                (row["stage_run_id"],),
+            ).fetchone()
+            if decision is not None:
+                raise LedgerConflict("waiting human-gate attempt already has a durable decision")
+
+            next_attempt = int(row["attempt"]) + 1
+            next_stage_run_id = f"{instance_id}:{stage_id}:{next_attempt}"
+            conn.execute(
+                """
+                UPDATE stage_runs
+                SET status = ?, failure_class = ?, failure_summary = ?, updated_at = ?
+                WHERE stage_run_id = ? AND status = ?
+                """,
+                (
+                    StageRunStatus.BLOCKED.value,
+                    FailureClass.RUNTIME_FAILURE.value,
+                    repair_reason,
+                    reissued_at,
+                    row["stage_run_id"],
+                    StageRunStatus.WAITING_ON_HUMAN.value,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO stage_runs (
+                  stage_run_id, instance_id, stage_id, attempt, status,
+                  adapter_id, actor_ref, approval_required, idempotency_key,
+                  input_hash, retry_count, parent_stage_run_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    next_stage_run_id,
+                    instance_id,
+                    stage_id,
+                    next_attempt,
+                    StageRunStatus.QUEUED.value,
+                    row["adapter_id"],
+                    row["actor_ref"],
+                    next_stage_run_id,
+                    row["input_hash"],
+                    int(row["retry_count"] or 0) + 1,
+                    row["stage_run_id"],
+                    reissued_at,
+                    reissued_at,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE workflow_instances
+                SET status = ?, recovery_epoch = recovery_epoch + 1, updated_at = ?
+                WHERE instance_id = ?
+                """,
+                (WorkflowStatus.RUNNING.value, reissued_at, instance_id),
+            )
+            payload = {
+                "defective_stage_run_id": row["stage_run_id"],
+                "new_stage_run_id": next_stage_run_id,
+                "reason": repair_reason,
+                "verified_no_human_decision": True,
+            }
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=row["stage_run_id"],
+                event_type="waiting_human_gate_transport_repair_authorized",
+                actor=actor,
+                payload=payload,
+                created_at=reissued_at,
+            )
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=next_stage_run_id,
+                event_type="waiting_human_gate_transport_repair_queued",
+                actor=actor,
+                payload=payload,
+                created_at=reissued_at,
+            )
+        return {
+            "instance_id": instance_id,
+            "previous_stage_run_id": row["stage_run_id"],
+            "stage_run_id": next_stage_run_id,
+            "stage_id": stage_id,
+            "attempt": next_attempt,
+            "status": StageRunStatus.QUEUED.value,
+            "reason": repair_reason,
+        }
+
     def retry_blocked_stage_without_effect(
         self,
         *,
