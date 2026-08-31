@@ -458,6 +458,66 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
                 now=self.created_at,
             )
 
+    def test_published_gate_restore_reopens_same_attempt_after_empty_collect(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.wait_stage_run_for_human_decision(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_summary="waiting for approval",
+            now=self.created_at,
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.record_receipt(
+            Receipt(
+                receipt_id="surface-publish-1",
+                kind="human_gate_surface",
+                workflow_id="workflow-1",
+                instance_id="instance-1",
+                stage_id="stage-1",
+                stage_run_id="run-1",
+                status="succeeded",
+                summary="human_gate_surface published",
+                created_at=self.created_at.isoformat(),
+                runtime_provenance={"operation": "human_gate_surface:publish"},
+            )
+        )
+        self.ledger.complete_waiting_human_stage_run(
+            stage_run_id="run-1",
+            status=StageRunStatus.BLOCKED,
+            failure_class=FailureClass.DOMAIN_BLOCKED,
+            failure_summary="no decision collected",
+            now=self.created_at + timedelta(seconds=1),
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.BLOCKED,
+            current_stage_id="stage-1",
+            updated_at=self.created_at + timedelta(seconds=1),
+        )
+
+        restored = self.ledger.restore_published_human_gate_waiting(
+            instance_id="instance-1",
+            reason="published surface is open; collection ran before a human decision",
+            verified_surface_published=True,
+            verified_no_human_decision=True,
+            now=self.created_at + timedelta(seconds=2),
+        )
+
+        self.assertEqual(restored["stage_run_id"], "run-1")
+        self.assertEqual(restored["status"], "waiting_on_human")
+        self.assertEqual(
+            self.ledger.get_stage_run("run-1").status,
+            StageRunStatus.WAITING_ON_HUMAN,
+        )
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.WAITING_ON_HUMAN)
+
     def test_operator_retry_of_effect_free_failed_stage_is_append_only(self) -> None:
         self.insert_run()
         claimed = self.ledger.claim_next_queued_run(

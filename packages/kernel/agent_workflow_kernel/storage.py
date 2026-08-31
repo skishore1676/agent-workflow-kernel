@@ -2103,6 +2103,122 @@ class WorkflowLedger:
             "reason": repair_reason,
         }
 
+    def restore_published_human_gate_waiting(
+        self,
+        *,
+        instance_id: str,
+        reason: str,
+        verified_surface_published: bool,
+        verified_no_human_decision: bool,
+        actor: str = "operator",
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Restore waiting state when collection raced a successful publish.
+
+        The stage must be blocked without a decision and must already have a
+        successful human-gate publish receipt. No new attempt or authority is
+        created; the published surface for this exact attempt is reused.
+        """
+
+        if not verified_surface_published or not verified_no_human_decision:
+            raise ValueError(
+                "published-gate restore requires verified surface and no human decision"
+            )
+        recovery_reason = str(reason).strip()
+        if not recovery_reason:
+            raise ValueError("published-gate restore requires a reason")
+        restored_at = iso_timestamp(now)
+        with self._transaction() as conn:
+            instance = conn.execute(
+                "SELECT * FROM workflow_instances WHERE instance_id = ?",
+                (instance_id,),
+            ).fetchone()
+            if instance is None:
+                raise KeyError(instance_id)
+            if instance["status"] != WorkflowStatus.BLOCKED.value:
+                raise LedgerConflict(f"workflow instance {instance_id!r} is not blocked")
+            stage_id = str(instance["current_stage_id"] or "")
+            row = conn.execute(
+                """
+                SELECT * FROM stage_runs
+                WHERE instance_id = ? AND stage_id = ?
+                ORDER BY attempt DESC, created_at DESC, stage_run_id DESC
+                LIMIT 1
+                """,
+                (instance_id, stage_id),
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != StageRunStatus.BLOCKED.value
+                or not bool(row["approval_required"])
+            ):
+                raise LedgerConflict(
+                    f"workflow instance {instance_id!r} has no blocked approval-required stage"
+                )
+            decision = conn.execute(
+                "SELECT 1 FROM human_decisions WHERE stage_run_id = ? LIMIT 1",
+                (row["stage_run_id"],),
+            ).fetchone()
+            if decision is not None:
+                raise LedgerConflict("blocked human-gate attempt already has a durable decision")
+            published = conn.execute(
+                """
+                SELECT 1 FROM receipts
+                WHERE stage_run_id = ?
+                  AND receipt_json LIKE '%human_gate_surface%'
+                  AND receipt_json LIKE '%\"status\":\"succeeded\"%'
+                LIMIT 1
+                """,
+                (row["stage_run_id"],),
+            ).fetchone()
+            if published is None:
+                raise LedgerConflict("blocked human-gate attempt has no successful surface receipt")
+            conn.execute(
+                """
+                UPDATE stage_runs
+                SET status = ?, failure_class = NULL, failure_summary = ?, updated_at = ?
+                WHERE stage_run_id = ? AND status = ?
+                """,
+                (
+                    StageRunStatus.WAITING_ON_HUMAN.value,
+                    recovery_reason,
+                    restored_at,
+                    row["stage_run_id"],
+                    StageRunStatus.BLOCKED.value,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE workflow_instances
+                SET status = ?, updated_at = ?
+                WHERE instance_id = ?
+                """,
+                (WorkflowStatus.WAITING_ON_HUMAN.value, restored_at, instance_id),
+            )
+            payload = {
+                "stage_run_id": row["stage_run_id"],
+                "reason": recovery_reason,
+                "verified_surface_published": True,
+                "verified_no_human_decision": True,
+            }
+            self._append_event(
+                conn,
+                instance_id=instance_id,
+                stage_run_id=row["stage_run_id"],
+                event_type="published_human_gate_waiting_restored",
+                actor=actor,
+                payload=payload,
+                created_at=restored_at,
+            )
+        return {
+            "instance_id": instance_id,
+            "stage_run_id": row["stage_run_id"],
+            "stage_id": stage_id,
+            "attempt": int(row["attempt"]),
+            "status": StageRunStatus.WAITING_ON_HUMAN.value,
+            "reason": recovery_reason,
+        }
+
     def retry_blocked_stage_without_effect(
         self,
         *,
