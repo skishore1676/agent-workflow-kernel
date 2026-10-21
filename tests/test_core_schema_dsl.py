@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "packages" / "kernel"))
 from agent_workflow_kernel import StageType  # noqa: E402
 from agent_workflow_kernel.dsl import (  # noqa: E402
     _load_simple_yaml,
+    load_workflow_canonical_json,
     load_workflow_yaml,
     workflow_from_mapping,
     workflow_to_canonical_json,
@@ -199,6 +200,14 @@ class CoreSchemaDslTest(unittest.TestCase):
         self.assertEqual(canonical_a, canonical_b)
         self.assertEqual(canonical_a.encode("utf-8"), workflow_to_canonical_json_bytes(workflow_b))
         self.assertIn('"adapter":"lane.generic.prepare_packet"', canonical_a)
+
+    def test_canonical_snapshot_round_trips_for_pinned_resume(self) -> None:
+        workflow = load_workflow_yaml(VALID_WORKFLOW_YAML)
+        canonical = workflow_to_canonical_json(workflow)
+
+        restored = load_workflow_canonical_json(canonical)
+
+        self.assertEqual(workflow_to_canonical_json(restored), canonical)
 
 
 if __name__ == "__main__":

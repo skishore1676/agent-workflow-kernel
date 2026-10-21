@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -59,7 +60,7 @@ from .prompts import (
 )
 from .receipts import build_prompt_provenance
 from .runner import RunnerResult, WorkflowRunner
-from .storage import LedgerConflict, WorkflowLedger, iso_timestamp
+from .storage import WorkflowLedger, iso_timestamp
 
 from ._internal_types import *  # noqa: F401,F403 (shared kernel types/constants)
 from ._helpers import *  # noqa: F401,F403 (kernel helper functions)
@@ -80,7 +81,7 @@ class KernelRuntimeConfig:
     prompt_registry_path: str | Path | None = None
     policy_engine: PolicyEngine = field(default_factory=PolicyEngine)
     default_lease_seconds: int = 300
-    completion_margin_seconds: int = 30
+    worker_platform: str | None = None
 
     def __post_init__(self) -> None:
         if self.prompt_registry is not None and self.prompt_registry_path is not None:
@@ -91,8 +92,6 @@ class KernelRuntimeConfig:
                 "prompt_registry",
                 PromptRegistry.load(self.prompt_registry_path),
             )
-        if self.completion_margin_seconds < 0:
-            raise ValueError("completion_margin_seconds must be nonnegative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,42 +191,39 @@ class WorkflowKernel:
             idempotency_key=idempotency_key,
             input_hash=input_hash,
         )
-        first_run = StageRun(
-            stage_run_id=f"{instance_id}:{first_stage.id}:1",
-            instance_id=instance_id,
-            stage_id=first_stage.id,
-            status=StageRunStatus.QUEUED,
-            attempt=1,
-            adapter_id=first_stage.adapter,
-            actor_ref=_actor_ref(first_stage),
-            idempotency_key=f"{instance_id}:{first_stage.id}:1",
-        )
         try:
-            durable_instance, _created = self.ledger.get_or_start_workflow_instance(
+            self.ledger.insert_workflow_instance(
                 instance,
-                first_run=first_run,
-                first_run_input_hash=digest_data(
-                    {"stage": first_stage, "inputs": inputs, "attempt": 1}
-                ),
                 created_at=created_at,
                 input_snapshot=dict(inputs),
                 workflow_definition_json=workflow_definition_json,
                 workflow_definition_hash=workflow_definition_hash,
-                actor=self.config.owner_id,
-                event_payload={
-                    "workflow_id": self.workflow.id,
-                    "workflow_version": self.workflow.version,
-                    "first_stage_id": first_stage.id,
-                    "input_hash": input_hash,
-                    "workflow_definition_hash": workflow_definition_hash,
-                },
             )
-        except LedgerConflict as exc:
-            if idempotency_key is None and "workflow instance already exists" in str(exc):
-                raise ValueError(f"workflow instance already exists: {instance_id}") from exc
-            raise
-        self._instance_inputs[durable_instance.instance_id] = dict(inputs)
-        return durable_instance
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"workflow instance already exists: {instance_id}") from exc
+        self._queue_stage(
+            first_stage,
+            instance_id=instance_id,
+            attempt=1,
+            inputs=inputs,
+            created_at=created_at,
+        )
+        self._instance_inputs[instance_id] = dict(inputs)
+        self.ledger.append_event(
+            instance_id=instance_id,
+            stage_run_id=None,
+            event_type="workflow_started",
+            actor=self.config.owner_id,
+            payload={
+                "workflow_id": self.workflow.id,
+                "workflow_version": self.workflow.version,
+                "first_stage_id": first_stage.id,
+                "input_hash": input_hash,
+                "workflow_definition_hash": workflow_definition_hash,
+            },
+            created_at=created_at,
+        )
+        return instance
 
     def run_once(
         self,
@@ -246,17 +242,12 @@ class WorkflowKernel:
                 run,
                 explicit_lease_seconds=lease_seconds,
             ),
+            claim_predicate=self._stage_claim_is_platform_eligible,
+            claim_context={"worker_platform": self.config.worker_platform},
             now=now,
         )
         if step.stage_run is None:
             return KernelStep(stage_run=None, decision="idle")
-        if not step.authoritative:
-            return KernelStep(
-                stage_run=step.stage_run,
-                decision="idle",
-                receipt_id=step.late_result_id,
-                failure_summary="Provider result arrived after cancellation and was quarantined.",
-            )
 
         stage = self._stage_by_id.get(step.stage_run.stage_id)
         final_decision: KernelDecision = step.decision
@@ -375,6 +366,15 @@ class WorkflowKernel:
             failure_summary=final_failure_summary,
         )
 
+    def _stage_claim_is_platform_eligible(self, run: StageRun) -> bool:
+        stage = self._stage_by_id.get(run.stage_id)
+        if stage is None:
+            return False
+        required_platform = stage.policy.get("required_platform")
+        if required_platform in (None, ""):
+            return True
+        return self.config.worker_platform == required_platform
+
     def ingest_human_decision(
         self,
         *,
@@ -409,9 +409,12 @@ class WorkflowKernel:
             )
 
         gate = self._human_gate(stage, waiting_run)
-        validation_error = _human_decision_validation_error(
+        validation_gate, persisted_authority_error = (
+            self._human_decision_validation_gate(waiting_run, stage, gate)
+        )
+        validation_error = persisted_authority_error or _human_decision_validation_error(
             decision,
-            gate,
+            validation_gate,
             now=now,
             allowed_decisions=stage.outcomes,
         )
@@ -1793,6 +1796,55 @@ class WorkflowKernel:
                 return authority
         return None
 
+    def _human_decision_validation_gate(
+        self,
+        run: StageRun,
+        stage: StageDef,
+        gate: Any,
+    ) -> tuple[Any, str | None]:
+        """Use the immutable published authority when a review was projected.
+
+        Policy-engine upgrades may change a derived gate id or action fingerprint
+        while a human review is waiting. The publish receipt is the durable
+        envelope the human actually saw, so a later decision must be checked
+        against that exact envelope. Identity, definition, action, and decision
+        space still have to match the current pinned workflow; malformed or
+        cross-workflow authority fails closed.
+        """
+        authority = self._published_human_gate_authority(run)
+        if authority is None:
+            return gate, None
+        request = self._human_gate_request(stage, run)
+        allowed = tuple(str(value) for value in authority.get("allowed_decisions") or ())
+        identity_matches = (
+            str(authority.get("workflow_id") or "") == self.workflow.id
+            and str(authority.get("instance_id") or "") == run.instance_id
+            and str(authority.get("stage_id") or "") == stage.id
+            and str(authority.get("stage_run_id") or "") == run.stage_run_id
+            and str(authority.get("definition_hash") or "")
+            == str(request.workflow_definition_hash or "")
+            and set(allowed) == set(stage.outcomes)
+        )
+        gate_id = str(authority.get("gate_id") or "")
+        requested_action = str(authority.get("requested_action") or "")
+        action_fingerprint = str(authority.get("action_fingerprint") or "")
+        if not identity_matches or not all(
+            (gate_id, requested_action, action_fingerprint)
+        ):
+            return gate, (
+                "Durable published human-gate authority does not match the "
+                "current pinned workflow."
+            )
+        return (
+            replace(
+                gate,
+                gate_id=gate_id,
+                requested_action=requested_action,
+                action_fingerprint=action_fingerprint,
+            ),
+            None,
+        )
+
     def _human_gate_request(self, stage: StageDef, run: StageRun) -> ActionRequest:
         """Build the content-bound authority request for a human gate.
 
@@ -2343,19 +2395,12 @@ class WorkflowKernel:
                 ),
                 runtime_default_seconds=self.config.default_lease_seconds,
                 explicit_lease_seconds=explicit_lease_seconds,
-                minimum_seconds=None,
             )
-        minimum_seconds = (
-            stage.timeout_seconds + self.config.completion_margin_seconds
-            if stage.timeout_seconds is not None
-            else None
-        )
         return resolve_stage_lease_policy(
             self.workflow,
             stage,
             runtime_default_seconds=self.config.default_lease_seconds,
             explicit_lease_seconds=explicit_lease_seconds,
-            minimum_seconds=minimum_seconds,
         )
 
 

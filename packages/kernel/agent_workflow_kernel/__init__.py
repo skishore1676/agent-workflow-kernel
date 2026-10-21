@@ -55,8 +55,10 @@ from .contracts import (
 )
 from .dsl import (
     canonical_json,
+    load_workflow_canonical_json,
     load_workflow_file,
     load_workflow_yaml,
+    workflow_from_canonical_mapping,
     workflow_from_mapping,
     workflow_to_canonical_json,
     workflow_to_canonical_json_bytes,
@@ -290,6 +292,7 @@ __all__ = [
     "canonical_actor_session_binding",
     "canonical_actor_session_key",
     "canonical_json",
+    "load_workflow_canonical_json",
     "compare_receipts",
     "digest_actor_session_profile",
     "digest_data",
@@ -316,6 +319,7 @@ __all__ = [
     "validate_workflow_def",
     "validate_workflow_mapping",
     "workflow_from_mapping",
+    "workflow_from_canonical_mapping",
     "workflow_to_canonical_json",
     "workflow_to_canonical_json_bytes",
     "__version__",

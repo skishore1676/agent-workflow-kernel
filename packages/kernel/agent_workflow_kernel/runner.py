@@ -13,7 +13,6 @@ from .contracts import (
     StageRun,
     StageRunStatus,
     WorkflowStatus,
-    to_plain_data,
 )
 from .storage import WorkflowLedger
 
@@ -37,8 +36,6 @@ class RunnerResult:
 class RunnerStep:
     stage_run: StageRun | None
     decision: RunDecision | Literal["idle"]
-    authoritative: bool = True
-    late_result_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -128,6 +125,8 @@ class WorkflowRunner:
         instance_id: str | None = None,
         lease_seconds: int | None = 300,
         lease_resolver: Callable[[StageRun], ResolvedLeasePolicy] | None = None,
+        claim_predicate: Callable[[StageRun], bool] | None = None,
+        claim_context: Mapping[str, Any] | None = None,
         now: datetime | str | None = None,
     ) -> RunnerStep:
         self.ledger.sweep_stale_leases(now=now, actor=self.owner_id)
@@ -136,6 +135,8 @@ class WorkflowRunner:
             instance_id=instance_id,
             lease_seconds=lease_seconds,
             lease_resolver=lease_resolver,
+            claim_predicate=claim_predicate,
+            claim_context=claim_context,
             now=now,
         )
         if run is None:
@@ -163,17 +164,6 @@ class WorkflowRunner:
         try:
             result = handler(run)
         except Exception as exc:
-            late = self._record_cancelled_result(
-                run,
-                RunnerResult(
-                    decision="failed",
-                    failure_class=FailureClass.RUNTIME_FAILURE,
-                    failure_summary=str(exc),
-                ),
-                now=now,
-            )
-            if late is not None:
-                return late
             self.ledger.fail_stage_run(
                 stage_run_id=run.stage_run_id,
                 lease_token=run.lease_token,
@@ -185,9 +175,6 @@ class WorkflowRunner:
             )
             return RunnerStep(stage_run=run, decision="failed")
 
-        late = self._record_cancelled_result(run, result, now=now)
-        if late is not None:
-            return late
         if result.receipt is not None:
             self.ledger.record_receipt(result.receipt)
 
@@ -251,55 +238,6 @@ class WorkflowRunner:
 
         return RunnerStep(stage_run=run, decision=result.decision)
 
-    def _record_cancelled_result(
-        self,
-        run: StageRun,
-        result: RunnerResult,
-        *,
-        now: datetime | str | None,
-    ) -> RunnerStep | None:
-        """Quarantine a provider result that returned after workflow cancellation."""
-        instance = self.ledger.get_workflow_instance(run.instance_id)
-        current_run = self.ledger.get_stage_run(run.stage_run_id)
-        if (
-            instance is None
-            or current_run is None
-            or (
-                instance.status != WorkflowStatus.CANCELLED
-                and current_run.status != StageRunStatus.SUPERSEDED
-            )
-        ):
-            return None
-        receipt = to_plain_data(result.receipt) if result.receipt is not None else None
-        late_id = self.ledger.record_late_result(
-            stage_run_id=run.stage_run_id,
-            result_kind="cancelled_provider_result",
-            result_hash=result.output_hash,
-            reported_lease_token=run.lease_token,
-            reported_owner=self.owner_id,
-            evidence={
-                "decision": result.decision,
-                "failure_class": (
-                    result.failure_class.value
-                    if hasattr(result.failure_class, "value")
-                    else result.failure_class
-                ),
-                "failure_summary": result.failure_summary,
-                "output_hash": result.output_hash,
-                "receipt": receipt,
-                "quarantined": True,
-                "promotion_authorized": False,
-            },
-            observed_at=now,
-            actor=self.owner_id,
-        )
-        return RunnerStep(
-            stage_run=run,
-            decision=result.decision,
-            authoritative=False,
-            late_result_id=late_id,
-        )
-
     def run_kernel_until_idle(
         self,
         kernel: KernelExecutionFacade,
@@ -354,7 +292,6 @@ class WorkflowRunner:
                     self.ledger,
                     stage_run_id=waiting_run.stage_run_id,
                 )
-                published_now = False
                 if publish_human_gate and surface_ref is None:
                     publish = kernel.publish_waiting_human_gate(
                         instance_id=resolved_instance_id,
@@ -370,7 +307,6 @@ class WorkflowRunner:
                     )
                     surface_results.append(publish)
                     surface_ref = getattr(publish, "surface_ref", None)
-                    published_now = True
                     if getattr(publish, "status", None) != "succeeded":
                         return OwnedRunSummary(
                             status="blocked",
@@ -421,19 +357,6 @@ class WorkflowRunner:
                         reviewer_human_ref = getattr(review, "human_ref", None) or reviewer_human_ref
 
                 if ingest_human_decision:
-                    # A transition in this same owned tick may have opened a
-                    # brand-new gate.  Publish/read it for operator visibility,
-                    # then yield waiting state; attempting to ingest an absence
-                    # before the human can act turns normal review latency into
-                    # a false domain block.
-                    if published_now and automated_reviewer is None:
-                        return OwnedRunSummary(
-                            status="waiting_on_human",
-                            instance_id=resolved_instance_id,
-                            stop_reason="waiting_on_human",
-                            kernel_steps=tuple(kernel_steps),
-                            surface_results=tuple(surface_results),
-                        )
                     if surface_ref is None:
                         return OwnedRunSummary(
                             status="blocked",

@@ -102,6 +102,42 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in events], ["stage_claimed"])
         self.assertEqual(events[0]["actor"], "runner-a")
 
+    def test_claim_predicate_skips_ineligible_run_and_records_context(self) -> None:
+        self.insert_run()
+        self.ledger.insert_stage_run(
+            StageRun(
+                stage_run_id="run-2",
+                instance_id="instance-1",
+                stage_id="stage-2",
+                status=StageRunStatus.QUEUED,
+                adapter_id="runtime.fake",
+                actor_ref="worker",
+            ),
+            input_hash="stage-input-sha-2",
+            created_at=self.created_at,
+        )
+
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="mac-air-worker",
+            lease_seconds=30,
+            claim_predicate=lambda run: run.stage_id == "stage-2",
+            claim_context={"worker_platform": "mac_air"},
+            now=self.created_at,
+        )
+
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual(claimed.stage_run_id, "run-2")
+        self.assertEqual(
+            self.ledger.get_stage_run("run-1").status,
+            StageRunStatus.QUEUED,
+        )
+        event = self.ledger.list_events(stage_run_id="run-2")[0]
+        self.assertEqual(
+            event["payload"]["claim_context"],
+            {"worker_platform": "mac_air"},
+        )
+
     def test_receipt_artifact_and_completion_are_append_only_then_state_update(self) -> None:
         self.insert_run()
         claimed = self.ledger.claim_next_queued_run(
@@ -307,6 +343,263 @@ class SQLiteLedgerRunnerTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(parent["parent_stage_run_id"], "run-1")
         self.assertEqual(parent["retry_count"], 1)
+
+    def test_operator_retry_of_blocked_human_gate_is_append_only(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.wait_stage_run_for_human_decision(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_summary="waiting for approval",
+            now=self.created_at,
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.complete_waiting_human_stage_run(
+            stage_run_id="run-1",
+            status=StageRunStatus.BLOCKED,
+            failure_class=FailureClass.DOMAIN_BLOCKED,
+            failure_summary="rendered body hash mismatch",
+            now=self.created_at + timedelta(seconds=1),
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.BLOCKED,
+            current_stage_id="stage-1",
+            updated_at=self.created_at + timedelta(seconds=1),
+        )
+
+        recovery = self.ledger.retry_blocked_human_gate(
+            instance_id="instance-1",
+            reason="deployed deterministic rendering fix",
+            verified_no_external_effect=True,
+            now=self.created_at + timedelta(seconds=2),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        self.assertEqual(self.ledger.get_stage_run("run-1").status, StageRunStatus.BLOCKED)
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.RUNNING)
+        self.assertEqual(instance.recovery_epoch, 1)
+        events = self.ledger.connection.execute(
+            "SELECT event_type FROM events WHERE instance_id = ?",
+            ("instance-1",),
+        ).fetchall()
+        self.assertIn("blocked_human_gate_retry_authorized", [e["event_type"] for e in events])
+
+    def test_operator_retry_of_blocked_human_gate_requires_no_effect_proof(self) -> None:
+        with self.assertRaises(ValueError):
+            self.ledger.retry_blocked_human_gate(
+                instance_id="instance-1",
+                reason="not yet checked",
+                verified_no_external_effect=False,
+                now=self.created_at,
+            )
+
+    def test_transport_repair_reissues_waiting_human_gate_append_only(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.wait_stage_run_for_human_decision(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_summary="waiting for approval",
+            now=self.created_at,
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.WAITING_ON_HUMAN,
+            current_stage_id="stage-1",
+            updated_at=self.created_at,
+        )
+
+        recovery = self.ledger.reissue_waiting_human_gate_for_transport_repair(
+            instance_id="instance-1",
+            reason="validated article was projected as proof-plan JSON",
+            verified_no_human_decision=True,
+            now=self.created_at + timedelta(seconds=1),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        self.assertEqual(self.ledger.get_stage_run("run-1").status, StageRunStatus.BLOCKED)
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.RUNNING)
+        self.assertEqual(instance.recovery_epoch, 1)
+        events = self.ledger.connection.execute(
+            "SELECT event_type FROM events WHERE instance_id = ?",
+            ("instance-1",),
+        ).fetchall()
+        self.assertIn(
+            "waiting_human_gate_transport_repair_queued",
+            [event["event_type"] for event in events],
+        )
+
+    def test_transport_repair_requires_verified_absence_of_decision(self) -> None:
+        with self.assertRaises(ValueError):
+            self.ledger.reissue_waiting_human_gate_for_transport_repair(
+                instance_id="instance-1",
+                reason="projection defect",
+                verified_no_human_decision=False,
+                now=self.created_at,
+            )
+
+    def test_published_gate_restore_reopens_same_attempt_after_empty_collect(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.wait_stage_run_for_human_decision(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_summary="waiting for approval",
+            now=self.created_at,
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.record_receipt(
+            Receipt(
+                receipt_id="surface-publish-1",
+                kind="human_gate_surface",
+                workflow_id="workflow-1",
+                instance_id="instance-1",
+                stage_id="stage-1",
+                stage_run_id="run-1",
+                status="succeeded",
+                summary="human_gate_surface published",
+                created_at=self.created_at.isoformat(),
+                runtime_provenance={"operation": "human_gate_surface:publish"},
+            )
+        )
+        self.ledger.complete_waiting_human_stage_run(
+            stage_run_id="run-1",
+            status=StageRunStatus.BLOCKED,
+            failure_class=FailureClass.DOMAIN_BLOCKED,
+            failure_summary="no decision collected",
+            now=self.created_at + timedelta(seconds=1),
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.BLOCKED,
+            current_stage_id="stage-1",
+            updated_at=self.created_at + timedelta(seconds=1),
+        )
+
+        restored = self.ledger.restore_published_human_gate_waiting(
+            instance_id="instance-1",
+            reason="published surface is open; collection ran before a human decision",
+            verified_surface_published=True,
+            verified_no_human_decision=True,
+            now=self.created_at + timedelta(seconds=2),
+        )
+
+        self.assertEqual(restored["stage_run_id"], "run-1")
+        self.assertEqual(restored["status"], "waiting_on_human")
+        self.assertEqual(
+            self.ledger.get_stage_run("run-1").status,
+            StageRunStatus.WAITING_ON_HUMAN,
+        )
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.WAITING_ON_HUMAN)
+
+    def test_operator_retry_of_effect_free_failed_stage_is_append_only(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=30, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.fail_stage_run(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            failure_class=FailureClass.RUNTIME_FAILURE,
+            failure_summary="fixed packaging defect",
+            now=self.created_at + timedelta(seconds=1),
+            actor="runner-a",
+            owner_id="runner-a",
+        )
+        self.ledger.update_workflow_instance(
+            instance_id="instance-1",
+            status=WorkflowStatus.BLOCKED,
+            current_stage_id="stage-1",
+            updated_at=self.created_at + timedelta(seconds=1),
+        )
+
+        recovery = self.ledger.retry_blocked_stage_without_effect(
+            instance_id="instance-1",
+            reason="deployed packaging fix",
+            verified_no_external_effect=True,
+            now=self.created_at + timedelta(seconds=2),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        self.assertEqual(self.ledger.get_stage_run("run-1").status, StageRunStatus.FAILED)
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        instance = self.ledger.get_workflow_instance("instance-1")
+        assert instance is not None
+        self.assertEqual(instance.status, WorkflowStatus.RUNNING)
+        self.assertEqual(instance.recovery_epoch, 1)
+
+    def test_operator_can_reauthorize_verified_no_effect_stale_system_stage(self) -> None:
+        self.insert_run()
+        claimed = self.ledger.claim_next_queued_run(
+            owner_id="runner-a", lease_seconds=1, now=self.created_at
+        )
+        assert claimed is not None and claimed.lease_token is not None
+        self.ledger.mark_stage_run_started(
+            stage_run_id="run-1",
+            lease_token=claimed.lease_token,
+            actor="runner-a",
+            owner_id="runner-a",
+            now=self.created_at,
+        )
+        self.ledger.sweep_stale_leases(
+            now=self.created_at + timedelta(seconds=2), actor="recovery"
+        )
+
+        with self.assertRaises(LedgerConflict):
+            self.ledger.retry_blocked_stage_without_effect(
+                instance_id="instance-1",
+                reason="effect evidence checked",
+                verified_no_external_effect=True,
+                now=self.created_at + timedelta(seconds=3),
+            )
+
+        recovery = self.ledger.retry_blocked_stage_without_effect(
+            instance_id="instance-1",
+            reason="effect evidence checked",
+            verified_no_external_effect=True,
+            operator_reauthorized=True,
+            now=self.created_at + timedelta(seconds=3),
+        )
+
+        self.assertEqual(recovery["stage_run_id"], "instance-1:stage-1:2")
+        retry = self.ledger.get_stage_run("instance-1:stage-1:2")
+        assert retry is not None
+        self.assertEqual(retry.status, StageRunStatus.QUEUED)
+        row = self.ledger.connection.execute(
+            "SELECT approval_required FROM stage_runs WHERE stage_run_id = ?",
+            ("instance-1:stage-1:2",),
+        ).fetchone()
+        assert row is not None
+        self.assertFalse(bool(row["approval_required"]))
 
     def test_foreign_keys_are_enabled(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):

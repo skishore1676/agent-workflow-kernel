@@ -59,6 +59,42 @@ def workflow_from_mapping(data: Mapping[str, Any]) -> WorkflowDef:
     return workflow
 
 
+def workflow_from_canonical_mapping(data: Mapping[str, Any]) -> WorkflowDef:
+    """Restore a workflow from its persisted canonical kernel snapshot."""
+
+    workflow = WorkflowDef(
+        id=str(data["id"]),
+        version=str(data["version"]),
+        name=str(data["name"]),
+        stages=tuple(_stage_from_mapping(stage) for stage in data["stages"]),
+        transitions=tuple(
+            _canonical_transition_from_mapping(transition)
+            for transition in data["transitions"]
+        ),
+        schema=str(data.get("schema") or "workflow.kernel.v1"),
+        owner=_optional_str(data.get("owner")),
+        description=_optional_str(data.get("description")),
+        inputs=dict(data.get("inputs") or {}),
+        defaults=dict(data.get("defaults") or {}),
+        actors=dict(data.get("actors") or {}),
+        artifacts=dict(data.get("artifacts") or {}),
+        policies=dict(data.get("policies") or {}),
+        compatibility=dict(data.get("compatibility") or {}),
+    )
+    validate_workflow_def(workflow)
+    return workflow
+
+
+def load_workflow_canonical_json(source: str | bytes | TextIO) -> WorkflowDef:
+    """Load a definition previously emitted by ``workflow_to_canonical_json``."""
+
+    raw = source.read() if hasattr(source, "read") else source
+    loaded = json.loads(raw)
+    if not isinstance(loaded, Mapping):
+        raise TypeError("canonical workflow JSON must parse to a mapping")
+    return workflow_from_canonical_mapping(loaded)
+
+
 def workflow_to_canonical_json(workflow: WorkflowDef) -> str:
     """Compile a workflow definition to deterministic canonical JSON."""
 
@@ -109,6 +145,18 @@ def _transition_from_mapping(data: Any) -> Transition:
         from_stage=str(transition["from"]),
         on=str(transition["on"]),
         to_stage=_optional_str(transition.get("to")),
+        terminal=_optional_str(transition.get("terminal")),
+        guard=_optional_str(transition.get("guard")),
+        label=_optional_str(transition.get("label")),
+    )
+
+
+def _canonical_transition_from_mapping(data: Any) -> Transition:
+    transition = _require_mapping(data, "transition")
+    return Transition(
+        from_stage=str(transition["from_stage"]),
+        on=str(transition["on"]),
+        to_stage=_optional_str(transition.get("to_stage")),
         terminal=_optional_str(transition.get("terminal")),
         guard=_optional_str(transition.get("guard")),
         label=_optional_str(transition.get("label")),

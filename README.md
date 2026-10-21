@@ -27,7 +27,7 @@ AWK is an active workflow-control layer. Selected OpenClaw lanes now use
 AWK-owned production entrypoints, and new lane work should either adopt AWK or
 explicitly document why a different rail is required.
 
-**Canonical single source (v0.4.1).** The kernel is one pip-installable,
+**Canonical single source (v0.4.0).** The kernel is one pip-installable,
 versioned package that every host consumes — there is no second copy. `0.2.0`
 folded in the rearchitecture (god-module split, kernel-purity import-lint,
 frozen public-API guard); `0.3.0` folded in the workflow features that had
@@ -45,14 +45,6 @@ bind workflow/run identity, definition, immutable artifact hashes, choices,
 state constraints, and expiry. Existing human approvals must be regenerated
 after the 0.4.0 migration because their v0.3 fingerprints deliberately lack
 that authority context.
-
-`0.4.1` makes idempotent starts and bounded operator recovery public release
-contracts. Non-null workflow idempotency keys are unique in ledger schema v2;
-an exact replay returns the existing instance while a key reused for different
-workflow inputs fails closed. `operator_retry_stage(...)` can append a new
-receipted attempt only for one eligible, unambiguous failed leaf and rejects
-active, human-gated, terminal, and ambiguous state. See the durable-state
-contract in [`docs/public-api.md`](docs/public-api.md).
 
 Dependency policy for host consumers is in
 [`docs/DEPENDENCY_POLICY.md`](docs/DEPENDENCY_POLICY.md).

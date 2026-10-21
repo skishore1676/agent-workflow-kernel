@@ -24,15 +24,6 @@ from agent_workflow_kernel import WorkflowKernel, WorkflowLedger, load_workflow_
 
 ## Durable state
 - `WorkflowLedger`, `LedgerConflict`, `RecoveryAction`.
-  - Schema v2 enforces a partial UNIQUE index for every non-null workflow
-    idempotency key. `get_workflow_instance_by_idempotency_key(...)` is the
-    lookup contract; `WorkflowKernel.start(...)` atomically creates the
-    instance, first queued run, and start event or returns the existing exact
-    replay. Same-key/different-workflow-or-input raises `LedgerConflict`.
-  - `operator_retry_stage(...)` is the bounded public repair primitive. It
-    appends one queued attempt and operator receipt only for one unambiguous
-    failed/invalid/timed-out/blocked leaf. Active leases, queued work, human
-    gates, terminal instances, and ambiguous candidates fail closed.
 
 ## Workflow definition / DSL
 - `WorkflowDef`, `StageDef`, `Transition`, `WorkflowInstance`, `StageRun`,
@@ -75,20 +66,10 @@ from agent_workflow_kernel import WorkflowKernel, WorkflowLedger, load_workflow_
 - Parity: `ParityReport`, `ParityField`, `report_from_fixture`,
   `load_parity_fixture`, `compare_receipts`.
 - Leases: `resolve_stage_lease_policy`, `resolved_lease_policy_from_stage_run`,
-  `ResolvedLeasePolicy`. WorkflowKernel requires a stage lease to cover
-  `timeout_seconds + KernelRuntimeConfig.completion_margin_seconds` (30 seconds
-  by default), protecting validation and durable completion after a provider
-  returns.
+  `ResolvedLeasePolicy`.
 - Automated reviewer: `AutomatedSumanReviewer`, `AutomatedSumanReviewResult`.
 
 ## Purity invariant (enforced)
 `tools/import_lint.py` (wired into `make check`) guarantees the kernel package
 imports nothing from any `agent_workflow_kernel_*` provider/adapter
 distribution. This is the agnosticism contract the lane-host program depends on.
-
-Cancellation is terminal authority even when a synchronous provider cannot be
-interrupted. A result returned after cancellation is recorded in `late_results`
-with `quarantined: true` and `promotion_authorized: false`; it does not record
-authoritative artifact refs, advance the stage, or change the cancelled
-instance, and the runner returns an idle/non-authoritative tick rather than
-crashing.
