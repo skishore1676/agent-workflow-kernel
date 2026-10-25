@@ -2381,6 +2381,64 @@ class WorkflowLedger:
             "reason": recovery_reason,
         }
 
+    def queue_local_preparation_repair(
+        self, *, instance_id: str, expected_workflow_hash: str,
+        expected_blocked_stage_run_id: str, checkpoint_stage_run_id: str,
+        reason: str, verified_no_external_effect: bool,
+        operator_reauthorized: bool, actor: str = "operator", now=None,
+    ) -> dict[str, Any]:
+        """Append a local preparation pass before an unaccepted failed review.
+
+        This is not a human revise decision. All original stages, artifacts and
+        decisions stay immutable. A new checkpoint attempt must pass the normal
+        workflow again and obtain a fresh human review authority. No runtime or
+        host stage, or human decision, may be crossed by this repair.
+        """
+        if not expected_workflow_hash or not verified_no_external_effect or not operator_reauthorized or not str(reason).strip():
+            raise ValueError("local preparation repair requires explicit reason and no-effect authorization")
+        at = iso_timestamp(now)
+        with self._transaction() as conn:
+            instance = conn.execute("SELECT * FROM workflow_instances WHERE instance_id=?", (instance_id,)).fetchone()
+            if instance is None or instance['status'] != WorkflowStatus.BLOCKED.value or instance['workflow_definition_hash'] != expected_workflow_hash:
+                raise LedgerConflict("repair requires the exact blocked workflow snapshot")
+            blocked = conn.execute("SELECT rowid AS sequence,* FROM stage_runs WHERE stage_run_id=? AND instance_id=?", (expected_blocked_stage_run_id,instance_id)).fetchone()
+            checkpoint = conn.execute("SELECT rowid AS sequence,* FROM stage_runs WHERE stage_run_id=? AND instance_id=?", (checkpoint_stage_run_id,instance_id)).fetchone()
+            if (blocked is None or blocked['stage_id'] != instance['current_stage_id']
+                or blocked['status'] != StageRunStatus.BLOCKED.value
+                or blocked['failure_class'] != FailureClass.INVALID_OUTPUT.value
+                or not str(blocked['adapter_id']).startswith('surface.')
+                or checkpoint is None or checkpoint['status'] != StageRunStatus.SUCCEEDED.value
+                or not str(checkpoint['adapter_id']).startswith('lane.')
+                or checkpoint['sequence'] >= blocked['sequence']):
+                raise LedgerConflict("repair requires a completed local checkpoint before an invalid unaccepted surface")
+            latest = conn.execute('SELECT stage_run_id FROM stage_runs WHERE instance_id=? AND stage_id=? ORDER BY attempt DESC LIMIT 1', (instance_id,blocked['stage_id'])).fetchone()
+            if latest[0] != expected_blocked_stage_run_id:
+                raise LedgerConflict('repair requires the latest blocked review attempt')
+            crossed = conn.execute("SELECT * FROM stage_runs WHERE instance_id=? AND rowid>=?", (instance_id,checkpoint['sequence'])).fetchall()
+            if any(not str(r['adapter_id']).startswith(('lane.','surface.')) or r['lease_token'] for r in crossed):
+                raise LedgerConflict("repair cannot cross runtime, host or leased work")
+            if conn.execute("SELECT 1 FROM human_decisions h JOIN stage_runs s ON h.stage_run_id=s.stage_run_id WHERE h.instance_id=? AND s.rowid>=? LIMIT 1", (instance_id,checkpoint['sequence'])).fetchone():
+                raise LedgerConflict("repair cannot cross a recorded human decision")
+            if conn.execute("SELECT 1 FROM stage_runs WHERE instance_id=? AND status IN ('queued','claimed','started','waiting','waiting_on_human','validating') LIMIT 1", (instance_id,)).fetchone():
+                raise LedgerConflict("repair requires no pending or in-flight stage")
+            attempt = conn.execute("SELECT COALESCE(MAX(attempt),0)+1 FROM stage_runs WHERE instance_id=? AND stage_id=?", (instance_id,checkpoint['stage_id'])).fetchone()[0]
+            new_id = f"{instance_id}:{checkpoint['stage_id']}:{attempt}"
+            conn.execute("""INSERT INTO stage_runs
+                (stage_run_id,instance_id,stage_id,attempt,status,adapter_id,actor_ref,
+                 approval_required,idempotency_key,input_hash,parent_stage_run_id,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?)""",
+                (new_id,instance_id,checkpoint['stage_id'],attempt,StageRunStatus.QUEUED.value,
+                 checkpoint['adapter_id'],checkpoint['actor_ref'],new_id,checkpoint['input_hash'],checkpoint_stage_run_id,at,at))
+            conn.execute("UPDATE workflow_instances SET status=?,current_stage_id=?,recovery_epoch=recovery_epoch+1,updated_at=? WHERE instance_id=?",
+                (WorkflowStatus.RUNNING.value,checkpoint['stage_id'],at,instance_id))
+            result = {'instance_id':instance_id,'stage_run_id':new_id,'stage_id':checkpoint['stage_id'],
+                'attempt':attempt,'blocked_stage_run_id':expected_blocked_stage_run_id,
+                'checkpoint_stage_run_id':checkpoint_stage_run_id,'reason':reason,
+                'verified_no_external_effect':True,'operator_reauthorized':True,'status':'queued'}
+            self._append_event(conn,instance_id=instance_id,stage_run_id=new_id,
+                event_type='local_preparation_repair_queued',actor=actor,payload=result,created_at=at)
+        return result
+
     # -- child sessions: a bounded, scoped, audited delegate session --------- #
     #
     # The child_sessions table already models exactly a bounded, scoped,
