@@ -2226,6 +2226,7 @@ class WorkflowLedger:
         reason: str,
         verified_no_external_effect: bool,
         operator_reauthorized: bool = False,
+        diagnostic_artifact_evidence: Mapping[str, Any] | None = None,
         actor: str = "operator",
         now: datetime | str | None = None,
     ) -> dict[str, Any]:
@@ -2237,7 +2238,10 @@ class WorkflowLedger:
         external effect. A stale lease is conservatively marked as requiring
         approval; ``operator_reauthorized`` lets an operator replay that
         non-gate stage after checking the effect evidence. It never rewrites
-        the failed attempt or its receipts.
+        the failed attempt or its receipts. A read-only runtime's mistakenly
+        registered diagnostic refs may be retained with explicit operator
+        reauthorization and exact source-receipt/artifact evidence. This does
+        not authorize replay of host effects or real generated artifacts.
         """
 
         if not verified_no_external_effect:
@@ -2279,14 +2283,33 @@ class WorkflowLedger:
                 raise LedgerConflict(
                     "approval-required stage retry requires operator_reauthorized"
                 )
-            artifact = conn.execute(
-                "SELECT 1 FROM artifact_refs WHERE stage_run_id = ? LIMIT 1",
+            artifacts = conn.execute(
+                "SELECT artifact_id,content_hash,mime_type,visibility FROM artifact_refs WHERE stage_run_id = ?",
                 (row["stage_run_id"],),
-            ).fetchone()
-            if artifact is not None:
-                raise LedgerConflict(
-                    "failed stage has a durable artifact; use effect-aware recovery"
-                )
+            ).fetchall()
+            if artifacts:
+                evidence = dict(diagnostic_artifact_evidence or {})
+                source = conn.execute(
+                    "SELECT receipt_json,status,stage_run_id FROM receipts WHERE receipt_id = ?",
+                    (evidence.get("source_receipt_id", ""),),
+                ).fetchone()
+                actual_hashes = {a["artifact_id"]: a["content_hash"] for a in artifacts}
+                valid = (operator_reauthorized
+                    and str(row["adapter_id"] or "").startswith("runtime.")
+                    and evidence.get("stage_run_id") == row["stage_run_id"]
+                    and evidence.get("artifact_hashes") == actual_hashes
+                    and evidence.get("verified_diagnostic_only") is True
+                    and evidence.get("verified_no_model_output") is True
+                    and evidence.get("verified_read_only_runtime") is True
+                    and bool(evidence.get("verification_ref"))
+                    and all(a["mime_type"] == "application/json" and a["visibility"] == "internal" for a in artifacts)
+                    and source is not None and source["status"] == "failed"
+                    and source["stage_run_id"] == row["stage_run_id"]
+                    and evidence.get("source_receipt_sha256") == hashlib.sha256(source["receipt_json"].encode()).hexdigest())
+                if not valid:
+                    raise LedgerConflict(
+                        "failed stage has a durable artifact; use effect-aware recovery with exact diagnostic evidence"
+                    )
 
             next_attempt = int(row["attempt"]) + 1
             next_stage_run_id = f"{instance_id}:{stage_id}:{next_attempt}"
@@ -2328,6 +2351,7 @@ class WorkflowLedger:
                 "reason": recovery_reason,
                 "verified_no_external_effect": True,
                 "operator_reauthorized": bool(operator_reauthorized),
+                "diagnostic_artifact_evidence": dict(diagnostic_artifact_evidence or {}),
             }
             self._append_event(
                 conn,
